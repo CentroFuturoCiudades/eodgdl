@@ -1,0 +1,604 @@
+{
+    "habitantes": {
+        "Folio Vivienda": "folio_vivienda",
+        "Folio Habitante": "folio_habitante",
+        "Fecha": "fecha",
+        "Municipio": "municipio",
+        "AGEB": "ageb",
+        "Centralidad": "centralidad",
+
+        "¿Salió de su casa ayer?": "salio_casa_ayer",
+        "¿Cuál es la razón por la que NO realizó algún viaje?": "razon_no_viaje",
+        "Viajes contados": "viajes_contados",
+        "Día de la semana que realizó los viajes:": "dia_semana_viajes",
+
+        "Parentesco": "parentesco",
+        "Sexo de nacimiento": "sexo_nacimiento",
+        "Género con el que se identifica:": "genero_identidad",
+        "Grupo de Edad": "grupo_edad",
+        "Edad": "edad",
+        "Estado civil": "estado_civil",
+        "Escolaridad": "escolaridad",
+        "Durante la semana pasada trabajó:": "trabajo_semana_pasada",
+        "Ocupación:": "ocupacion",
+        "Giro de la empresa donde trabaja:": "giro_empresa",
+
+        "¿Tiene alguna discapacidad?": "tiene_discapacidad",
+        "¿Qué tipo de discapacidad?": "tipo_discapacidad",
+        "¿Requiere acompañamiento en sus viajes?": "requiere_acompanamiento",
+        "¿Por qué razón requiere acompañamiento en sus viajes?": "razon_acompanamiento",
+        "¿De quien recibe apoyo para realizar los viajes?": "quien_apoya_viajes",
+
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | A PIE": "weekend_mode_a_pie",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | CAMIÓN O AUTOBÚS": "weekend_mode_camion_autobus",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | AUTOMÓVIL PARTICULAR": "weekend_mode_auto_particular",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | TREN LIGERO": "weekend_mode_tren_ligero",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | MI MACRO": "weekend_mode_mi_macro",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | MOTOCICLETA": "weekend_mode_motocicleta",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Taxi": "weekend_mode_taxi",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Taxi plataforma (Uber/Didi)": "weekend_mode_taxi_app",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Línea 1 Sitren": "weekend_mode_sitren_l1",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Línea 2 Sitren": "weekend_mode_sitren_l2",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Línea 3 Sitren": "weekend_mode_sitren_l3",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Mototaxi": "weekend_mode_mototaxi",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Transporte de personal": "weekend_mode_transp_personal",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Servicio suburbano": "weekend_mode_serv_suburbano",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Transporte escolar": "weekend_mode_transp_escolar",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Transporte informal": "weekend_mode_transp_informal",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Transporte escolar particular": "weekend_mode_escolar_particular",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Taxi colectivo": "weekend_mode_taxi_colectivo",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Mi Bici": "weekend_mode_mi_bici",
+        "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Bicicleta": "weekend_mode_bicicleta",
+
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Trabajar": "weekend_dest_trabajar",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Estudiar": "weekend_dest_estudiar",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Compras (comida)": "weekend_dest_compras_comida",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Compras (bienes, productos y servicios)": "weekend_dest_compras_bienes_servicios",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Visitar a alguien": "weekend_dest_visitar",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Deportes o recreación": "weekend_dest_recreacion",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Llevar o recoger a alguien": "weekend_dest_llevar_recoger",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Hacer un trámite": "weekend_dest_tramite",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Al médico o atención de salud": "weekend_dest_salud",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Pagar algún servicio o al banco": "weekend_dest_banco_pagos",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Guardería": "weekend_dest_guarderia",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Regresar a Casa": "weekend_dest_regresar_casa",
+        "¿Cuáles son los principales destinos de los viajes en fin de semana? | Religión": "weekend_dest_religion",
+
+        "Ponderador": "ponderador"
+    },
+
+    "viajes": {
+        "Folio Vivienda": "folio_vivienda",
+        "Folio Habitante": "folio_habitante",
+        "Folio Viaje": "folio_viaje",
+        "Fecha": "fecha",
+        "Municipio": "municipio",
+        "AGEB": "ageb",
+        "Centralidad": "centralidad",
+        "Día de la semana que realizó los viajes:": "dia_semana_viajes",
+
+        "¿En qué tipo de lugar inició su primer viaje?": "tipo_lugar_origen",
+        "Origen": "origen",
+        "Zona origen": "zona_origen",
+
+        "¿A qué hora comenzó su viaje? | Hora de inicio | Horas": "hora_inicio_h",
+        "¿A qué hora comenzó su viaje? | Hora de inicio | Minutos": "hora_inicio_m",
+
+        "Motivo de su viaje": "motivo_viaje",
+        "¿A qué tipo de lugar llegó en su viaje?": "tipo_lugar_destino",
+        "Destino": "destino",
+        "Zona Destino": "zona_destino",
+
+        "Traslados en el viaje": "n_traslados",
+        "Medio del viaje": "modo_principal",
+
+        "Traslados que utilizó para su viaje: | Traslado 1 | Medio": "traslado1_medio",
+        "Traslados que utilizó para su viaje: | Traslado 1 | Minutos": "traslado1_min",
+        "Traslados que utilizó para su viaje: | Traslado 1 | Pago (pesos)": "traslado1_pago",
+        "Traslados que utilizó para su viaje: | Traslado 2 | Medio": "traslado2_medio",
+        "Traslados que utilizó para su viaje: | Traslado 2 | Minutos": "traslado2_min",
+        "Traslados que utilizó para su viaje: | Traslado 2 | Pago (pesos)": "traslado2_pago",
+        "Traslados que utilizó para su viaje: | Traslado 3 | Medio": "traslado3_medio",
+        "Traslados que utilizó para su viaje: | Traslado 3 | Minutos": "traslado3_min",
+        "Traslados que utilizó para su viaje: | Traslado 3 | Pago (pesos)": "traslado3_pago",
+        "Traslados que utilizó para su viaje: | Traslado 4 | Medio": "traslado4_medio",
+        "Traslados que utilizó para su viaje: | Traslado 4 | Minutos": "traslado4_min",
+        "Traslados que utilizó para su viaje: | Traslado 4 | Pago (pesos)": "traslado4_pago",
+        "Traslados que utilizó para su viaje: | Traslado 5 | Medio": "traslado5_medio",
+        "Traslados que utilizó para su viaje: | Traslado 5 | Minutos": "traslado5_min",
+        "Traslados que utilizó para su viaje: | Traslado 5 | Pago (pesos)": "traslado5_pago",
+
+        "¿Cuántos minutos duró su viaje sumando todos los traslados?": "duracion_total_min",
+
+        "¿Viajó sólo o acompañado en su viaje?": "viajo_acompanado",
+        "¿Con quién viajó?": "con_quien_viajo",
+
+        "¿Viajó como conductor o acompañante?": "rol_en_vehiculo",
+        "¿Cuántas personas iban en el auto o moto al inicio del viaje?": "ocupantes_auto_moto",
+
+        "¿Viajó otra persona que no vive en el mismo hogar?": "acompanante_fuera_hogar",
+
+        "¿Dónde se estacionó?": "estacionamiento_lugar",
+        "¿Pagó por estacionarse?": "pago_estacionamiento",
+        "¿Cuántos pesos pagó en total por estacionarse?": "estacionamiento_pago_total",
+        "¿El pago fue formal o informal?": "estacionamiento_pago_tipo",
+        "¿Con qué frecuencia paga el estacionamiento?": "estacionamiento_frecuencia",
+
+        "Parentesco": "parentesco",
+        "Sexo de nacimiento": "sexo_nacimiento",
+        "Género con el que se identifica:": "genero_identidad",
+        "Grupo de Edad": "grupo_edad",
+        "Edad": "edad",
+        "Estado civil": "estado_civil",
+        "Escolaridad": "escolaridad",
+        "Durante la semana pasada trabajó:": "trabajo_semana_pasada",
+        "Ocupación:": "ocupacion",
+        "Giro de la empresa donde trabaja:": "giro_empresa",
+        "¿Tiene alguna discapacidad?": "tiene_discapacidad",
+        "¿Qué tipo de discapacidad?": "tipo_discapacidad",
+
+        "Ponderador": "ponderador"
+    },
+
+    "viviendas": {
+        "Folio Vivienda": "folio_vivienda",
+        "Fecha": "fecha",
+        "Municipio": "municipio",
+        "AGEB": "ageb",
+        "Centralidad": "centralidad",
+
+        "En su opinión, ¿Cuál es el principal problema de movilidad en sus traslados en la zona donde vive?": "problema_movilidad_principal",
+        "Y con respecto al TRANSPORTE PÚBLICO, ¿Cuál considera que es el principal problema de la zona donde vive?": "problema_tp_principal",
+
+        "Incluyéndolo, ¿cuántas personas viven permanentemente en su vivienda contando a los bebés y personas adultas mayores?": "personas_en_vivienda",
+
+        "Esta casa es?": "tenencia_vivienda",
+        "¿Ingresos mensuales de todas las personas que habitan en la vivienda y aportan gastos al hogar?": "ingreso_mensual_hogar",
+
+        "¿Cuántos ... tienen en esta vivienda? | Vehículos (autos o camionetas)": "n_autos_camionetas",
+        "¿Cuántos ... tienen en esta vivienda? | Motocicletas o motonetas": "n_motos",
+        "¿Cuántos ... tienen en esta vivienda? | Bicicletas": "n_bicicletas",
+
+        "¿Dónde estacionan los vehículos?": "donde_estacionan",
+        "Persona del hogar que fue el informante principal": "informante_principal",
+
+        "¿En su vivienda tienen acceso a internet?": "tiene_internet",
+        "En su hogar, ¿Estarían dispuestos a participar en este mismo tipo de estudio en el futuro?": "dispuesto_participar_futuro",
+
+        "Ponderador": "ponderador"
+    }
+    ,
+    "ordinal_habitantes": {
+        "salio_casa_ayer": [ "No", "Sí" ],
+
+        "razon_no_viaje": [
+            "Otros (especifique)",
+            "Descanso o periodo vacacional",
+            "Maternidad",
+            "Actividades pendientes en casa",
+            "Trabaja desde casa",
+            "Por problemas permanentes de salud",
+            "Por discapacidad",
+            "Por problemas temporales de salud",
+            "Para cuidar a un enfermo",
+            "Adulto Mayor",
+            "Desempleado",
+            "Cuida persona"
+        ],
+
+        "viajes_contados": [ "7", "6", "4", "5", "2", "0", "3", "1" ],
+
+        "dia_semana_viajes": [ "Jueves", "Martes", "Lunes", "Viernes", "Miércoles" ],
+
+        "parentesco": [
+            "Jefe del hogar",
+            "Cónyuge",
+            "Hijo",
+            "Otro parentesco",
+            "Compañero",
+            "Nieto",
+            "Sin parentesco"
+        ],
+
+        "sexo_nacimiento": [ "Hombres", "Mujeres" ],
+        "genero_identidad": [ "Hombres", "Mujeres", "No binario" ],
+
+        "grupo_edad": [ "0-11", "12-17", "18-34", "35-54", "55 y +" ],
+
+        "estado_civil": [
+            "Casado",
+            "Soltero",
+            "Unión libre",
+            "Viudo",
+            "Divorciado",
+            "Separado",
+            "Otros (especifique)"
+        ],
+
+
+        "escolaridad": [
+            "Maestría o doctorado",
+            "Licenciatura o profesional",
+            "Preparatoria o bachillerato",
+            "Primaria",
+            "Carrera técnica con preparatoria terminada",
+            "Secundaria",
+            "Carrera técnica con secundaria terminada",
+            "Ninguno",
+            "Kinder",
+            "Preescolar",
+            "No sabe",
+            "Normal básica"
+        ],
+
+        "trabajo_semana_pasada": [
+            "Tiempo completo",
+            "Se dedica a los quehaceres del hogar o a cuidar a sus hijos",
+            "Es estudiante",
+            "No trabajo",
+            "Busco trabajo",
+            "Medio tiempo",
+            "Es jubilado o pensionado",
+            "Está incapacitado permanentemente para trabajar",
+            "Tenía trabajo, pero no trabajó"
+        ],
+
+        "ocupacion": [
+            "Patrón o empresario",
+            "Hogar",
+            "Estudiante",
+            "Empleado",
+            "Trabajador independiente",
+            "Desempleado",
+            "Jubilado o pensionado",
+            "Trabajador del campo",
+            "Persona trabajadora del hogar",
+            "Profesor"
+        ],
+
+        "giro_empresa": [ "Servicio", "Comercio", "Industria", "Gobierno/sector público", "Educación" ],
+
+        "tiene_discapacidad": [ "No", "Sí" ],
+
+        "tipo_discapacidad": [
+            "Visual",
+            "Física o motora",
+            "Auditiva",
+            "Psicosocial",
+            "Intelectual",
+            "Múltiple",
+            "Sensorial"
+        ],
+
+        "requiere_acompanamiento": [ "No", "Sí" ],
+
+        "razon_acompanamiento": [
+            "Discapacidad permanente",
+            "Problemas de vista",
+            "Problemas de movilidad/discapacidad temporal",
+            "Edad avanzada",
+            "Es un infante",
+            "Down/Autismo",
+            "No escucha",
+            "Otros (especifique)"
+        ],
+
+        "quien_apoya_viajes": [
+            "Otro familiar",
+            "Papá",
+            "Hijo",
+            "Hermano(a)",
+            "Cónyuge",
+            "Hija",
+            "Mamá",
+            "Pareja",
+            "Amiga",
+            "Enfermera/Pensión",
+            "Otros (especifique)",
+            "Amigo",
+            "Abuelo(a)"
+        ],
+
+        "weekend_mode_a_pie": [ "No", "Sí" ],
+        "weekend_mode_camion_autobus": [ "No", "Sí" ],
+        "weekend_mode_auto_particular": [ "No", "Sí" ],
+        "weekend_mode_tren_ligero": [ "No", "Sí" ],
+        "weekend_mode_mi_macro": [ "No", "Sí" ],
+        "weekend_mode_motocicleta": [ "No", "Sí" ],
+        "weekend_mode_taxi": [ "No", "Sí" ],
+        "weekend_mode_taxi_app": [ "No", "Sí" ],
+        "weekend_mode_sitren_l1": [ "No", "Sí" ],
+        "weekend_mode_sitren_l2": [ "No", "Sí" ],
+        "weekend_mode_sitren_l3": [ "No", "Sí" ],
+        "weekend_mode_mototaxi": [ "No", "Sí" ],
+        "weekend_mode_transp_personal": [ "No", "Sí" ],
+        "weekend_mode_serv_suburbano": [ "No", "Sí" ],
+        "weekend_mode_transp_escolar": [ "No", "Sí" ],
+        "weekend_mode_transp_informal": [ "No", "Sí" ],
+        "weekend_mode_escolar_particular": [ "No", "Sí" ],
+        "weekend_mode_taxi_colectivo": [ "No", "Sí" ],
+        "weekend_mode_mi_bici": [ "No", "Sí" ],
+        "weekend_mode_bicicleta": [ "No", "Sí" ],
+
+        "weekend_dest_trabajar": [ "No", "Sí" ],
+        "weekend_dest_estudiar": [ "No", "Sí" ],
+        "weekend_dest_compras_comida": [ "No", "Sí" ],
+        "weekend_dest_compras_bienes_servicios": [ "No", "Sí" ],
+        "weekend_dest_visitar": [ "No", "Sí" ],
+        "weekend_dest_recreacion": [ "No", "Sí" ],
+        "weekend_dest_llevar_recoger": [ "No", "Sí" ],
+        "weekend_dest_tramite": [ "No", "Sí" ],
+        "weekend_dest_salud": [ "No", "Sí" ],
+        "weekend_dest_banco_pagos": [ "No", "Sí" ],
+        "weekend_dest_guarderia": [ "No", "Sí" ],
+        "weekend_dest_regresar_casa": [ "No", "Sí" ],
+        "weekend_dest_religion": [ "No", "Sí" ]
+
+    }
+    ,
+    "ordinal_viviendas": {
+        "problema_movilidad_principal": [
+            "Congestionamiento",
+            "Pavimento deteriorado",
+            "Vialidades insuficientes",
+            "Falta de señalamientos",
+            "Falta de cruces peatonales",
+            "Insuficiente transporte público",
+            "Falta de ciclovías",
+            "Falta de estacionamiento",
+            "Tiempos excesivos de traslado",
+            "Calles inundadas"
+        ],
+
+        "problema_tp_principal": [
+            "El sobrecupo de personas en las unidades del transporte",
+            "La distancia a las paradas",
+            "Poca frecuencia de paso en la noche",
+            "Trato del/de la chofer",
+            "Falta de cubiertas para espera en las paradas",
+            "El costo del viaje",
+            "La falta de comodidad de las unidades del transporte",
+            "El tiempo de duración de viaje",
+            "Poca frecuencia de paso en el día",
+            "Falta de información de rutas",
+            "Conducción del/ de la chofer"
+        ],
+
+        "personas_en_vivienda": [ "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 y +" ],
+
+        "tenencia_vivienda": [ "Rentada", "Prestada", "Propia", "Hipotecada", "Otros" ],
+
+        "ingreso_mensual_hogar": [
+            "Sin ingresos",
+            "Hasta $1,500",
+            "$1,501 y $3,000",
+            "$3,001 y $7,000",
+            "$7,001 y $10,000",
+            "$10,001 y $15,000",
+            "$15,001 y $25,000",
+            "Más de $25,001",
+            "No sabe",
+            "No quiso responder"
+        ],
+
+        "n_autos_camionetas": [ "0", "1", "2", "3", "4 o más" ],
+        "n_motos": [ "0", "1", "2", "3", "4 o más" ],
+        "n_bicicletas": [ "0", "1", "2", "3", "4 o más" ],
+
+        "donde_estacionan": [
+            "En la calle, afuera de la casa",
+            "En la cochera de la casa",
+            "En la calle, pero no frente a mi casa",
+            "Estacionamiento privado",
+            "Otro lugar, ¿dónde?",
+            "Estacionamiento público",
+            "Pensión"
+        ],
+
+        "informante_principal": [
+            "Jefe del hogar",
+            "Otro parentesco",
+            "Hijo",
+            "Cónyuge",
+            "Nieto",
+            "Compañero",
+            "Sin parentesco"
+        ],
+
+        "tiene_internet": [ "No", "Sí" ],
+        "dispuesto_participar_futuro": [ "No", "Sí" ]
+
+    }
+    ,
+    "ordinal_viajes": {
+        "dia_semana_viajes": [ "Jueves", "Martes", "Lunes", "Viernes", "Miércoles" ],
+
+        "tipo_lugar_origen": [
+            "Su casa",
+            "Comercio, mercado, tienda o centro comercial",
+            "Fábrica o taller",
+            "Escuela",
+            "Oficina",
+            "Deportivo, gimnasio",
+            "Hospital, clínica, consultorio, laboratorio clínico",
+            "Otros (especifique)",
+            "Otra vivienda",
+            "Centro cultural o área recreativa",
+            "Restaurante, bar, cafetería"
+        ],
+
+        "motivo_viaje": [
+            "Llevar o recoger a alguien",
+            "Regresar a Casa",
+            "Trabajar",
+            "Compras (bienes, productos y servicios)",
+            "Compras (comida)",
+            "Al médico o atención de salud",
+            "Estudiar",
+            "Visitar a alguien",
+            "Deportes o recreación",
+            "Pagar algún servicio o al banco",
+            "Otros (especifique)",
+            "Hacer un trámite",
+            "Guardería"
+        ],
+
+        "tipo_lugar_destino": [
+            "Escuela",
+            "Su casa",
+            "Oficina",
+            "Comercio, mercado, tienda o centro comercial",
+            "Hospital, clínica, consultorio, laboratorio clínico",
+            "Otra vivienda",
+            "Centro cultural o área recreativa",
+            "Fábrica o taller",
+            "Restaurante, bar, cafetería",
+            "Otros (especifique)",
+            "Deportivo, gimnasio"
+        ],
+
+        "n_traslados": [ "1", "2", "3", "4", "5" ],
+
+        "modo_principal": [
+            "AUTOMÓVIL PARTICULAR",
+            "TREN LIGERO",
+            "A PIE",
+            "CAMIÓN O AUTOBÚS",
+            "Línea 2 Sitren",
+            "Taxi plataforma (Uber/Didi)",
+            "MI MACRO",
+            "Bicicleta",
+            "MOTOCICLETA",
+            "Taxi",
+            "Transporte de personal",
+            "Transporte escolar",
+            "Transporte escolar particular",
+            "Mi Bici",
+            "Servicio suburbano",
+            "Taxi colectivo",
+            "Transporte informal",
+            "Línea 1 Sitren",
+            "Línea 3 Sitren",
+            "Mototaxi"
+        ],
+
+        "traslado1_medio": [
+            "A PIE", "AUTOMÓVIL PARTICULAR", "CAMIÓN O AUTOBÚS", "Taxi plataforma (Uber/Didi)",
+            "MI MACRO", "Bicicleta", "TREN LIGERO", "MOTOCICLETA", "Taxi", "Mi Bici",
+            "Transporte de personal", "Transporte escolar", "Transporte escolar particular",
+            "Línea 2 Sitren", "Servicio suburbano", "Taxi colectivo", "Transporte informal",
+            "Línea 1 Sitren", "Mototaxi", "Línea 3 Sitren"
+        ],
+        "traslado2_medio": [
+            "AUTOMÓVIL PARTICULAR", "A PIE", "TREN LIGERO", "CAMIÓN O AUTOBÚS", "Línea 2 Sitren",
+            "MI MACRO", "Mi Bici", "Transporte de personal", "Bicicleta", "Taxi plataforma (Uber/Didi)",
+            "MOTOCICLETA", "Taxi", "Línea 1 Sitren", "Línea 3 Sitren", "Mototaxi",
+            "Servicio suburbano", "Taxi colectivo", "Transporte escolar"
+        ],
+        "traslado3_medio": [
+            "A PIE", "CAMIÓN O AUTOBÚS", "AUTOMÓVIL PARTICULAR", "TREN LIGERO", "MI MACRO",
+            "Taxi plataforma (Uber/Didi)", "Taxi", "MOTOCICLETA", "Línea 2 Sitren", "Mi Bici",
+            "Línea 3 Sitren", "Taxi colectivo", "Mototaxi", "Línea 1 Sitren", "Bicicleta",
+            "Transporte de personal", "Servicio suburbano"
+        ],
+        "traslado4_medio": [
+            "A PIE", "AUTOMÓVIL PARTICULAR", "CAMIÓN O AUTOBÚS", "TREN LIGERO", "MI MACRO", "Mi Bici",
+            "Línea 1 Sitren", "Transporte informal", "MOTOCICLETA", "Mototaxi", "Bicicleta",
+            "Taxi plataforma (Uber/Didi)", "Línea 3 Sitren", "Servicio suburbano",
+            "Transporte de personal", "Taxi"
+        ],
+
+        "traslado5_medio": [
+            "A PIE", "CAMIÓN O AUTOBÚS", "AUTOMÓVIL PARTICULAR", "MI MACRO",
+            "Taxi plataforma (Uber/Didi)", "Taxi", "Mi Bici", "Transporte informal",
+            "MOTOCICLETA", "Bicicleta", "Mototaxi", "Transporte de personal",
+            "Línea 3 Sitren", "TREN LIGERO"
+        ],
+
+        "duracion_total_min": [
+            "Menos de 6",
+            "6 a 10",
+            "11 a 15",
+            "16 a 30",
+            "31 a 45",
+            "46 a 60",
+            "61 a 90",
+            "91 a 120",
+            "121 y +"
+        ],
+
+        "viajo_acompanado": [ "Acompañado todos los traslados", "Sólo", "Acompañado algunos traslados" ],
+        "con_quien_viajo": [ "Bebés, niños(as) menores de edad", "Otra persona", "Personas que requieren apoyo para sus traslados" ],
+        "rol_en_vehiculo": [ "Conductor", "Acompañante" ],
+
+        "ocupantes_auto_moto": [ "1", "2", "3", "4", "5", "6 o más" ],
+
+        "acompanante_fuera_hogar": [ "No", "Sí" ],
+
+        "estacionamiento_lugar": [
+            "No me estacioné",
+            "Cochera propia",
+            "Vía pública",
+            "Estacionamiento privado",
+            "Estacionamiento público",
+            "No sé"
+        ],
+
+        "pago_estacionamiento": [ "No", "Sí", "No sé" ],
+
+        "estacionamiento_pago_tipo": [ "Informal", "Formal" ],
+
+        "estacionamiento_frecuencia": [ "Por hora", "Por día", "Por mes", "Otra periocidad, ¿cuál?", "Por semana" ],
+
+        "parentesco": [ "Jefe del hogar", "Cónyuge", "Hijo", "Otro parentesco", "Nieto", "Compañero", "Sin parentesco" ],
+        "sexo_nacimiento": [ "Hombres", "Mujeres" ],
+        "genero_identidad": [ "Hombres", "Mujeres", "No binario" ],
+        "grupo_edad": [ "0-11", "12-17", "18-34", "35-54", "55 y +" ],
+        "estado_civil": [ "Casado", "Soltero", "Unión libre", "Viudo", "Separado", "Divorciado", "Otros (especifique)" ],
+
+        "escolaridad": [
+            "Ninguno",
+            "Preescolar",
+            "Kinder",
+            "Primaria",
+            "Secundaria",
+            "Carrera técnica con secundaria terminada",
+            "Carrera técnica con preparatoria terminada",
+            "Preparatoria o bachillerato",
+            "Licenciatura o profesional",
+            "Maestría o doctorado",
+            "Normal básica",
+            "No sabe"
+        ],
+
+        "trabajo_semana_pasada": [
+            "Tiempo completo",
+            "Se dedica a los quehaceres del hogar o a cuidar a sus hijos",
+            "Es estudiante",
+            "No trabajo",
+            "Es jubilado o pensionado",
+            "Medio tiempo",
+            "Busco trabajo",
+            "Está incapacitado permanentemente para trabajar",
+            "Tenía trabajo, pero no trabajó"
+        ],
+
+        "ocupacion": [
+            "Patrón o empresario",
+            "Hogar",
+            "Estudiante",
+            "Empleado",
+            "Trabajador independiente",
+            "Jubilado o pensionado",
+            "Trabajador del campo",
+            "Desempleado",
+            "Profesor",
+            "Persona trabajadora del hogar"
+        ],
+        "giro_empresa": [ "Servicio", "Comercio", "Industria", "Gobierno/sector público", "Educación" ],
+
+        "tiene_discapacidad": [ "No", "Sí" ],
+        "tipo_discapacidad": [ "Visual", "Física o motora", "Auditiva", "Intelectual", "Psicosocial", "Múltiple", "Sensorial" ]
+
+    }
+}
