@@ -13,6 +13,10 @@ wheels/
 # Notebook-generated artifacts
 /outputs/
 
+# Large public report PDF (148 MB, over GitHub's file-size limit; kept locally only).
+# Download from https://www.imeplan.mx/plataformas-de-informacion/visualizador-eod
+/data/Informe_Final_al_publico_EOD_2023.pdf
+
 # OS junk
 .DS_Store
 
