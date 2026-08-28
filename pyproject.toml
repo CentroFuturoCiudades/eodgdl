@@ -45,7 +45,7 @@ dev = ["pytest>=8.0"]
 eodgdl = "eodgdl._cli:main"
 
 [tool.uv.sources]
-mxcensus = { git = "https://github.com/CentroFuturoCiudades/mxcensus" }
+mxcensus = { git = "https://github.com/CentroFuturoCiudades/mxcensus.git", rev = "v0.2.0" }
 
 [build-system]
 requires = ["uv_build>=0.8.18,<0.9.0"]
