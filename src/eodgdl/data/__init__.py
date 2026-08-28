@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from eodgdl.data._catalog import FILES, SURVEY_FILES, ZONE_FILES
+from eodgdl.data._catalog import FILES, MODEL_FILES, SURVEY_FILES, ZONE_FILES
 from eodgdl.data._paths import get_data_dir, get_pooch_cache_dir
 from eodgdl.data._registry import POOCH
 
@@ -35,4 +35,5 @@ __all__ = [
     "FILES",
     "SURVEY_FILES",
     "ZONE_FILES",
+    "MODEL_FILES",
 ]

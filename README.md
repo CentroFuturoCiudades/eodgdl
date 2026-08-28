@@ -74,3 +74,29 @@ reference.
 A small number of manual data-entry corrections are applied by the loaders (encoded as
 documented constants in `eod.py` and `taz.py`): three trip-mode fixes, two micro-zone
 population double-count adjustments, and three AGEB `MZONA` reassignments.
+
+## Giro imputation model (`eodgdl[giro]`)
+
+Most workers in the survey did not report the activity of their employer (`giro_empresa`). The optional
+`eodgdl.giro` subpackage imputes it within the survey: a hybrid (with / without education) scikit-learn model
+trained on the workers with an observed giro, using raw survey columns, the work-trip destination and mode, and
+the destination's DENUE establishment mix (DENUE and the Marco Geoestadístico are fetched through `mxcensus`).
+It predicts the five native levels — Comercio, Servicio, Educación, Industria, Gobierno/sector público — and keeps
+the full probability vector (`prob_giro_<slug>`); `giro_final` is the arg-max.
+
+```bash
+uv add "eodgdl[giro]"
+```
+
+```python
+import eodgdl
+from eodgdl import giro
+
+workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the data mirror on first use
+workers[giro.OUTPUT_COLUMNS].head()
+```
+
+The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`)
+is trained and evaluated in `notebooks/giro_model.ipynb` (household-grouped cross-validation, one-standard-error
+model selection, calibration, covariate-shift sensitivity); after retraining, update its sha256 in
+`src/eodgdl/data/registry.txt`.

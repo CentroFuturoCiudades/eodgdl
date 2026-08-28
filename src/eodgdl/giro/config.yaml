@@ -1,0 +1,64 @@
+# Configuration of the OD economic-activity ("giro") imputation model. Everything here is native to the EOD
+# survey and DENUE; nothing refers to ENOE. Loaded by giro/_config.py.
+
+# `giro_empresa` labels -> slugs used in column names (prob_giro_<slug>, dest_share_<slug>).
+giro_levels:
+  Comercio: comercio
+  Servicio: servicio
+  Educación: educacion
+  Industria: industria
+  Gobierno/sector público: gobierno
+
+employed_categories:          # `trabajo_semana_pasada` levels that define a worker
+  - Tiempo completo
+  - Medio tiempo
+  - Tenía trabajo, pero no trabajó
+work_trip_purpose: Trabajar   # `motivo_viaje` of the trips whose destination describes the workplace
+missing_education_levels: ["No sabe"]   # besides NA; rows with missing education use the without-education model
+missing_label: no_especificado          # label given to missing categorical values inside the pipelines
+
+# Columns of `viv` attached to each person (only those not already in `hab`).
+dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]
+
+features:
+  # Person and dwelling attributes (eodgdl names). `edad` is numeric; everything else categorical.
+  person: [sexo_nacimiento, edad, escolaridad, municipio, estado_civil, parentesco, personas_en_vivienda, ocupacion, trabajo_semana_pasada, centralidad]
+  # Work-trip destination: destination type, its ámbito and the DENUE establishment mix at the destination
+  # AGEB/locality (dest_share_<giro> columns are appended in code).
+  destination: [destino_trabajo, destino_ambito, dest_establecimientos_log, dest_share_grandes]
+  # Mode of the work trip, weekend work destination, household vehicles.
+  mobility: [modo_trabajo, weekend_dest_trabajar, n_autos_camionetas]
+  numeric: [edad, dest_establecimientos_log, dest_share_grandes]   # + dest_share_<giro>
+  # Covariate-shift sensitivity profile between known- and unknown-giro workers (education excluded).
+  shift_profile: [sexo_nacimiento, edad, municipio, estado_civil, parentesco, personas_en_vivienda, ocupacion, trabajo_semana_pasada]
+
+destination:
+  state_code: 14              # DENUE and Marco Geoestadístico state (Jalisco)
+  denue_release: "202211"     # November 2022: the DENUE snapshot closest to (and before) the OD fieldwork of Jan-Apr 2023
+  ambito_levels: [ageb_urbana, localidad_rural, aeropuerto, fuera_zm, desconocido]
+  small_establishment_levels: ["0 a 5 personas", "6 a 10 personas"]   # DENUE `per_ocu` strata counted as small
+  # DENUE `codigo_act` first two digits (SCIAN sector) -> giro slug, for the establishment-mix shares.
+  denue_scian2:
+    11: industria    # Agricultura, cría y explotación de animales, aprovechamiento forestal, pesca y caza (primary production)
+    21: industria    # Minería
+    22: industria    # Generación, transmisión y distribución de energía eléctrica, agua y gas
+    23: industria    # Construcción
+    31: industria    # Industrias manufactureras
+    32: industria    # Industrias manufactureras
+    33: industria    # Industrias manufactureras
+    43: comercio     # Comercio al por mayor
+    46: comercio     # Comercio al por menor
+    48: servicio     # Transportes, correos y almacenamiento
+    49: servicio     # Transportes, correos y almacenamiento
+    51: servicio     # Información en medios masivos
+    52: servicio     # Servicios financieros y de seguros
+    53: servicio     # Servicios inmobiliarios y de alquiler
+    54: servicio     # Servicios profesionales, científicos y técnicos
+    55: servicio     # Corporativos
+    56: servicio     # Servicios de apoyo a los negocios y manejo de residuos
+    61: educacion    # Servicios educativos
+    62: servicio     # Servicios de salud y de asistencia social
+    71: servicio     # Servicios de esparcimiento culturales y deportivos
+    72: servicio     # Servicios de alojamiento temporal y de preparación de alimentos
+    81: servicio     # Otros servicios excepto actividades gubernamentales
+    93: gobierno     # Actividades legislativas, gubernamentales y de justicia

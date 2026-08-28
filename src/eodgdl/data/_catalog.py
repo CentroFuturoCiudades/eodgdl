@@ -15,6 +15,10 @@ ZONIFICACION_PARQUET = "AMG_Zonificacion_para_encuesta.parquet"
 MICROZONAS_PARQUET = "AMG_MicroZONAS2023.parquet"
 AGEBS_ZONA_PARQUET = "RELACION_AGEBS-ZONA_con_datos_censales.parquet"
 
+# Fitted giro-imputation bundle (eodgdl.giro; scikit-learn pickle, see the sklearn version in its metadata)
+GIRO_MODEL_JOBLIB = "od_giro_hybrid_model.joblib"
+
 SURVEY_FILES = [VIVIENDAS_CSV, HABITANTES_CSV, VIAJES_CSV]
 ZONE_FILES = [ZONIFICACION_PARQUET, MICROZONAS_PARQUET, AGEBS_ZONA_PARQUET]
-FILES = SURVEY_FILES + ZONE_FILES
+MODEL_FILES = [GIRO_MODEL_JOBLIB]
+FILES = SURVEY_FILES + ZONE_FILES + MODEL_FILES

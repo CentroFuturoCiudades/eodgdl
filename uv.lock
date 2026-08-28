@@ -455,6 +455,12 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+giro = [
+    { name = "joblib" },
+    { name = "mxcensus" },
+    { name = "pyyaml" },
+    { name = "scikit-learn" },
+]
 notebook = [
     { name = "colorcet" },
     { name = "folium" },
@@ -472,9 +478,11 @@ requires-dist = [
     { name = "folium", marker = "extra == 'notebook'", specifier = ">=0.20" },
     { name = "geopandas", specifier = ">=1.1.2" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.29" },
+    { name = "joblib", marker = "extra == 'giro'", specifier = ">=1.5" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "mapclassify", marker = "extra == 'notebook'", specifier = ">=2.10" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
+    { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus" },
     { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=3.0.0" },
@@ -483,10 +491,12 @@ requires-dist = [
     { name = "pooch", specifier = ">=1.8" },
     { name = "pyarrow", specifier = ">=18.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", marker = "extra == 'giro'", specifier = ">=6.0" },
+    { name = "scikit-learn", marker = "extra == 'giro'", specifier = ">=1.9.0" },
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13" },
     { name = "tqdm", specifier = ">=4.67" },
 ]
-provides-extras = ["notebook", "dev"]
+provides-extras = ["notebook", "giro", "dev"]
 
 [[package]]
 name = "executing"
@@ -1502,7 +1512,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "ptyprocess" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
