@@ -1,0 +1,706 @@
+---
+title: "Expansion factors in the EOD 2023"
+subtitle: "How the survey weights nest across dwellings, persons, and trips"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import os
+from pathlib import Path
+
+
+def _find_data_dir() -> Path:
+    """Walk up from the working dir to locate the repo's data/ folder."""
+    marker = "IMEPLAN_Base_Viviendas_Master.csv"
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        cand = base / "data"
+        if (cand / marker).exists():
+            return cand.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl data/ directory.")
+
+
+# Point every eodgdl loader at the committed local copy of the data.
+os.environ.setdefault("EODGDL_DATA_DIR", str(_find_data_dir()))
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from eodgdl import load_eod
+
+plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
+
+BLUE, ORANGE, GREY = "#2c7fb8", "#e6550d", "#969696"
+
+
+def fmt(n) -> str:
+    """Thousands-separated integer string."""
+    return f"{round(float(n)):,}"
+```
+
+```{python}
+#| label: load
+#| include: false
+
+viv, hab, trips, legs = load_eod()
+v, h, t = viv.reset_index(), hab.reset_index(), trips.reset_index()
+
+BUS = "CAMIÓN O AUTOBÚS"
+BIKE = ["Bicicleta", "Mi Bici"]
+
+# Published calibration constants, Informe Técnico Final EOD 2023, p. 16.
+BIKE_REPORT = {
+    "Guadalajara": 1.25, "Ixtlahuacán de los Membrillos": 2.33, "Juanacatlán": 0.96,
+    "El Salto": 1.98, "Tlajomulco": 1.71, "Tlaquepaque": 1.02, "Tonalá": 0.89,
+    "Zapopan": 1.85, "Zapotlanejo": 3.68,
+}
+BUS_FACTOR = 0.56767147
+BUS_TARGET = 1_851_750     # SETRAN 2023 daily boardings
+BUS_PREVIO = 3_262_010     # the report's own pre-calibration figure
+
+tot_viv, tot_hab, tot_trips = (int(x.ponderador.sum()) for x in (viv, hab, trips))
+```
+
+```{python}
+#| label: stage1
+#| include: false
+
+# Stage 1 is a per-centralidad ratio, so the dwelling weight should be constant
+# within a centralidad.
+cen = v.groupby(v.centralidad.astype(str)).ponderador.nunique()
+n_cen, n_cen_single = len(cen), int((cen == 1).sum())
+```
+
+```{python}
+#| label: stage2
+#| include: false
+
+per = h.merge(v[["folio_vivienda", "ponderador", "municipio"]],
+              on="folio_vivienda", suffixes=("_hab", "_viv"))
+per["municipio"] = per.municipio.astype(str)
+per["ratio"] = per.ponderador_hab / per.ponderador_viv
+per["changed"] = per.ponderador_hab != per.ponderador_viv
+
+# "Cyclist" as the data can see it: made at least one trip whose main mode is a bicycle.
+cyclists = set(map(tuple, t.loc[t.modo_principal.isin(BIKE),
+                                ["folio_vivienda", "folio_habitante"]]
+                          .drop_duplicates().values))
+per["cyclist"] = [(a, b) in cyclists for a, b in zip(per.folio_vivienda, per.folio_habitante)]
+
+n_persons = len(per)
+n_changed = int(per.changed.sum())
+n_unchanged = n_persons - n_changed
+n_dwell_changed = int(per.loc[per.changed, "folio_vivienda"].nunique())
+n_cyclists = len(cyclists)
+n_cyc_unchanged = int((per.cyclist & ~per.changed).sum())
+
+# Every reweighted person made a bicycle trip — the reweighted set is a strict subset.
+assert per.loc[per.changed, "cyclist"].all()
+
+bike_tbl = (
+    per[per.changed]
+    .groupby("municipio")
+    .agg(Cyclists=("ratio", "size"), Recovered=("ratio", "median"))
+    .assign(Published=lambda d: d.index.map(BIKE_REPORT))
+    .sort_values("Published", ascending=False)[["Cyclists", "Published", "Recovered"]]
+)
+bike_max_err = float((bike_tbl.Recovered - bike_tbl.Published).abs().max())
+
+# Of the bicycle-trip makers left unreweighted, how many can rounding account for?
+unc = per[per.cyclist & ~per.changed].copy()
+unc["f"] = unc.municipio.map(BIKE_REPORT).astype(float)
+unc["rounds_same"] = np.round(unc.ponderador_viv * unc.f).astype(int) == unc.ponderador_viv
+n_round_explained = int(unc.rounds_same.sum())
+n_unexplained = len(unc) - n_round_explained
+unexplained_wmax = int(unc.loc[~unc.rounds_same, "ponderador_viv"].max())
+
+# Closest recoverable definition of the reweighted set.
+alt = set(map(tuple, t.loc[t.modo_principal.eq("Bicicleta"),
+                           ["folio_vivienda", "folio_habitante"]].drop_duplicates().values))
+target = set(map(tuple, per.loc[per.changed, ["folio_vivienda", "folio_habitante"]].values))
+alt_extra, alt_missing = len(alt - target), len(target - alt)
+```
+
+```{python}
+#| label: stage3
+#| include: false
+
+tr = t.merge(h[["folio_vivienda", "folio_habitante", "ponderador"]],
+             on=["folio_vivienda", "folio_habitante"], how="left",
+             suffixes=("_trip", "_hab"))
+tr["is_bus"] = tr.modo_principal.eq(BUS)
+n_bus = int(tr.is_bus.sum())
+n_nonbus = int((~tr.is_bus).sum())
+
+# Non-bus trips carry the person weight untouched.
+assert (tr.loc[~tr.is_bus, "ponderador_trip"] == tr.loc[~tr.is_bus, "ponderador_hab"]).all()
+
+bus_final = int(tr.loc[tr.is_bus, "ponderador_trip"].sum())
+bus_at_person = int(tr.loc[tr.is_bus, "ponderador_hab"].sum())
+bus_implied = bus_final / bus_at_person
+bus_overstate = bus_at_person / bus_final - 1
+
+pred = np.round(tr.loc[tr.is_bus, "ponderador_hab"] * BUS_FACTOR).astype(int)
+bus_exact = float((pred == tr.loc[tr.is_bus, "ponderador_trip"]).mean())
+bus_pm1 = float(((pred - tr.loc[tr.is_bus, "ponderador_trip"]).abs() <= 1).mean())
+
+mode_cmp = (
+    tr.groupby(tr.modo_principal.astype(str))
+      .agg(At_person=("ponderador_hab", "sum"), At_trip=("ponderador_trip", "sum"),
+           Trips=("folio_viaje", "size"))
+      .sort_values("At_trip", ascending=False)
+)
+mode_cmp = mode_cmp[mode_cmp.Trips >= 500]
+n_modes_shown = len(mode_cmp)
+n_modes_moved = int((mode_cmp.At_person != mode_cmp.At_trip).sum())
+```
+
+```{python}
+#| label: boardings
+#| include: false
+
+# Legs weighted by the PERSON weight — i.e. the bus volume the survey implies
+# before stage 3 touches anything.
+lp = legs.reset_index().merge(
+    h[["folio_vivienda", "folio_habitante", "ponderador"]],
+    on=["folio_vivienda", "folio_habitante"], how="left")
+
+bus_boardings_pw = int(lp.loc[lp.traslado_medio.astype(str).eq(BUS), "ponderador"].sum())
+boardings_per_trip = bus_boardings_pw / bus_at_person
+f_linked = BUS_TARGET / bus_at_person        # what IMEPLAN applied
+f_boardings = BUS_TARGET / bus_boardings_pw  # what a boardings reading would need
+
+# Bus legs hidden inside trips whose MAIN mode is something else.
+lt = legs.reset_index().merge(
+    t[["folio_vivienda", "folio_habitante", "folio_viaje", "modo_principal"]],
+    on=["folio_vivienda", "folio_habitante", "folio_viaje"], how="left").merge(
+    h[["folio_vivienda", "folio_habitante", "ponderador"]],
+    on=["folio_vivienda", "folio_habitante"], how="left")
+hidden = lt[lt.traslado_medio.astype(str).eq(BUS) & ~lt.modo_principal.eq(BUS)]
+bus_hidden_pw = int(hidden.ponderador.sum())
+hidden_modes = ", ".join(hidden.modo_principal.astype(str).value_counts().head(3).index)
+```
+
+```{python}
+#| label: agent-example
+#| include: false
+
+# A single dwelling in which all three weights disagree: a reweighted cyclist,
+# and a member who mixed bus with another mode.
+EX = 91
+ex_viv = int(v.loc[v.folio_vivienda == EX, "ponderador"].iloc[0])
+ex_per = per.loc[per.folio_vivienda == EX, ["folio_habitante", "ponderador_hab"]]
+ex_trips = t.loc[t.folio_vivienda == EX,
+                 ["folio_habitante", "folio_viaje", "modo_principal", "ponderador"]]
+ex_weights = sorted(set([ex_viv]) | set(ex_per.ponderador_hab) | set(ex_trips.ponderador))
+
+# Dwellings where a bike-reweighted person AND a mixed-mode person coexist, so all
+# three levels disagree at once.
+_pw = t.groupby(["folio_vivienda", "folio_habitante"]).ponderador.nunique()
+n_ex_dw = len(set(per.loc[per.changed, "folio_vivienda"])
+              & set(_pw[_pw > 1].reset_index().folio_vivienda))
+```
+
+```{python}
+#| label: variation
+#| include: false
+
+dw_multi = int((h.groupby("folio_vivienda").ponderador.nunique() > 1).sum())
+pp = tr.groupby(["folio_vivienda", "folio_habitante"]).agg(
+    nw=("ponderador_trip", "nunique"), nbus=("is_bus", "sum"), n=("folio_viaje", "size"))
+pers_multi = int((pp.nw > 1).sum())
+_m = pp[pp.nw > 1]
+pers_multi_mixed = float(((_m.nbus > 0) & (_m.nbus < _m.n)).mean())
+```
+
+# Summary
+
+The EOD 2023 ships **three** `Ponderador` columns — one on the dwelling table, one on the
+persons table, one on the trips table — and they are **not the same number**. They are a
+single weight built in three sequential stages, each calibrating the one before it against
+an external control total. The technical report describes the stages; this note verifies
+them against the shipped data and records what does and does not reproduce.
+
+::: {.callout-important}
+## The one rule
+
+**Weight each table by its own `ponderador`.** The columns are nested, not
+interchangeable: substituting one for another silently undoes a calibration stage. The
+largest single consequence is bus travel, which comes out
+**`{python} f"{bus_overstate:.0%}"` too high** if trips are weighted by the person weight.
+:::
+
+| Stage | Table | Column | Σ weight | Calibrated against |
+|:--|:--|:--|--:|:--|
+| 1 | `viv` | `viv.ponderador` | **`{python} fmt(tot_viv)`** | INEGI dwellings per *centralidad* |
+| 2 | `hab` | `hab.ponderador` | **`{python} fmt(tot_hab)`** | INEGI cyclists per municipality |
+| 3 | `trips` | `trips.ponderador` | **`{python} fmt(tot_trips)`** | SETRAN daily bus boardings |
+
+: The three expansion stages and their control totals. {#tbl-stages}
+
+The `legs` table carries no weight of its own; a leg inherits its parent trip's.
+
+# The three stages
+
+Each stage multiplies the one above it, so the weights are strictly nested:
+
+$$
+w_{\text{trip}} = \underbrace{\underbrace{W_c}_{\text{stage 1}} \times f_{\text{bike}}}_{\text{stage 2}} \times f_{\text{bus}}
+$$ {#eq-stages}
+
+Because the stages are multiplicative and stage 1 *is* the dwelling weight, dividing a
+person's weight by their dwelling's weight cancels stage 1 exactly and isolates the bicycle
+factor. That ratio is the diagnostic used throughout this note.
+
+## Stage 1 — dwelling weight {#sec-stage1}
+
+$$
+W_c = \frac{\text{dwellings INEGI reports in centralidad } c}{\text{dwellings interviewed in } c}
+$$ {#eq-wc}
+
+This is a plain design weight: expand the sample to the housing stock, stratified by
+*centralidad*. As expected, it is constant within a centralidad for
+**`{python} n_cen_single` of the `{python} n_cen`** centralidades; the remaining
+`{python} n_cen - n_cen_single` carry two or three values, apparently split by municipality.
+
+## Stage 2 — person weight (bicycle calibration) {#sec-stage2}
+
+Stage 1 matches the housing distribution, but nothing forces it to match anything else.
+When IMEPLAN expanded the survey's cyclists with the raw dwelling weights, the totals were
+off — and in different directions by municipality: the survey estimated 70,612 cyclists
+against INEGI's 101,907, with Tonalá over-counted and Zapotlanejo under-counted almost
+fourfold.
+
+The fix is one ratio per municipality, `INEGI cyclists ÷ survey-estimated cyclists`,
+multiplied onto the dwelling weight of every person who cycles. The report calls this
+*"aplicado a cada extrapolación previa de cada estrato"* — it stacks on stage 1 rather
+than replacing it.
+
+@tbl-bike and @fig-bike compare the published factors with the ones recovered from the
+data. Every one of the **`{python} n_changed`** persons whose weight differs from their
+dwelling's made a bicycle trip, and the per-municipality median of their `hab/viv` ratio
+lands within **`{python} f"{bike_max_err:.2f}"`** of the published factor.
+
+```{python}
+#| label: tbl-bike
+#| tbl-cap: "Bicycle calibration factors: published in the technical report versus recovered from the shipped weights as the per-municipality median of `hab.ponderador / viv.ponderador` over reweighted persons. *Cyclists* counts the reweighted persons in each municipality."
+
+show = bike_tbl.reset_index().rename(columns={
+    "municipio": "Municipality", "Published": "Published factor",
+    "Recovered": "Recovered (median ratio)"})
+show["Published factor"] = show["Published factor"].map(lambda x: f"{x:.2f}")
+show["Recovered (median ratio)"] = show["Recovered (median ratio)"].map(lambda x: f"{x:.3f}")
+show.style.hide(axis="index").set_properties(
+    subset=["Cyclists", "Published factor", "Recovered (median ratio)"],
+    **{"text-align": "right"})
+```
+
+```{python}
+#| label: fig-bike
+#| fig-cap: "Every reweighted cyclist's ratio of person weight to dwelling weight, against the published calibration factor. The spread inside each municipality is integer rounding, not disagreement. The dotted line at 1.0 marks no change: Tonalá and Juanacatlán cyclists are weighted *down*, everywhere else up."
+#| fig-alt: "Strip plot with one row per municipality. Blue dots show each reweighted cyclist's person-to-dwelling weight ratio, forming a tight cluster in every municipality around an orange tick marking the published factor. Factors range from about 0.88 in Tonalá, below the no-change line at 1.0, up to about 3.68 in Zapotlanejo."
+
+d = per[per.changed]
+order = sorted(BIKE_REPORT, key=BIKE_REPORT.get)
+pos = {m: i for i, m in enumerate(order)}
+jitter = np.random.default_rng(0).uniform(-0.22, 0.22, len(d))
+
+fig, ax = plt.subplots(figsize=(8.5, 5.0))
+ax.scatter(d.ratio, d.municipio.map(pos).to_numpy() + jitter, s=16, color=BLUE,
+           alpha=0.45, linewidth=0, zorder=2,
+           label="One reweighted cyclist (`hab` ÷ `viv`)")
+for m, i in pos.items():
+    ax.plot([BIKE_REPORT[m]] * 2, [i - 0.34, i + 0.34], color=ORANGE, lw=2.4, zorder=3,
+            label="Published factor (report)" if i == 0 else None)
+ax.axvline(1.0, color=GREY, lw=1, ls=":", zorder=0)
+ax.set_yticks(range(len(order)), order)
+ax.set_ylim(-0.7, len(order) - 0.3)
+ax.set_xlabel("Person weight ÷ dwelling weight")
+ax.set_title("Bicycle calibration — reweighted cyclists vs. published factor")
+ax.legend(frameon=False, loc="lower right", fontsize=9)
+ax.spines[["top", "right", "left"]].set_visible(False)
+ax.tick_params(axis="y", length=0)
+plt.tight_layout()
+plt.show()
+```
+
+Two properties of this stage are easy to miss:
+
+- **It reweights the whole person, not their bicycle trips.** A Zapotlanejo cyclist's car
+  and bus trips are also expanded 3.68×. That is defensible — a design weight belongs to
+  the respondent — but the bicycle calibration does leak into every other mode's totals for
+  those `{python} n_changed` people.
+- **It breaks the one-weight-per-household property.** A cyclist and their non-cycling
+  housemate now diverge, so **`{python} fmt(dw_multi)` dwellings** hold more than one person
+  weight. See @sec-consequences.
+
+### Why the recovered ratio is not exactly the published factor {#sec-rounding}
+
+Both columns are stored as `int64`, so the factor is applied and then rounded once. A
+Zapotlanejo dwelling with weight 3 gives a cyclist $3 \times 3.68 = 11.04 \to 11$, a ratio
+of 3.667; one with weight 35 gives $35 \times 3.68 = 128.8 \to 129$, a ratio of 3.686. Each
+person's ratio therefore wobbles by up to $0.5 / w$ around the truth, and precision improves
+with weight size.
+
+::: {.callout-tip}
+Read a factor off the data with the **per-municipality median** over cyclists. A single
+person's ratio is too coarse, and a weighted mean is contaminated by the set-membership
+problem in @sec-open-cyclists.
+:::
+
+## Stage 3 — trip weight (bus calibration) {#sec-stage3}
+
+The final stage rescales bus trips to SETRAN's 2023 estimate of
+**`{python} fmt(BUS_TARGET)`** daily boardings. `modo_principal` is the sole driver, and the
+split is clean:
+
+- all **`{python} fmt(n_nonbus)`** non-bus trips carry their person's weight **exactly**;
+- the **`{python} fmt(n_bus)`** `CAMIÓN O AUTOBÚS` trips are scaled down so that they sum to
+  `{python} fmt(bus_final)` — the SETRAN control total, to the unit.
+
+@fig-modes shows the consequence across modes: of the `{python} n_modes_shown` modes with at
+least 500 sampled trips, exactly **`{python} n_modes_moved`** moves.
+
+```{python}
+#| label: fig-modes
+#| fig-cap: "Estimated daily trips by main mode, computed with the person weight versus the trip weight. Only the bus moves; every other mode is identical under both. Modes with at least 500 sampled trips."
+#| fig-alt: "Dumbbell chart of estimated daily trips by mode. Every mode shows a single overlapping pair of marks except the bus, where a long segment runs from about 3.28 million trips at the person weight down to about 1.85 million at the trip weight."
+
+d = mode_cmp.sort_values("At_trip")
+y = np.arange(len(d))
+fig, ax = plt.subplots(figsize=(8.5, 5.2))
+ax.hlines(y, d.At_person / 1e6, d.At_trip / 1e6, color=GREY, lw=2.5, zorder=1)
+ax.scatter(d.At_person / 1e6, y, s=60, color=ORANGE, zorder=3,
+           edgecolor="white", linewidth=1.4, label="At person weight (`hab.ponderador`)")
+ax.scatter(d.At_trip / 1e6, y, s=60, color=BLUE, zorder=3,
+           edgecolor="white", linewidth=1.4, label="At trip weight (`trips.ponderador`)")
+
+bus_y = list(d.index).index(BUS)
+ax.annotate(f"−{fmt(bus_at_person - bus_final)} trips/day  ({bus_overstate:.0%} overstatement)",
+            xy=((d.At_person[BUS] + d.At_trip[BUS]) / 2e6, bus_y),
+            xytext=(0, -18), textcoords="offset points",
+            ha="center", va="top", fontsize=8.5, color="#444")
+
+ax.set_yticks(y, d.index)
+ax.set_xlabel("Estimated daily trips (millions)")
+ax.set_title("Only the bus is recalibrated at the trip stage")
+ax.legend(frameon=False, loc="lower right", fontsize=9)
+ax.spines[["top", "right", "left"]].set_visible(False)
+ax.tick_params(axis="y", length=0)
+plt.tight_layout()
+plt.show()
+```
+
+### The bus factor is not reproducible from the shipped columns {#sec-busderive}
+
+Applying the published factor to the integer person weight recovers only
+**`{python} f"{bus_exact:.1%}"`** of the bus weights exactly
+(`{python} f"{bus_pm1:.1%}"` within ±1):
+
+```{python}
+#| label: tbl-busrecover
+#| tbl-cap: "Reproducing `trips.ponderador` for bus trips from `hab.ponderador` and the published 0.56767147 factor."
+
+rec = pd.DataFrame({
+    "Rule": ["<code>trips.ponderador == hab.ponderador</code> (non-bus)",
+             "<code>round(hab.ponderador × 0.56767147)</code> (bus)",
+             "…within ±1 (bus)"],
+    "Match": ["100.00%", f"{bus_exact:.2%}", f"{bus_pm1:.2%}"],
+})
+rec.style.hide(axis="index").set_properties(subset=["Match"], **{"text-align": "right"})
+```
+
+The residual is rounding order: the factor was applied to the **unrounded** weight and
+rounded once at the end, so the integer person weight no longer carries enough information
+to redo it. Take the column as given rather than deriving it.
+
+# Why the weights are not interchangeable {#sec-consequences}
+
+## Weights vary within a parent unit
+
+Neither calibration respects the survey's own hierarchy, so a "one weight per household"
+or "one weight per person" assumption is false in the shipped data:
+
+| Grouping | Units with more than one distinct child weight |
+|:--|--:|
+| Person weights within a dwelling | **`{python} fmt(dw_multi)`** dwellings |
+| Trip weights within a person | **`{python} fmt(pers_multi)`** persons |
+
+: Within-parent variation introduced by the stage 2 and stage 3 calibrations. {#tbl-variation}
+
+**`{python} f"{pers_multi_mixed:.0%}"`** of the persons with multiple trip weights are
+simply people who mixed bus and non-bus travel that day. So
+`groupby(person).ponderador.first()` is wrong, and so is its household-level equivalent.
+
+::: {.callout-warning}
+## Where this bites in `eodgdl`
+
+`src/eodgdl/eod.py:109` de-normalizes the three master CSVs by dropping columns that are
+constant within a parent:
+
+```python
+cols = df_hab.groupby("folio_vivienda").nunique().max().loc[lambda s: s == 1].index
+assert np.all(df_hab.groupby("folio_vivienda")[cols].first() == df_viv[cols])
+df_hab = df_hab.drop(columns=cols)
+```
+
+This is **data-driven, not assumed**, so it is correct today: `ponderador` has up to three
+distinct values within a dwelling, never enters `cols`, and survives on all three tables.
+Only `municipio`, `ageb`, and `centralidad` are dropped.
+
+The coupling is worth knowing about, though. `ponderador` survives *only because* the
+bicycle and bus calibrations happen to break constancy. On a survey wave without those
+calibrations, the column would be silently folded into `viv` and dropped from `hab` and
+`trips` — and the assertion would still pass, because it would be true.
+:::
+
+## Substituting a weight undoes a stage
+
+Weighting trips by `hab.ponderador` instead of `trips.ponderador` puts bus travel at
+`{python} fmt(bus_at_person)` rather than `{python} fmt(bus_final)` — an overstatement of
+**`{python} f"{bus_overstate:.0%}"`**, and one that propagates into every mode-share,
+corridor-load, and public-transport figure derived from it. The reverse substitution
+(weighting persons by `viv.ponderador`) drops the bicycle calibration for
+`{python} n_changed` people.
+
+# Open discrepancies {#sec-open}
+
+Three things do not reconcile. None of them affects the calibrated totals, which are exact,
+but all three should be known before anyone tries to rebuild the weights — and the second
+is a reason to think the bus control total itself is measuring the wrong quantity.
+
+## The report's pre-calibration bus figure {#sec-open-previo}
+
+The technical report gives the bus total before calibration as
+**`{python} fmt(BUS_PREVIO)`**, and `{python} fmt(BUS_TARGET)` after, implying the published
+factor of `{python} f"{BUS_FACTOR:.8f}"`. Applying the shipped person weights to the shipped
+bus trips gives **`{python} fmt(bus_at_person)`** instead — `{python} f"{bus_at_person / BUS_PREVIO - 1:.1%}"`
+higher, implying a factor of `{python} f"{bus_implied:.8f}"`.
+
+The *calibrated* total is exact to the unit, so the gap is upstream in IMEPLAN's
+intermediate — a slightly different trip set or an earlier iteration of stage 2 — not
+something recoverable, or worth correcting, from here.
+
+## Linked trips, or boardings? {#sec-open-boardings}
+
+Stage 3 matches SETRAN's `{python} fmt(BUS_TARGET)` against the survey's count of **linked
+trips whose main mode is bus**. But the survey records each trip's legs, and the two are not
+the same unit — a linked trip can contain several bus boardings, and a bus boarding can sit
+inside a trip whose main mode is something else entirely.
+
+```{python}
+#| label: tbl-boardings
+#| tbl-cap: "Bus volume implied by the survey at the person weight (before stage 3), counted two ways. SETRAN's figure is matched against the first row; the second is what a fare-collection boardings count would correspond to."
+
+bd = pd.DataFrame({
+    "Quantity (at the person weight)": [
+        "Linked trips, <code>modo_principal</code> = bus",
+        "Bus <strong>boardings</strong> (legs with a bus mode)",
+        "…of which sit inside a non-bus main mode",
+    ],
+    "Weighted daily": [fmt(bus_at_person), fmt(bus_boardings_pw), fmt(bus_hidden_pw)],
+})
+bd.style.hide(axis="index").set_properties(subset=["Weighted daily"], **{"text-align": "right"})
+```
+
+The survey implies **`{python} f"{boardings_per_trip:.2f}"`** bus boardings per linked bus
+trip, and a further **`{python} fmt(bus_hidden_pw)`** weighted boardings are invisible to a
+main-mode count because the trip's main mode is something else — most often
+`{python} hidden_modes.replace(", ", ", ").rsplit(", ", 1)[0]` or
+`{python} hidden_modes.rsplit(", ", 1)[1]`.
+
+This matters because SETRAN figures normally originate in fare collection, which counts
+**boardings** — unlinked. Under that reading the calibration was applied to the wrong
+quantity, and the factor should be **`{python} f"{f_boardings:.4f}"`**
+(a `{python} f"{1 - f_boardings:.0%}"` cut) rather than the
+**`{python} f"{f_linked:.4f}"`** actually applied (`{python} f"{1 - f_linked:.0%}"`).
+
+::: {.callout-warning}
+The technical report says *viajes*, which points the other way — but it does not document
+SETRAN's method, and its own pre-calibration figure does not reconcile either
+(@sec-open-previo). The two readings differ by 8 percentage points on the factor, so this
+is worth resolving with IMEPLAN directly rather than inferring. Until it is resolved, treat
+stage 3 as **provisional** in a way stages 1 and 2 are not.
+:::
+
+## Which cyclists were reweighted {#sec-open-cyclists}
+
+**`{python} n_cyclists`** persons made a bicycle trip, but only **`{python} n_changed`**
+were reweighted — so **`{python} n_cyc_unchanged`** bicycle-trip makers were left at their
+dwelling weight. Rounding accounts for only **`{python} n_round_explained`** of them
+(Juanacatlán's 0.96 factor on a weight of 2, Tlaquepaque's 1.02 on small weights). The other
+**`{python} n_unexplained`** are Guadalajara and Zapopan cyclists at dwelling weights up to
+`{python} unexplained_wmax`, where the factor would plainly have moved the value.
+
+No definition available in the shipped columns reproduces the reweighted set. It is always
+a **strict subset** of the bicycle-trip makers; the closest candidate,
+`modo_principal == 'Bicicleta'`, overshoots by `{python} alt_extra` persons while missing
+`{python} alt_missing`. IMEPLAN's notion of *habitantes que usan bici* evidently does not
+coincide with "made a bicycle trip on the survey day", and the distinguishing variable is
+not in the data.
+
+::: {.callout-note}
+Practically this means the membership rule cannot be re-derived — use `hab.ponderador` as
+given. It also means a weighted mean of the `hab/viv` ratio understates each factor, because
+the denominator includes people IMEPLAN never reweighted. The median in @tbl-bike is robust
+to this.
+:::
+
+# Using these weights in an agent-based model {#sec-abm}
+
+The three-weight scheme is correct for what it was built to do: reproduce IMEPLAN's
+published estimates. It is **not** usable as-is by an agent-based model, and the reason is
+structural rather than a matter of precision.
+
+## Three weights cannot describe one agent population {#sec-abm-incoherent}
+
+An ABM instantiates agents. It needs to know how many times a household exists — and with
+three weights, the survey gives three different answers for the same household.
+@tbl-agent-example is a real dwelling in which all three disagree; there are
+**`{python} n_ex_dw`** such dwellings.
+
+```{python}
+#| label: tbl-agent-example
+#| tbl-cap: "Dwelling 91: one household, three irreconcilable replication factors. Person 1 is a reweighted cyclist; person 3 mixed a Mi Macro trip with a bus trip, so their two trips carry different weights."
+
+rows = [{"Level": "<strong>Dwelling</strong>", "Member": "—",
+         "Detail": "<code>viv.ponderador</code>", "Weight": fmt(ex_viv)}]
+for _, r in ex_per.iterrows():
+    rows.append({"Level": "Person", "Member": f"person {int(r.folio_habitante)}",
+                 "Detail": "<code>hab.ponderador</code>", "Weight": fmt(r.ponderador_hab)})
+for _, r in ex_trips.iterrows():
+    rows.append({"Level": "Trip", "Member": f"person {int(r.folio_habitante)}",
+                 "Detail": f"trip {int(r.folio_viaje)} — <em>{r.modo_principal}</em>",
+                 "Weight": fmt(r.ponderador)})
+pd.DataFrame(rows).style.hide(axis="index").set_properties(
+    subset=["Weight"], **{"text-align": "right"})
+```
+
+The household spans **`{python} ", ".join(fmt(w) for w in ex_weights)`**. Reading it as an
+agent population would mean instantiating person 3 `{python} fmt(ex_trips.ponderador.max())`
+times for their Mi Macro trip and `{python} fmt(ex_trips.ponderador.min())` times for their
+bus trip — the same person, existing a different number of times depending on which trip you
+ask about. That is coherent as a weighted cross-tab and incoherent as a population.
+
+It matters more for TASHA than for a trip-based model, because TASHA schedules a household's
+day *jointly* — joint trips, vehicle allocation, ride-sharing between members. Those
+mechanisms all assume the members of a household exist the same number of times.
+
+::: {.callout-warning}
+`eodgdl.tasha.build` writes all three `ExpansionFactor` columns verbatim, which is the right
+thing for a faithful mapping of the survey. It does mean the emitted `od_households.csv`,
+`od_people.csv` and `od_trips.csv` disagree with each other about how many times each agent
+exists. Resolving that is a modelling decision, deliberately left outside the mapping layer.
+:::
+
+## What IPU would, and would not, fix {#sec-abm-ipu}
+
+Iterative Proportional Updating (IPU; Ye et al., 2009) exists precisely for this problem.
+Plain IPF
+matches marginals at one level only; IPU iterates between household- and person-level
+constraints while adjusting a **single household weight vector**. Persons inherit the
+household weight, trips inherit the person's, and the result is coherent by construction.
+Household-level raking also yields one weight per household, but can only honour
+household marginals — IPU is the right tool if both levels matter.
+
+What IPU cannot do is reproduce stage 3. With one weight per household there is no way to
+scale a person's bus trips independently of their car trips; the only remaining lever is
+down-weighting households that ride the bus often. The adjustment needed is a
+**`{python} f"{1 - f_linked:.0%}"`** cut, and bus riders skew low-income, so concentrating
+it on bus-heavy households would distort the income and vehicle-ownership marginals IPU is
+simultaneously trying to hit. It would either fail to converge on that constraint or satisfy
+it by breaking others.
+
+That is not a shortcoming of IPU. It is IPU surfacing the inconsistency that the
+three-weight scheme currently conceals — and, given @sec-open-boardings, an inconsistency
+that may rest on a unit error.
+
+## Recommended path: synthesize, don't reweight {#sec-abm-recommendation}
+
+Re-raking the survey weights is the wrong framing. The standard route for an ABM is
+population synthesis: use the survey households as the **seed** — the PUMS analogue — and
+IPU / list-balance them against census marginals to get one integerized weight per
+household. The survey weight informs seed selection; it is not the final answer.
+`PopulationSim` implements exactly this.
+
+The ingredients are already in this repo — AGEB census counts via `mxcensus`, the zone
+system via `load_taz` / `load_imeplan_agebs`. Three practical constraints:
+
+- **Do not synthesize at AGEB level.** `{python} fmt(len(viv))` sampled dwellings spread over
+  `{python} fmt(v.ageb.nunique())` AGEBs is about `{python} f"{len(v) / v.ageb.nunique():.0f}"`
+  per AGEB — far too sparse for a stable seed. Synthesize at *centralidad*
+  (`{python} f"{len(v) / v.centralidad.nunique():.0f}"` dwellings each) or TAZ, and make AGEB
+  an allocation step below that.
+- **Keep *centralidad* as a control dimension.** It is the survey's own stratification
+  (@sec-stage1); re-raking silently discards it otherwise.
+- **Bound the weights.** Dwelling weights span
+  `{python} fmt(viv.ponderador.min())`–`{python} fmt(viv.ponderador.max())`
+  (`{python} f"{viv.ponderador.max() / viv.ponderador.min():.0f}"`×), so a handful of
+  households dominate any total. IPU inherits that unless the seed is trimmed.
+
+::: {.callout-important}
+## Move the bus correction out of the data
+
+Keep the design weight coherent, and treat the bus mismatch as a **model calibration**
+target: adjust mode-choice alternative-specific constants until modelled boardings match
+SETRAN. That is standard practice, it is testable, and it puts the adjustment somewhere a
+modeller can inspect and defend.
+
+Baking a `{python} f"{1 - f_linked:.0%}"` discount into the input data means every
+downstream result silently inherits a correction nobody can see — and, per
+@sec-open-boardings, possibly one applied to the wrong quantity.
+:::
+
+The bicycle calibration deserves gentler treatment. It corrects a real coverage problem
+against a genuine INEGI control, so it is defensible as a design weight — but it still
+breaks household coherence for `{python} fmt(dw_multi)` dwellings. Under synthesis, cycling
+propensity belongs in the seed as an attribute or a control dimension, not in the weight.
+
+**In short:** for the TASHA pipeline, synthesize rather than reweight, and treat all three
+`ponderador` columns as what they are — IMEPLAN's published estimation weights, correct for
+reproducing IMEPLAN's published tables, and not agent replication factors.
+
+---
+
+::: {.callout-note collapse="true"}
+## Sources & methods
+
+- **Survey:** Encuesta Origen-Destino 2023, IMEPLAN (AMG). Tables loaded and cleaned with
+  `eodgdl.load_eod()`, which returns `viv` / `hab` / `trips` / `legs` at
+  `{python} fmt(len(viv))` dwellings, `{python} fmt(len(hab))` persons,
+  `{python} fmt(len(trips))` trips and `{python} fmt(len(legs))` legs.
+- **Weighting methodology:** *Informe Técnico Final EOD 2023*, p. 16, which sets out the
+  three `procesos de extrapolación` — the per-*centralidad* dwelling ratio, the
+  per-municipality bicycle calibration table, and the bus factor `0.56767147` against
+  SETRAN's `1,851,750` daily boardings. Every figure in this note is recomputed from the
+  shipped data; where a recomputed value disagrees with the report, both are given.
+- **Cyclist definition:** persons with at least one trip whose `modo_principal` is
+  `Bicicleta` or `Mi Bici`. This is the closest observable proxy for IMEPLAN's cyclist set,
+  and is *wider* than it — see @sec-open-cyclists.
+- **Verification:** the two structural claims (non-bus trip weight equals the person weight;
+  every reweighted person made a bicycle trip) are asserted in the source chunks of this
+  document, so the render fails if either stops holding.
+- The mapping notes shipped with the package record the same findings per output column:
+  see `ExpansionFactor` in `src/eodgdl/tasha/mappings.yaml`.
+:::

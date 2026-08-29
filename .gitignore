@@ -22,3 +22,6 @@ wheels/
 
 # Editor
 .vscode/
+
+# Rendered Quarto output (regenerate with `quarto render`)
+/reports/*.html
