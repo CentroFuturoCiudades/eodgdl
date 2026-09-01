@@ -23,5 +23,8 @@ wheels/
 # Editor
 .vscode/
 
+# Local agent instructions (kept out of the repo)
+/CLAUDE.md
+
 # Rendered Quarto output (regenerate with `quarto render`)
 /reports/*.html
