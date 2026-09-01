@@ -74,3 +74,9 @@ reference.
 A small number of manual data-entry corrections are applied by the loaders (encoded as
 documented constants in `eod.py` and `taz.py`): three trip-mode fixes, two micro-zone
 population double-count adjustments, and three AGEB `MZONA` reassignments.
+
+The AGEB table also mixes locality rows with the AGEB rows that subdivide them, double-
+counting those localities' population. `load_imeplan_agebs` keeps whichever side partitions
+the locality more finely — the AGEBs where there is more than one, otherwise the locality —
+which drops three rows and makes the AGEB and micro-zone population totals reconcile
+exactly.
