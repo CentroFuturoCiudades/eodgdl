@@ -61,8 +61,12 @@ def _drop_untimed_trips(trips: pd.DataFrame) -> pd.DataFrame:
 
 def build_households(viv: pd.DataFrame, hab: pd.DataFrame) -> pd.DataFrame:
     """od_households.csv, one row per dwelling."""
-    veh = build_map("Vehicles")
-    reported = viv.personas_en_vivienda.map(build_map("NumberOfPersons")).astype(int)
+    veh, veh_default = build_map("Vehicles"), mapping("Vehicles")["default"]
+    # Both lookups carry a default, so an answer the survey adds later widens the
+    # column instead of raising an opaque cast error mid-build; `tasha check`
+    # reports the unmapped level, and validate() the value it produced.
+    reported = (viv.personas_en_vivienda.map(build_map("NumberOfPersons"))
+                   .fillna(mapping("NumberOfPersons")["default"]).astype(int))
     observed = hab.groupby("folio_vivienda").size().reindex(viv.index).fillna(0).astype(int)
 
     return pd.DataFrame({
@@ -71,8 +75,8 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame) -> pd.DataFrame:
         # Reported size, raised to the observed member count when that is larger.
         "NumberOfPersons": np.maximum(reported, observed),
         "DwellingType": mapping("DwellingType")["constant"],
-        "Vehicles": (viv.n_autos_camionetas.map(veh).astype(int)
-                     + viv.n_motos.map(veh).astype(int)),
+        "Vehicles": (viv.n_autos_camionetas.map(veh).fillna(veh_default).astype(int)
+                     + viv.n_motos.map(veh).fillna(veh_default).astype(int)),
         "IncomeClass": (viv.ingreso_mensual_hogar.map(build_map("IncomeClass"))
                            .fillna(mapping("IncomeClass")["default"]).astype(int)),
         "ExpansionFactor": viv.ponderador.astype(float),

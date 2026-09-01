@@ -54,12 +54,19 @@ households:
       "8": 8
       "9": 9
       "10 y +": 10
+    default: 0
     derivation: >-
       Raise to the observed hab row count for the dwelling when that count is
       larger.
     note: >-
       LOSSY: the source is categorical and top-coded at '10 y +' (33 dwellings),
       so households of 11+ cannot be distinguished.
+
+      The default of 0 is not a household size: it means no size was reported,
+      and the max against the observed member count then supplies the answer.
+      Every dwelling has at least one person row, so the contract's floor of 1
+      holds; a 0 reaching the output would mean a dwelling with no members at
+      all, which `validate` catches as a range violation.
 
   DwellingType:
     constant: 1
@@ -82,10 +89,12 @@ households:
       "2": 2
       "3": 3
       "4 o más": 4
+    default: 0
     derivation: Map each source column through `values`, then sum the two.
     note: >-
       LOSSY: both columns are top-coded at '4 o más'. Bicycles (n_bicicletas)
-      are excluded, per the schema definition.
+      are excluded, per the schema definition. An unanswered count is taken as
+      0 vehicles rather than failing the build; no dwelling needs it today.
 
   IncomeClass:
     source: ingreso_mensual_hogar

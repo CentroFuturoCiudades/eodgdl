@@ -7,8 +7,9 @@ Three pieces, two of them data:
     mappings.yaml       one entry per output column: the eodgdl source column,
                         the {raw answer: code} lookup, and the caveats.
     _schema.py          this file - loads both, hands you .map()-ready dicts,
-                        checks the mappings against the contract, and checks a
-                        produced table against the contract.
+                        checks the mappings against the contract AND against the
+                        survey's own pandera schemas, and checks a produced table
+                        against the contract.
 
 Both YAML files ship inside the package, so this works offline and from an
 installed wheel. See ``eodgdl/tasha/README.md`` for the full guide.
@@ -143,8 +144,97 @@ def gaps():
     return pd.DataFrame(rows, columns=["table", "column", "status", "note"])
 
 
+# load_eod unpivots trips.traslado{1..5}_* into these three columns on `legs`;
+# they take their dtype from the first leg's column in trips_schema.
+_LEG_COLUMNS = {
+    "traslado_medio": "traslado1_medio",
+    "traslado_min": "traslado1_min",
+    "traslado_pago": "traslado1_pago",
+}
+# Index levels rather than columns on the tables load_eod returns.
+_INDEX_LEVELS = ("folio_vivienda", "folio_habitante", "folio_viaje", "folio_traslado")
+
+
+@functools.cache
+def survey_columns():
+    """{source column: {grain: levels or None}} over the pandera survey schemas.
+
+    The keys are every name a mappings.yaml `source` may legally use: the
+    columns of viv, hab and trips, the three columns ``load_eod`` unpivots onto
+    legs, and the four folio_* index levels. The value records the column's
+    categorical levels where it has them, so a lookup key can be checked against
+    the answers the survey can actually produce.
+    """
+    from eodgdl.schemas import hab_schema, trips_schema, viv_schema
+
+    def levels(column):
+        cats = getattr(column.dtype, "categories", None)
+        return None if cats is None else frozenset(map(str, cats))
+
+    found = {}
+    for grain, schema in [("viv", viv_schema), ("hab", hab_schema), ("trips", trips_schema)]:
+        for name, column in schema.columns.items():
+            found.setdefault(name, {})[grain] = levels(column)
+    for name, first_leg in _LEG_COLUMNS.items():
+        found.setdefault(name, {})["legs"] = levels(trips_schema.columns[first_leg])
+    for level in _INDEX_LEVELS:
+        found.setdefault(level, {}).setdefault("index", None)
+    return found
+
+
+def _lookups(entry):
+    """The (label, source names, values) pairs an entry defines: main, override."""
+    override = entry.get("override") or {}
+    for label, source, values in [
+        ("source", entry.get("source"), entry.get("values")),
+        ("override source", override.get("source"), override.get("values")),
+    ]:
+        if source is None:
+            continue
+        # A source may be written bare (`ageb`) or grain-qualified (`legs.traslado_min`).
+        names = [source] if isinstance(source, str) else list(source)
+        yield label, [n.split(".")[-1] for n in names], (values or {})
+
+
+def _check_sources(table, column, entry):
+    """The survey half of the check: the sources exist, the keys are real answers.
+
+    ``check_mappings`` compares a mapping against the contract; this compares the
+    same mapping against the survey it claims to read. It catches the two ways a
+    hand-edited mappings.yaml silently stops working: a source column that the
+    rename map or the pandera schema no longer produces, and a lookup key that is
+    not one of the answers that column can take (a typo, or a level the survey
+    dropped) — which `.map()` would quietly turn into NaN rather than an error.
+    """
+    problems = []
+    survey = survey_columns()
+    for label, names, values in _lookups(entry):
+        for name in names:
+            if name not in survey:
+                problems.append(
+                    f"{table}.{column}: {label} {name!r} is not a column of "
+                    "viv, hab, trips or legs"
+                )
+        for key in values:
+            for name in names:
+                # Every grain the column appears in must accept the key; a
+                # non-categorical column (a free string, a count) constrains nothing.
+                coded = [lv for lv in survey.get(name, {}).values() if lv is not None]
+                if coded and not all(str(key) in lv for lv in coded):
+                    problems.append(
+                        f"{table}.{column}: {label} {name} has no answer {key!r}, "
+                        "so the lookup entry can never match"
+                    )
+    return problems
+
+
 def check_mappings():
-    """Check mappings.yaml against model_schema.yaml.
+    """Check mappings.yaml against model_schema.yaml and against the survey.
+
+    Two directions. Against the contract: every column mapped, no mapping for a
+    column the contract lacks, no code produced outside a column's domain.
+    Against the survey: every `source` is a real column of viv / hab / trips /
+    legs, and every `values` key is an answer that column can actually take.
 
     Returns a list of human-readable problems; empty means they agree.
     """
@@ -162,6 +252,7 @@ def check_mappings():
                 problems.append(
                     f"{table}.{column}: mapping has no values, constant or derivation"
                 )
+            problems.extend(_check_sources(table, column, entry))
             legal = domain(column, table)
             if not legal:
                 continue
@@ -281,6 +372,16 @@ def validate(df, table, *, check_dtypes=True):
 def _invariants(df, table):
     """Cross-column rules the schema states in prose."""
     out = []
+    if table == "households" and "HouseholdId" in df.columns:
+        # "Must be dense and 0-based; people and trips join on it."
+        ids = df.HouseholdId.dropna()
+        if len(ids):
+            lo, hi = int(ids.min()), int(ids.max())
+            if lo != 0 or hi != len(ids) - 1:
+                out.append(
+                    f"households: HouseholdId must be dense and 0-based, but "
+                    f"{len(ids)} rows run {lo}..{hi}"
+                )
     if table == "people" and {"EmploymentStatus", "Occupation"} <= set(df.columns):
         mismatch = int(((df.EmploymentStatus == "O") != (df.Occupation == "O")).sum())
         if mismatch:
@@ -297,11 +398,21 @@ def _invariants(df, table):
                     "return codes belong to PurposeDestination only"
                 )
         if {"HouseholdId", "PersonNumber", "TripNumber"} <= set(df.columns):
-            first = df.groupby(["HouseholdId", "PersonNumber"]).TripNumber.min()
-            if (first != 1).any():
+            chains = df.groupby(["HouseholdId", "PersonNumber"]).TripNumber.agg(
+                ["min", "max", "count", "nunique"]
+            )
+            broken = int((chains["min"] != 1).sum())
+            if broken:
+                out.append(f"trips: {broken} people whose first TripNumber is not 1")
+            # "Consecutive from 1 within each person": with distinct numbers
+            # starting at 1, running 1..n is exactly max == count.
+            gapped = int(
+                ((chains["max"] != chains["count"]) & (chains["nunique"] == chains["count"])).sum()
+            )
+            if gapped:
                 out.append(
-                    f"trips: {int((first != 1).sum())} people whose first "
-                    "TripNumber is not 1"
+                    f"trips: {gapped} people whose TripNumber is not consecutive; "
+                    "the contract requires 1..n with no gaps"
                 )
     return out
 
@@ -320,6 +431,17 @@ def validate_all(households=None, people=None, trips=None):
                 f"people: {orphans} rows whose HouseholdId is not in the "
                 "household table"
             )
+        # NumberOfPersons is the reported size RAISED to the observed member
+        # count, so it may exceed the person rows but must never fall below them.
+        if "NumberOfPersons" in households.columns and households.HouseholdId.is_unique:
+            observed = people.groupby("HouseholdId").size()
+            reported = households.set_index("HouseholdId").NumberOfPersons
+            short = int((reported.reindex(observed.index).fillna(0) < observed).sum())
+            if short:
+                problems.append(
+                    f"households: {short} households whose NumberOfPersons is "
+                    "below the number of rows they have in the person table"
+                )
     if people is not None and trips is not None:
         known = set(zip(people.HouseholdId, people.PersonNumber))
         orphans = set(zip(trips.HouseholdId, trips.PersonNumber)) - known

@@ -71,6 +71,7 @@ tables:
           Household size as REPORTED by the survey, not the number of members
           actually interviewed. Raise the reported figure to the observed member
           count when the observed count is larger.
+        range: [1, null]
         notes: >-
           May exceed the number of rows this household has in od_people.csv, and
           often will: the EOD interviews ages 6+ only, so under-6s are counted
@@ -305,9 +306,13 @@ tables:
           Trips 2+: the previous trip's PurposeDestination, taken BEFORE the
           R / C demotion, so R and C never appear here.
         notes: >-
-          Spelled "PuposeOrigin" in the downstream model and in any previously
-          produced outputs. If that consumer has not been updated, rename the
-          column on write or give it an alias there.
+          The column is PurposeOrigin, and PurposeOrigin is what eodgdl writes.
+          The downstream model misspells it "PuposeOrigin", as do any outputs
+          produced before this package existed. That typo stays on the consumer's
+          side: alias it there, or rename the column in a one-line step after the
+          build. Do not reintroduce it here — a test asserts the misspelling
+          appears nowhere in build.py, _schema.py or mappings.yaml, and this note
+          is the only place in the subpackage that spells it out.
 
       ZoneOrigin:
         dtype: str

@@ -1,4 +1,5 @@
 """Model output schema: the mappings must stay in step with the contract."""
+import copy
 from pathlib import Path
 
 import pandas as pd
@@ -6,6 +7,7 @@ import pytest
 
 import eodgdl
 from eodgdl import tasha
+from eodgdl.tasha import _schema
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
@@ -17,6 +19,28 @@ LOCALITY = "140390001"       # a real 9-character locality id
 def test_mappings_agree_with_schema():
     # Every column mapped, every code produced legal under model_schema.yaml.
     assert tasha.check_mappings() == []
+
+
+def test_mappings_agree_with_the_survey():
+    # Every `source` is a real eodgdl column and every lookup key a real answer.
+    survey = tasha.survey_columns()
+    assert {"modo_principal", "ageb", "traslado_min", "folio_vivienda"} <= set(survey)
+    assert "Acompañante" in survey["rol_en_vehiculo"]["trips"]
+
+
+def test_check_catches_a_source_that_no_longer_exists(monkeypatch):
+    broken = copy.deepcopy(_schema.load_mappings())
+    broken["trips"]["Mode"]["source"] = "modo_principial"
+    monkeypatch.setattr(_schema, "load_mappings", lambda: broken)
+    assert any("not a column of" in p for p in tasha.check_mappings())
+
+
+def test_check_catches_a_lookup_key_the_survey_cannot_answer(monkeypatch):
+    # A typo'd Spanish answer maps to NaN silently; the checker must say so.
+    broken = copy.deepcopy(_schema.load_mappings())
+    broken["trips"]["PurposeDestination"]["values"]["Estudier"] = "S"
+    monkeypatch.setattr(_schema, "load_mappings", lambda: broken)
+    assert any("has no answer 'Estudier'" in p for p in tasha.check_mappings())
 
 
 def test_schema_bundled():
@@ -81,6 +105,60 @@ def test_zone_ids_parsed_as_numbers_are_caught():
     })
     assert any("not strings" in p for p in tasha.validate(trips, "trips"))
     assert tasha.zone_columns("trips") == ["ZoneOrigin", "ZoneDestination"]
+
+
+HOUSEHOLD = {
+    "HouseholdZone": AGEB, "NumberOfPersons": 2, "DwellingType": 1,
+    "Vehicles": 0, "IncomeClass": 7, "ExpansionFactor": 1.0,
+}
+TRIP = {
+    "StartTime": 800, "Mode": "W", "PurposeOrigin": "H", "ZoneOrigin": AGEB,
+    "PurposeDestination": "W", "ZoneDestination": AGEB,
+}
+
+
+def test_household_ids_must_be_dense_and_zero_based():
+    h = pd.DataFrame([{"HouseholdId": i, **HOUSEHOLD} for i in (0, 1, 5)])
+    assert any("dense and 0-based" in p for p in tasha.validate(h, "households"))
+    h.HouseholdId = [0, 1, 2]
+    assert tasha.validate(h, "households") == []
+
+
+def test_trip_numbers_must_be_consecutive():
+    # A chain of 1, 2, 4 starts at 1 and has no duplicates, but skips 3.
+    t = pd.DataFrame([{"HouseholdId": 0, "PersonNumber": 1, "TripNumber": n, **TRIP}
+                      for n in (1, 2, 4)])
+    assert any("not consecutive" in p for p in tasha.validate(t, "trips"))
+    t.TripNumber = [1, 2, 3]
+    assert tasha.validate(t, "trips") == []
+
+
+def test_number_of_persons_may_exceed_but_not_undercount_the_person_rows():
+    h = pd.DataFrame([{"HouseholdId": 0, **HOUSEHOLD}])
+    p = pd.DataFrame([
+        {"HouseholdId": 0, "PersonNumber": n, "Age": 30, "Sex": "M", "License": "Y",
+         "TransitPass": "N", "EmploymentStatus": "O", "Formality": "O",
+         "Occupation": "O", "FreeParking": "O", "StudentStatus": "O",
+         "EmploymentZone": "0", "SchoolZone": "0", "ExpansionFactor": 1.0}
+        for n in (1, 2, 3)
+    ])
+    # 3 person rows against a reported size of 2 is a real contradiction...
+    assert any("below the number of rows" in q for q in tasha.validate_all(h, p))
+    # ...but a size above the row count is normal: the EOD interviews ages 6+.
+    h.NumberOfPersons = 5
+    assert tasha.validate_all(h, p) == []
+
+
+def test_purpose_origin_is_spelled_correctly():
+    # The downstream model spells it "PuposeOrigin"; eodgdl never does.
+    assert "PurposeOrigin" in tasha.columns("trips")
+    text = "".join(
+        (Path(__file__).resolve().parent.parent / "src/eodgdl/tasha" / name).read_text(
+            encoding="utf-8"
+        )
+        for name in ("build.py", "_schema.py", "mappings.yaml")
+    )
+    assert "PuposeOrigin" not in text
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")

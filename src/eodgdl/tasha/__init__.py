@@ -34,6 +34,7 @@ from eodgdl.tasha._schema import (
     load_schema,
     mapping,
     required_columns,
+    survey_columns,
     tables,
     validate,
     validate_all,
@@ -56,6 +57,7 @@ __all__ = [
     "build_map",
     "gaps",
     "check_mappings",
+    "survey_columns",
     # Building
     "ODTables",
     "build",

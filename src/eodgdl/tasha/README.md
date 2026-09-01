@@ -13,8 +13,9 @@ mappings.yaml       the mapping    — one entry per output column: the eodgdl
                                      source column, the {raw answer: code}
                                      lookup, and the caveats.
 _schema.py          the glue       — loads both, hands you .map()-ready dicts,
-                                     checks the mappings against the contract,
-                                     and checks a produced table against it.
+                                     checks the mappings against the contract
+                                     and against the survey's own schemas, and
+                                     checks a produced table against it.
 build.py            the builder    — turns the cleaned survey into the three
                                      tables, driven by mappings.yaml.
 ```
@@ -47,6 +48,10 @@ changes the output without touching `build.py`. It warns on each run about the
 Zone columns hold the survey's own AGEB CVEGEO or locality id as a **string**.
 Read them back with `dtype=str` — `tasha.zone_columns(table)` lists them —
 since most ids are all-digit and will otherwise parse as `int64`.
+
+The trip column is spelled **`PurposeOrigin`**. The downstream model misspells it
+`PuposeOrigin`; that typo belongs to the consumer, so alias it there or rename
+the column after the build — never here.
 
 ## Reading the mapping
 
@@ -98,17 +103,25 @@ takes:
 | `note`       | caveats: lossy collapses, judgement calls, open questions   |
 | `status`     | `ok` (default) / `assumed` / `not_surveyed` / `pending`     |
 
-Then re-run the checker, which catches a code that no longer exists in the
-contract, a column with no mapping, and a mapping for a column the contract does
-not have:
+Then re-run the checker. It reads the mapping in both directions — against the
+contract, and against the survey the mapping claims to read:
+
+| direction | what it catches |
+|---|---|
+| vs. `model_schema.yaml` | a column with no mapping; a mapping for a column the contract does not have; a code the column's domain does not allow |
+| vs. the pandera schemas | a `source` that is no longer a column of `viv`/`hab`/`trips`/`legs`; a `values` key that is not an answer that column can take |
+
+The second direction matters because both failures are silent at build time: a
+renamed source column and a typo'd Spanish answer both come out of `.map()` as
+NaN, not as an error. `tasha.survey_columns()` is the table it checks against.
 
 ```
 eodgdl tasha check
 eodgdl tasha gaps
 ```
 
-`tests/test_tasha.py` runs `check` too, so a mapping that drifts from the
-contract fails the test suite.
+`tests/test_tasha.py` runs `check` too, so a mapping that drifts from either the
+contract or the survey fails the test suite.
 
 ## Validating produced tables
 
@@ -125,10 +138,17 @@ eodgdl tasha validate output/ --suffix _v2  # ...or the _v2 variants
 ```
 
 `validate` checks required columns, unknown columns, key uniqueness, nulls, code
-domains, dtypes, declared ranges, zone ranges, cross-table joins, and three
-invariants the contract states in prose: a non-worker has no sector; the return
-purposes `R`/`C` never appear as a trip *origin*; every person's first trip is
-numbered 1. It returns a list of strings and mutates nothing.
+domains, dtypes, declared ranges, zone id shapes, cross-table joins, and the
+invariants the contract states in prose rather than in a domain:
+
+- a non-worker has no sector (`EmploymentStatus` and `Occupation` are `O` together);
+- the return purposes `R`/`C` never appear as a trip *origin*;
+- `HouseholdId` is dense and 0-based;
+- every person's `TripNumber` runs 1..n with no gaps;
+- `NumberOfPersons` is never below the person rows the household actually has —
+  above is normal, since the EOD interviews ages 6+ and under-6s have no row.
+
+It returns a list of strings, raises nothing and mutates nothing.
 
 ## Open items
 
