@@ -152,6 +152,8 @@ It returns a list of strings, raises nothing and mutates nothing.
 
 ## Open items
 
+### Column gaps
+
 `eodgdl tasha gaps` lists these; the full reasoning is in each mapping's `note`.
 Resolved: the 325 trips with no start time are dropped and the affected people's
 remaining trips renumbered, with a warning on every build.
@@ -170,6 +172,39 @@ remaining trips renumbered, with a warning on every build.
   the EOD. Constant `O`, recorded rather than silently omitted.
 - **`License`** (assumed) — age proxy, `edad >= 18`.
 - **`TransitPass`** (not surveyed) — constant `N`.
+
+### Structural, invisible to `tasha gaps`
+
+No mapping `status` can carry these — they are about the shape of the output
+rather than about one column's coding, so nothing surfaces them automatically.
+
+- **Trip ordering.** `model_schema.yaml` says `TripNumber` is consecutive from 1
+  "in start-time order", and both the R/C demotion and the `PurposeOrigin` chain
+  are specified against that order. `build.py` uses the trip table's row order —
+  `folio_viaje` — instead, via `groupby(...).cumcount()` and `shift(1)`. The two
+  disagree for **1,849 of 52,758 people**: 2,009 trips start earlier than the
+  trip before them, and only 93 of those look like legitimate overnight wraps
+  (previous start ≥ 18:00, next ≤ 06:00). The same row order picks
+  `EmploymentZone` / `SchoolZone`, which take `.first()` over a person's work and
+  school trips.
+
+  Decide which order is authoritative — most likely `folio_viaje`, as the chain
+  order the interview actually recorded, in which case it is the contract's
+  wording that should change — and then have `validate()` check it. Nothing
+  detects this today: the numbers are consecutive under either reading, so the
+  `TripNumber` check passes regardless.
+
+- **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
+  `zones.alternatives` offers `ID_ZONAEOD` (71 zones) and `MZONA` (601) as the
+  other choices, but there is no `zones=` selector, and the written tables record
+  nothing about which system produced them — so the choice is invisible to
+  whoever reads the CSVs. 1,701 AGEBs is also likely finer than a model with
+  matching networks and skims wants.
+
+  Separately, `validate()` checks a zone id's *shape* but never whether it joins.
+  38 locality ids are absent from `RELACION_AGEBS-ZONA_con_datos_censales.parquet`
+  and so carry no census attributes: 7,962 trip origins, 7,961 destinations,
+  1,146 households, 1,275 `EmploymentZone`s and 449 `SchoolZone`s.
 
 ## Provenance
 
