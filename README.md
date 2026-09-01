@@ -36,6 +36,37 @@ zone_system_report(taz, mtaz)                       # diagnostics
 
 Every loader fetches from the mirror by default and accepts a local path override.
 
+## Travel-demand model schema
+
+`eodgdl.tasha` targets the three tables the travel-demand model consumes
+(`od_households.csv`, `od_people.csv`, `od_trips.csv`). The contract lives in
+`model_schema.yaml`, the survey mapping in `mappings.yaml` — both shipped inside the
+package and meant to be read by hand.
+
+```python
+from eodgdl import load_eod, tasha
+
+od = tasha.build(load_eod("data"))   # ODTables(households, people, trips)
+tasha.validate_all(*od)
+
+tasha.build_map("Mode")              # {'A PIE': 'W', 'CAMIÓN O AUTOBÚS': 'B', …}
+tasha.mapping("Mode")                # ...plus the override, notes and caveats
+tasha.gaps()                         # what is assumed, constant, or unresolved
+```
+
+```bash
+eodgdl tasha build --data data/ --out output/   # build, write and validate
+eodgdl tasha check                              # mappings vs. contract
+eodgdl tasha gaps                               # open items
+eodgdl tasha validate output/                   # produced CSVs vs. contract
+```
+
+Zone columns carry the survey's own AGEB CVEGEO or locality id as a string, so the
+output joins straight to the census tables; read them back with `dtype=str`.
+
+See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
+mapping-entry format, and the open items.
+
 ## Installation
 
 ```bash

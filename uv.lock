@@ -448,6 +448,7 @@ dependencies = [
     { name = "platformdirs" },
     { name = "pooch" },
     { name = "pyarrow" },
+    { name = "pyyaml" },
     { name = "tqdm" },
 ]
 
@@ -483,6 +484,7 @@ requires-dist = [
     { name = "pooch", specifier = ">=1.8" },
     { name = "pyarrow", specifier = ">=18.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13" },
     { name = "tqdm", specifier = ">=4.67" },
 ]

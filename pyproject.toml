@@ -13,6 +13,7 @@ dependencies = [
     "pandas>=3.0.0",
     "pandera>=0.29.0",
     "pyarrow>=18.0",
+    "pyyaml>=6.0",
     "pooch>=1.8",
     "platformdirs>=4.0",
     "tqdm>=4.67",

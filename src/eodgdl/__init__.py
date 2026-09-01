@@ -16,7 +16,7 @@ from eodgdl.taz import (
 )
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 from eodgdl._resources import imeplan_rename_map
-from eodgdl import data
+from eodgdl import data, tasha
 
 __all__ = [
     "__version__",
@@ -38,4 +38,6 @@ __all__ = [
     # Config / data
     "imeplan_rename_map",
     "data",
+    # Model output schema
+    "tasha",
 ]

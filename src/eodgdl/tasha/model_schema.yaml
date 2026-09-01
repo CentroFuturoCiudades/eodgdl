@@ -1,0 +1,352 @@
+# Target schema for the travel-demand model (TASHA / GTAModel style).
+#
+# This file is the CONTRACT: which columns the three output tables must carry,
+# which codes are legal in each column, and what every code means. It says
+# nothing about where the values come from — that is mappings.yaml, which
+# records the raw EOD answer behind each code.
+#
+# Load with model_schema.py, or with plain yaml.safe_load.
+
+meta:
+  name: tasha_model_schema
+  survey: EODGDL2023
+  schema_version: 1
+
+# ---------------------------------------------------------------------------
+# Zone system
+# ---------------------------------------------------------------------------
+# Every *Zone column in every table carries the survey's own zone id, verbatim.
+zones:
+  name: AGEB
+  dtype: str
+  id_lengths: [9, 13]
+  description: >-
+    The INEGI zone id as the survey reports it, unchanged: a 13-character AGEB
+    CVEGEO, or a 9-character rural locality id. 1,701 distinct values appear
+    across viv.ageb, trips.origen and trips.destino — 1,650 AGEBs and 51
+    locality ids. All 1,650 AGEBs join to
+    RELACION_AGEBS-ZONA_con_datos_censales.parquet; 38 of the locality ids do
+    not, so those zones carry no census attributes.
+  sentinel:
+    "0": Not applicable (used by EmploymentZone / SchoolZone only)
+  notes: >-
+    These are ids, not numbers: keep them as strings. 154 of the 1,701 carry a
+    trailing letter (e.g. 140390001418A) and the rest are all-digit, so pandas
+    usually infers a string column from a full export — but any subset that
+    happens to be all-digit reads back as int64. Read every *Zone column with
+    dtype=str (`tasha.zone_columns(table)` lists them) rather than relying on
+    inference.
+  alternatives: >-
+    centralidad / ID_ZONAEOD (71 zones, string codes like '06A') and MZONA
+    micro-zones (601 integer zones) are also available in the eodgdl package.
+    Whichever is chosen, use it in every *Zone column — the outputs do not
+    record which one they used.
+
+# ---------------------------------------------------------------------------
+# Tables
+# ---------------------------------------------------------------------------
+tables:
+  households:
+    file: od_households.csv
+    key: [HouseholdId]
+    columns:
+      HouseholdId:
+        dtype: int
+        role: key
+        required: true
+        description: 0-based counter over the sorted source household key.
+        notes: Must be dense and 0-based; people and trips join on it.
+
+      HouseholdZone:
+        dtype: str
+        role: zone
+        required: true
+        description: Zone of the household's dwelling.
+
+      NumberOfPersons:
+        dtype: int
+        role: attribute
+        required: true
+        description: >-
+          Household size as REPORTED by the survey, not the number of members
+          actually interviewed. Raise the reported figure to the observed member
+          count when the observed count is larger.
+        notes: >-
+          May exceed the number of rows this household has in od_people.csv, and
+          often will: the EOD interviews ages 6+ only, so under-6s are counted
+          here but have no person row. Downstream code relies on that being
+          possible.
+
+      DwellingType:
+        dtype: int
+        role: attribute
+        required: true
+        default: 1
+        domain:
+          1: House / ground-level dwelling
+          2: Apartment / dwelling with an interior unit number
+
+      Vehicles:
+        dtype: int
+        role: attribute
+        required: true
+        description: Count of cars + pickups + motorcycles. Excludes bicycles, scooters, trucks.
+        range: [0, null]
+
+      IncomeClass:
+        dtype: int
+        role: attribute
+        required: true
+        default: 7
+        domain:
+          1: Lowest
+          2: Low
+          3: Lower-middle
+          4: Middle
+          5: Upper-middle
+          6: Highest
+          7: Not stated / unknown
+
+      ExpansionFactor:
+        dtype: float
+        role: weight
+        required: true
+        default: 1.0
+        description: Survey dwelling weight.
+
+  people:
+    file: od_people.csv
+    key: [HouseholdId, PersonNumber]
+    columns:
+      HouseholdId:
+        dtype: int
+        role: key
+        required: true
+
+      PersonNumber:
+        dtype: int
+        role: key
+        required: true
+        notes: >-
+          Need not be sequential and need not start at 1; downstream code does
+          not renumber.
+
+      Age:
+        dtype: int
+        role: attribute
+        required: true
+        range: [0, 130]
+
+      Sex:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          M: Male
+          F: Female
+
+      License:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          "Y": Holds a driving licence
+          "N": Does not
+
+      TransitPass:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          "Y": Holds a transit pass
+          "N": Does not
+
+      EmploymentStatus:
+        dtype: str
+        role: attribute
+        required: true
+        default: O
+        domain:
+          F: Full-time worker
+          P: Part-time worker
+          O: Not employed
+        notes: >-
+          P carries its standard TASHA meaning, part-time. Job formality is a
+          separate concept and lives in the Formality column.
+
+      Formality:
+        dtype: str
+        role: attribute
+        required: false
+        default: O
+        domain:
+          F: Formal job
+          I: Informal job
+          O: Not applicable, not employed, or unknown
+        notes: >-
+          Kept separate from EmploymentStatus so that P can mean part-time.
+          Optional because a survey may have no signal for it — emit O
+          throughout and say so in the mappings rather than omitting the column.
+
+      Occupation:
+        dtype: str
+        role: attribute
+        required: true
+        default: G
+        domain:
+          P: Professional / services
+          M: Manufacturing, industry and construction
+          S: Sales and retail
+          G: General — everything else
+          O: Not employed
+        notes: >-
+          Must be O for exactly the people whose EmploymentStatus is O: blank the
+          sector for anyone not working.
+
+      FreeParking:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          "Y": Has free parking
+          "N": Does not
+          O: Not applicable / unknown
+
+      StudentStatus:
+        dtype: str
+        role: attribute
+        required: true
+        default: O
+        domain:
+          S: Student
+          O: Not a student
+        notes: Full-time and part-time students are not distinguished.
+
+      EmploymentZone:
+        dtype: str
+        role: zone
+        required: true
+        sentinel:
+          "0": No usual workplace, or no work trip observed
+        description: Destination zone of the person's first work trip.
+
+      SchoolZone:
+        dtype: str
+        role: zone
+        required: true
+        sentinel:
+          "0": No school, or no school trip observed
+        description: Destination zone of the person's first school trip.
+
+      ExpansionFactor:
+        dtype: float
+        role: weight
+        required: false
+        description: Survey person weight.
+
+  trips:
+    file: od_trips.csv
+    key: [HouseholdId, PersonNumber, TripNumber]
+    columns:
+      HouseholdId:
+        dtype: int
+        role: key
+        required: true
+
+      PersonNumber:
+        dtype: int
+        role: key
+        required: true
+
+      TripNumber:
+        dtype: int
+        role: key
+        required: true
+        description: Consecutive from 1 within each person, in start-time order.
+
+      StartTime:
+        dtype: int
+        role: attribute
+        required: true
+        format: hour * 100 + minute
+        description: 08:00 is 800; 17:45 is 1745.
+        range: [0, 2359]
+
+      Mode:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          W: Walk
+          D: Auto driver
+          P: Auto passenger
+          B: Public transit
+          T: Taxi
+          U: Ride-hail
+          S: School bus
+          C: Bicycle
+          M: Motorcycle
+          O: Other
+
+      PurposeOrigin:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          H: Home
+          W: Work
+          S: School
+          M: Market / shopping
+          F: Facilitate passenger (escort, pick-up, drop-off)
+          E: Entertainment / recreation
+          O: Other
+        description: >-
+          Trip 1: where the person started the day (home vs. elsewhere).
+          Trips 2+: the previous trip's PurposeDestination, taken BEFORE the
+          R / C demotion, so R and C never appear here.
+        notes: >-
+          Spelled "PuposeOrigin" in the downstream model and in any previously
+          produced outputs. If that consumer has not been updated, rename the
+          column on write or give it an alias there.
+
+      ZoneOrigin:
+        dtype: str
+        role: zone
+        required: true
+
+      PurposeDestination:
+        dtype: str
+        role: attribute
+        required: true
+        domain:
+          H: Home
+          W: Work — first work trip of the day
+          S: School — first school trip of the day
+          M: Market / shopping
+          F: Facilitate passenger (escort, pick-up, drop-off)
+          E: Entertainment / recreation
+          O: Other
+          R: Return to work — second and later work trips
+          C: Return to school — second and later school trips
+        description: >-
+          Map the source purpose to H/W/S/M/F/E/O, then rank each person's work
+          and school trips: every work destination after the first becomes R,
+          every school destination after the first becomes C.
+
+      ZoneDestination:
+        dtype: str
+        role: zone
+        required: true
+
+      ExpansionFactor:
+        dtype: float
+        role: weight
+        required: false
+        description: Survey trip weight.
+
+      Duration:
+        dtype: int
+        role: attribute
+        required: false
+        format: minutes
+        description: Total travel time, summed over the trip's legs.

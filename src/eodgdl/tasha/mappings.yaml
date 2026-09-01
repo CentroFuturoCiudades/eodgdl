@@ -1,0 +1,435 @@
+# How the IMEPLAN Guadalajara EOD 2023 fills model_schema.yaml.
+#
+# One entry per output column, grouped by output table. Source column names are
+# eodgdl's snake_case names — i.e. the columns of viv / hab / trips / legs as
+# returned by `eodgdl.load_eod()`, after rename_imeplan.
+#
+#   source       raw eodgdl column(s) the value comes from
+#   values       {raw answer: output code} — a .map()-ready lookup
+#   default      code for anything not listed in `values` (missing or unlisted)
+#   constant     the whole column is this one value
+#   derivation   prose, for what a lookup cannot express
+#   override     a second lookup applied on top of `values`, with its `when`
+#   note         caveats: lossy collapses, judgement calls, open questions
+#   status       ok (default) | assumed | not_surveyed | pending
+#
+# `status` is what to grep for: `assumed` means no survey question, filled by
+# rule; `not_surveyed` means no survey question and no rule, filled by a
+# constant; `pending` means the mapping builds but needs a decision before the
+# output is used. `model_schema.py gaps` lists them.
+#
+# Counts in the notes are row counts in the cleaned tables:
+# 17,901 dwellings / 58,061 persons / 154,662 trips / 170,509 legs.
+
+meta:
+  survey: EODGDL2023
+  source: IMEPLAN Encuesta Origen-Destino 2023, via the eodgdl package
+  tables: viv (dwellings), hab (persons), trips, legs
+
+# ===========================================================================
+households:
+# ===========================================================================
+
+  HouseholdId:
+    source: folio_vivienda
+    derivation: 0-based counter over the sorted folio_vivienda index.
+
+  HouseholdZone:
+    source: ageb
+    derivation: viv.ageb verbatim — the AGEB CVEGEO or locality id as reported.
+    note: >-
+      Kept as a string. No renumbering, so the value joins straight to the census
+      tables on CVEGEO.
+
+  NumberOfPersons:
+    source: personas_en_vivienda
+    values:
+      "1": 1
+      "2": 2
+      "3": 3
+      "4": 4
+      "5": 5
+      "6": 6
+      "7": 7
+      "8": 8
+      "9": 9
+      "10 y +": 10
+    derivation: >-
+      Raise to the observed hab row count for the dwelling when that count is
+      larger.
+    note: >-
+      LOSSY: the source is categorical and top-coded at '10 y +' (33 dwellings),
+      so households of 11+ cannot be distinguished.
+
+  DwellingType:
+    constant: 1
+    status: pending
+    note: >-
+      NO SOURCE EXISTS. IMEPLAN_Base_Viviendas_Master.csv has 18 columns, all of
+      them mapped by eodgdl's rename map, and none is a dwelling-type question;
+      there are no address fields either, so an interior-unit-number proxy is
+      not available. 'Esta casa es?' is tenure only (tenencia_vivienda:
+      Propia / Rentada / Prestada / Hipotecada / Otros). Constant 1 until
+      resolved. Possible route: impute from the AGEB census columns, though
+      those carry room and bedroom counts (VPH_1CUART, VPH_1DOR, …) rather than
+      dwelling class, so the proxy would be weak.
+
+  Vehicles:
+    source: [n_autos_camionetas, n_motos]
+    values:
+      "0": 0
+      "1": 1
+      "2": 2
+      "3": 3
+      "4 o más": 4
+    derivation: Map each source column through `values`, then sum the two.
+    note: >-
+      LOSSY: both columns are top-coded at '4 o más'. Bicycles (n_bicicletas)
+      are excluded, per the schema definition.
+
+  IncomeClass:
+    source: ingreso_mensual_hogar
+    values:
+      Sin ingresos: 1
+      Hasta $1,500: 1
+      $1,501 y $3,000: 2
+      $3,001 y $7,000: 3
+      $7,001 y $10,000: 4
+      $10,001 y $15,000: 5
+      $15,001 y $25,000: 5
+      Más de $25,001: 6
+      No sabe: 7
+      No quiso responder: 7
+    default: 7
+    status: pending
+    note: >-
+      Provisional band merge, left in place so the column builds. 10,432 of
+      17,901 dwellings (58%) answered 'No quiso responder' (9,370) or 'No sabe'
+      (1,062) and land in class 7, so more than half the households carry no
+      income information at all. Build an imputation model — predicting the band
+      from AGEB census characteristics, vehicle ownership, education and
+      household size — before using this column as a control or a segmentation.
+
+  ExpansionFactor:
+    source: ponderador
+    derivation: viv.ponderador verbatim.
+    note: >-
+      Survey-provided dwelling design weight; sums to 1,476,347. This is stage 1
+      of the survey's three-stage expansion (Informe Técnico Final, p. 16):
+      W_c = dwellings INEGI reports in the centralidad / dwellings interviewed
+      there. It is constant within a centralidad for 52 of the 64; the other 12
+      carry 2-3 values, apparently split by municipio.
+
+      Stages 2 and 3 are folded into hab.ponderador and trips.ponderador — see
+      their ExpansionFactor notes. Weight each table by its own column: this one
+      is the uncalibrated base, and using it on persons or trips silently undoes
+      a stage.
+
+# ===========================================================================
+people:
+# ===========================================================================
+
+  HouseholdId:
+    source: folio_vivienda
+    derivation: Joined from the household table.
+
+  PersonNumber:
+    source: folio_habitante
+    derivation: Index level, 1-based.
+
+  Age:
+    source: edad
+    derivation: Verbatim.
+    note: >-
+      The EOD surveys ages 6-100 only; there are no under-6s. Household size
+      still counts them, so NumberOfPersons routinely exceeds the number of
+      person rows.
+
+  Sex:
+    source: sexo_nacimiento
+    values:
+      Hombres: M
+      Mujeres: F
+    note: >-
+      DECISION: sex at birth is used. genero_identidad also exists and adds
+      'No binario' (165 people), which has no code in the target schema.
+
+  License:
+    source: edad
+    derivation: edad >= 18 -> Y, else N.
+    status: assumed
+    note: Not surveyed. Age proxy only.
+
+  TransitPass:
+    constant: "N"
+    status: not_surveyed
+
+  EmploymentStatus:
+    source: trabajo_semana_pasada
+    values:
+      Tiempo completo: F
+      Tenía trabajo, pero no trabajó: F
+      Medio tiempo: P
+      Es estudiante: O
+      No trabajo: O
+      Busco trabajo: O
+      Se dedica a los quehaceres del hogar o a cuidar a sus hijos: O
+      Es jubilado o pensionado: O
+      Está incapacitado permanentemente para trabajar: O
+    default: O
+    note: >-
+      P is part-time (1,305 people), its standard TASHA meaning. 'Tenía trabajo,
+      pero no trabajó' (105) counts as employed. 4,370 people have no answer and
+      fall to the default O.
+
+  Formality:
+    constant: O
+    status: not_surveyed
+    note: >-
+      The EOD has no formality or social-security question, so the column is
+      constant for Guadalajara. Recorded as a known gap rather than silently
+      omitted. Route if needed: an ENOE-trained classifier over giro_empresa /
+      ocupacion / escolaridad / edad / municipio.
+
+  Occupation:
+    source: giro_empresa
+    values:
+      Servicio: P
+      Industria: M
+      Comercio: S
+      Gobierno/sector público: G
+      Educación: G
+    default: G
+    derivation: >-
+      Then force O wherever EmploymentStatus is O, so that the two columns agree
+      exactly, as the schema requires.
+    note: >-
+      giro_empresa is null for 40,451 people: null and not working -> O, null
+      and working -> G. 'Educación' is placed in G alongside government rather
+      than in P with services — revisit if teaching should count as a service.
+
+  FreeParking:
+    constant: O
+    status: pending
+    note: >-
+      Constant for now, but unlike the schema default this survey does carry
+      usable parking data: estacionamiento_lugar and pago_estacionamiento sit on
+      every trip. A real value could be derived — e.g. Y where a work-destination
+      trip reports pago_estacionamiento == 'No'.
+
+  StudentStatus:
+    source: [ocupacion, trabajo_semana_pasada, motivo_viaje]
+    derivation: >-
+      S if any of: ocupacion == 'Estudiante' (13,451); trabajo_semana_pasada ==
+      'Es estudiante' (13,187); the person has at least one trip with
+      motivo_viaje in ('Estudiar', 'Guardería') (10,835 people). Otherwise O.
+    note: Full-time and part-time students are not distinguished.
+
+  EmploymentZone:
+    source: destino
+    derivation: >-
+      Destination zone of the person's first motivo_viaje == 'Trabajar' trip,
+      verbatim. The string "0" where no work trip was observed.
+
+  SchoolZone:
+    source: destino
+    derivation: >-
+      Destination zone of the person's first motivo_viaje == 'Estudiar' trip,
+      verbatim. The string "0" where no school trip was observed.
+
+  ExpansionFactor:
+    source: ponderador
+    derivation: hab.ponderador verbatim.
+    note: >-
+      Survey-provided person design weight; sums to 4,892,583. Because it is a
+      design weight rather than a trip-derived one, non-travellers carry a real
+      weight instead of zero.
+
+      Stage 2 of the survey's three-stage expansion (Informe Técnico Final,
+      p. 16): the dwelling weight, with a per-municipio bicycle calibration
+      multiplied on top for cyclists only. IMEPLAN compared the survey's own
+      expanded count of bicycle users against INEGI's count for each municipio
+      and applied the ratio — Zapotlanejo 3.68, Ixtlahuacán de los Membrillos
+      2.33, El Salto 1.98, Zapopan 1.85, Tlajomulco 1.71, Guadalajara 1.25,
+      Tlaquepaque 1.02, Juanacatlán 0.96, Tonalá 0.89.
+
+      In the data 57,294 of 58,061 persons (98.7%) carry their dwelling's weight
+      verbatim. All 767 that differ — spread over 679 dwellings — made a bicycle
+      trip, and their per-person hab/viv ratio recovers the factors above to
+      within integer rounding: both weights are stored as int, so a person's
+      ratio wobbles by up to 0.5/w around the true factor (dwelling weight 3 in
+      Zapotlanejo gives 11/3 = 3.67, weight 35 gives 129/35 = 3.69). Take the
+      per-municipio median over cyclists to read a factor off the data; a single
+      person's ratio is too coarse.
+
+      Which cyclists IMEPLAN reweighted is NOT recoverable from the shipped
+      columns. 848 persons made a bicycle trip, so 81 bike-trip makers were left
+      unreweighted; rounding accounts for only 24 of them (Juanacatlán's 0.96 on
+      a weight of 2, Tlaquepaque's 1.02 on small weights). The other 57 —
+      Guadalajara and Zapopan cyclists at weights up to 246, where the factor
+      would plainly have moved the value — were simply outside IMEPLAN's cyclist
+      set. Every candidate definition in the data overshoots: the reweighted set
+      is a strict subset of bike-trip makers, closest to modo_principal ==
+      'Bicicleta' (794 persons, 27 too many). Use the weight as given; do not
+      try to re-derive membership.
+
+      The calibration reweights the whole person, not just their bicycle trips:
+      a cyclist's bus and car trips are expanded by the calibrated weight too.
+
+      One dwelling can therefore hold more than one person weight (632 do), so
+      never read a household's weight as first() of its members'.
+
+# ===========================================================================
+trips:
+# ===========================================================================
+
+  HouseholdId:
+    source: folio_vivienda
+    derivation: Joined from the household table.
+
+  PersonNumber:
+    source: folio_habitante
+    derivation: Joined from the people table.
+
+  TripNumber:
+    source: folio_viaje
+    derivation: Verbatim.
+    note: >-
+      Verified already consecutive from 1 within every person, so no renumbering
+      is needed.
+
+  StartTime:
+    source: [hora_inicio_h, hora_inicio_m]
+    derivation: >-
+      hora_inicio_h * 100 + hora_inicio_m. The 325 trips reporting neither are
+      DROPPED, and the affected people's remaining trips are renumbered so
+      TripNumber stays consecutive from 1.
+    note: >-
+      Dropping shortens 325 trip chains. PurposeOrigin on trips 2+ copies the
+      previous SURVIVING trip's destination purpose, so a chain with a hole in
+      it is stitched across the gap rather than broken. The builder warns with
+      the exact count each run.
+
+  Mode:
+    source: modo_principal
+    values:
+      A PIE: W
+      AUTOMÓVIL PARTICULAR: D
+      CAMIÓN O AUTOBÚS: B
+      TREN LIGERO: B
+      MI MACRO: B
+      Línea 1 Sitren: B
+      Línea 2 Sitren: B
+      Línea 3 Sitren: B
+      Servicio suburbano: B
+      Taxi colectivo: B
+      Transporte informal: B
+      Taxi: T
+      Mototaxi: T
+      Taxi plataforma (Uber/Didi): U
+      Transporte escolar: S
+      Transporte escolar particular: S
+      Bicicleta: C
+      Mi Bici: C
+      MOTOCICLETA: M
+      Transporte de personal: O
+    override:
+      source: rol_en_vehiculo
+      values:
+        Acompañante: P
+      when: modo_principal in (AUTOMÓVIL PARTICULAR, MOTOCICLETA)
+    note: >-
+      All 20 source modes are covered. Judgement calls: Mototaxi (1,238) is
+      treated as a taxi service rather than a motorcycle; Taxi colectivo (267)
+      and Transporte informal (11) go to transit; Transporte de personal (2,927,
+      an employer shuttle) goes to O. The override moves 4,365 auto/motorcycle
+      trips whose occupant answered 'Acompañante' to P; rol_en_vehiculo is null
+      on 134,095 trips, so treat null as driver for auto modes. The other 36
+      'Acompañante' trips are on transit, walk or ride-hail and keep their
+      mapped mode.
+
+  PurposeOrigin:
+    source: tipo_lugar_origen
+    values:
+      Su casa: H
+      Comercio, mercado, tienda o centro comercial: O
+      Fábrica o taller: O
+      Escuela: O
+      Oficina: O
+      Deportivo, gimnasio: O
+      Hospital, clínica, consultorio, laboratorio clínico: O
+      Otra vivienda: O
+      Centro cultural o área recreativa: O
+      Restaurante, bar, cafetería: O
+      Otros (especifique): O
+    default: O
+    derivation: >-
+      TRIP 1 only: map tipo_lugar_origen through `values`, which forces it to
+      home vs. not-home. TRIPS 2+: copy the previous trip's PurposeDestination,
+      taken BEFORE the R/C demotion, so R and C never reach this column.
+    note: >-
+      152,164 of 154,662 trips start at 'Su casa'.
+
+  ZoneOrigin:
+    source: origen
+    derivation: trips.origen verbatim — the AGEB CVEGEO or locality id.
+
+  PurposeDestination:
+    source: motivo_viaje
+    values:
+      Regresar a Casa: H
+      Trabajar: W
+      Estudiar: S
+      Guardería: S
+      Compras (comida): M
+      Compras (bienes, productos y servicios): M
+      Llevar o recoger a alguien: F
+      Deportes o recreación: E
+      Visitar a alguien: O
+      Al médico o atención de salud: O
+      Pagar algún servicio o al banco: O
+      Hacer un trámite: O
+      Otros (especifique): O
+    default: O
+    derivation: >-
+      Then rank each person's work and school trips in start-time order: every
+      W after the first becomes R, every S after the first becomes C.
+    note: >-
+      LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
+      all collapse into O. Guardería (217) is placed with school. 332 trips have
+      no motivo_viaje and fall to the default O.
+
+  ZoneDestination:
+    source: destino
+    derivation: trips.destino verbatim — the AGEB CVEGEO or locality id.
+
+  ExpansionFactor:
+    source: ponderador
+    derivation: trips.ponderador verbatim.
+    note: >-
+      Survey-provided trip design weight; sums to 11,796,386. Stage 3 of the
+      survey's three-stage expansion (Informe Técnico Final, p. 16): the person
+      weight, scaled by 0.56767147 for bus trips only. modo_principal is the sole
+      driver — all 119,201 non-bus trips carry their person's weight exactly, and
+      the 35,461 'CAMIÓN O AUTOBÚS' trips are scaled so they sum to 1,851,750,
+      the SETRAN 2023 daily-boardings control total, to the unit.
+
+      Do not try to derive this column: round(hab.ponderador * 0.56767147)
+      recovers only 77.6% of the bus weights exactly (93.5% within +/-1), because
+      the factor was applied to the unrounded weight and rounded once at the end.
+      Related, the report's pre-calibration bus figure (3,262,010) does not match
+      what the shipped weights give (3,284,345, implying 0.5638 rather than
+      0.56767147); the calibrated total is exact, so the gap is upstream.
+
+      One person can therefore hold more than one trip weight (5,890 do; 94% of
+      those are mixed bus / non-bus travel days). Weighting trips by
+      hab.ponderador instead of this column puts bus travel at 3,284,345 rather
+      than 1,851,750, +77%.
+
+  Duration:
+    source: legs.traslado_min
+    derivation: Sum traslado_min over the trip's legs, in minutes.
+    note: >-
+      Do NOT use trips.duracion_total_min: it is categorical and banded
+      ('Menos de 6', '6 a 10', … '121 y +'), whereas the leg minutes are
+      integers.
