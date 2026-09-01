@@ -18,7 +18,9 @@ def test_public_api():
 def test_rename_map_bundled():
     # Code config ships in the package and loads without any network access.
     m = eodgdl.imeplan_rename_map()
-    assert {"habitantes", "viviendas", "viajes"} <= set(m)
+    # Exactly the three rename tables: categorical levels belong to schemas.py.
+    assert set(m) == {"habitantes", "viviendas", "viajes"}
+    assert all(isinstance(v, str) for table in m.values() for v in table.values())
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
