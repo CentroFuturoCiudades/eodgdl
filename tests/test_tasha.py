@@ -85,6 +85,35 @@ def test_validate_catches_bad_tables():
     assert "first TripNumber is not 1" in problems
 
 
+def test_validate_rejects_home_to_home_trips():
+    # A return home made from home is not a trip; the builder must drop it.
+    trips = pd.DataFrame({
+        "HouseholdId": [0, 0], "PersonNumber": [1, 1], "TripNumber": [1, 2],
+        "StartTime": [800, 900], "Mode": ["W", "W"], "PurposeOrigin": ["H", "H"],
+        "ZoneOrigin": [AGEB, AGEB], "PurposeDestination": ["H", "M"],
+        "ZoneDestination": [AGEB, AGEB],
+    })
+    assert any("from H to H" in p for p in tasha.validate(trips, "trips"))
+
+
+def test_chain_report_counts_what_validate_cannot_demand():
+    other = "1409700251419"
+    trips = pd.DataFrame({
+        "HouseholdId": [0, 0, 0], "PersonNumber": [1, 1, 1], "TripNumber": [1, 2, 3],
+        "StartTime": [800, 730, 730], "Mode": ["W", "W", "W"],
+        "PurposeOrigin": ["H", "W", "M"], "ZoneOrigin": [AGEB, other, AGEB],
+        "PurposeDestination": ["W", "M", "E"], "ZoneDestination": [other, AGEB, other],
+    })
+    assert tasha.validate(trips, "trips") == []          # conforms...
+    report = " | ".join(tasha.chain_report(trips))       # ...but is not clean
+    assert "1 trips (1 people) start earlier" in report   # 730 after 800
+    assert "1 trips start at the same minute" in report
+    assert "do not start in the zone" not in report      # zones do chain
+    assert "1 people whose last trip does not end at home" in report
+    trips.loc[1, "ZoneOrigin"] = AGEB                     # now trip 2 starts elsewhere
+    assert any("do not start in the zone" in p for p in tasha.chain_report(trips))
+
+
 def test_validate_accepts_a_clean_table():
     trips = pd.DataFrame({
         "HouseholdId": [0], "PersonNumber": [1], "TripNumber": [1],
@@ -162,17 +191,31 @@ def test_purpose_origin_is_spelled_correctly():
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_conforms_and_warns():
-    with pytest.warns(UserWarning, match="no reported start time"):
-        od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
+def test_build_refuses_the_survey_as_shipped():
+    with pytest.raises(ValueError, match="no start time"):
+        eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR, clean_chains=False))
+
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_build_conforms():
+    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
 
     assert tasha.validate_all(*od) == []
-    assert len(od.households) > 0 and len(od.people) > 0 and len(od.trips) > 0
+    assert len(od.households) == 17_901
+    # load_eod excluded the 281 people whose day has an untimed trip.
+    assert len(od.people) == 58_061 - 281
+    assert len(od.trips) == 153_052
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
-    # Dropping untimed trips must leave every chain starting at 1.
+    # Renumbered over load_eod's gaps, and never from H to H.
     assert (od.trips.groupby(["HouseholdId", "PersonNumber"]).TripNumber.min() == 1).all()
+    assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
+
+    # What load_eod's cleaning does not repair is reported, at these levels.
+    report = " | ".join(tasha.chain_report(od.trips))
+    assert "152 trips (150 people) do not start in the zone" in report
+    assert "1411 trips (1322 people) start earlier" in report
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")

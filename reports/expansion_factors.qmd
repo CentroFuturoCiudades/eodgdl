@@ -63,7 +63,9 @@ def fmt(n) -> str:
 #| label: load
 #| include: false
 
-viv, hab, trips, legs = load_eod()
+# The survey as shipped: the weights reconcile to the published totals only before
+# load_eod's chain cleaning, which excludes 281 persons and drops 468 trips.
+viv, hab, trips, legs = load_eod(clean_chains=False)
 v, h, t = viv.reset_index(), hab.reset_index(), trips.reset_index()
 
 BUS = "CAMIÓN O AUTOBÚS"
@@ -687,7 +689,7 @@ reproducing IMEPLAN's published tables, and not agent replication factors.
 ## Sources & methods
 
 - **Survey:** Encuesta Origen-Destino 2023, IMEPLAN (AMG). Tables loaded and cleaned with
-  `eodgdl.load_eod()`, which returns `viv` / `hab` / `trips` / `legs` at
+  `eodgdl.load_eod(clean_chains=False)`, which returns `viv` / `hab` / `trips` / `legs` at
   `{python} fmt(len(viv))` dwellings, `{python} fmt(len(hab))` persons,
   `{python} fmt(len(trips))` trips and `{python} fmt(len(legs))` legs.
 - **Weighting methodology:** *Informe Técnico Final EOD 2023*, p. 16, which sets out the

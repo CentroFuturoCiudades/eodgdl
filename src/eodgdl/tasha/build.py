@@ -5,6 +5,12 @@ retyped here, so changing a mapping changes the output. What the mappings record
 as ``derivation`` prose — the R/C demotion, the passenger override, the
 work/school zone lookups — is implemented below, and the prose is its spec.
 
+The input is what ``load_eod`` returns: trip chains already cleaned by
+``eodgdl.eod.clean_trip_chains`` (persons with an untimed trip excluded,
+mislabelled returns recoded, returns home made from home dropped, 12-hour-clock
+start times moved). The builder refuses a trip table with untimed rows rather
+than guess at them.
+
     from eodgdl import load_eod, tasha
 
     od = tasha.build(load_eod("data"))
@@ -13,7 +19,6 @@ work/school zone lookups — is implemented below, and the prose is its spec.
 """
 from __future__ import annotations
 
-import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -39,24 +44,13 @@ def _household_ids(viv: pd.DataFrame) -> pd.Series:
     return pd.Series(range(len(viv)), index=viv.index, name="HouseholdId")
 
 
-def _drop_untimed_trips(trips: pd.DataFrame) -> pd.DataFrame:
-    """Drop trips with no start time, warning with the count.
-
-    A trip with neither hour nor minute cannot be placed in the day. Dropping is
-    the recorded decision (see StartTime in mappings.yaml); the survivors are
-    renumbered by build_trips so TripNumber stays consecutive from 1.
-    """
-    untimed = trips.hora_inicio_h.isna() | trips.hora_inicio_m.isna()
-    n = int(untimed.sum())
-    if n:
-        people = trips.index[untimed].droplevel("folio_viaje").nunique()
-        warnings.warn(
-            f"dropping {n:,} trip(s) with no reported start time, shortening the "
-            f"trip chains of {people:,} person/people; their remaining trips are "
-            "renumbered consecutively from 1",
-            stacklevel=3,
-        )
-    return trips[~untimed].copy()
+def _purposes(trips: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """(destination purpose, first-trip origin purpose), before the R/C demotion."""
+    destination = (trips.motivo_viaje.map(build_map("PurposeDestination"))
+                        .fillna(mapping("PurposeDestination")["default"]))
+    origin = (trips.tipo_lugar_origen.map(build_map("PurposeOrigin"))
+                   .fillna(mapping("PurposeOrigin")["default"]))
+    return destination, origin
 
 
 def build_households(viv: pd.DataFrame, hab: pd.DataFrame) -> pd.DataFrame:
@@ -84,11 +78,7 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
-    """od_people.csv, one row per surveyed person.
-
-    ``trips`` must already have had its untimed trips dropped, so the work and
-    school zones agree with the trip table.
-    """
+    """od_people.csv, one row per person in ``hab``."""
     employment = (hab.trabajo_semana_pasada.map(build_map("EmploymentStatus"))
                      .fillna(mapping("EmploymentStatus")["default"]))
     # Occupation is O for exactly the non-workers, as the schema requires.
@@ -128,10 +118,15 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
 
 
 def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
-    """od_trips.csv, one row per timed trip.
+    """od_trips.csv, one row per trip, in chain (folio_viaje) order."""
+    untimed = int((trips.hora_inicio_h.isna() | trips.hora_inicio_m.isna()).sum())
+    if untimed:
+        raise ValueError(
+            f"{untimed:,} trips have no start time; load_eod() excludes their persons "
+            "(clean_chains=True) — pass its tables rather than the survey as shipped"
+        )
+    trips = trips.sort_index()
 
-    ``trips`` must already have had its untimed trips dropped.
-    """
     # Mode: the modo_principal lookup, then the passenger override.
     mode = trips.modo_principal.map(build_map("Mode"))
     override = mapping("Mode")["override"]
@@ -139,9 +134,9 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
     passenger = trips[override["source"]] == "Acompañante"
     mode = mode.mask(is_auto & passenger, override["values"]["Acompañante"])
 
-    # Purpose: the motivo_viaje lookup, then demote repeat work/school trips.
-    purpose = (trips.motivo_viaje.map(build_map("PurposeDestination"))
-                    .fillna(mapping("PurposeDestination")["default"]))
+    # Purpose: the motivo_viaje lookup, then demote repeat work/school trips,
+    # ranked in chain order.
+    purpose, first_trip = _purposes(trips)
     repeat = trips.assign(_p=purpose).groupby(PERSON + ["_p"]).cumcount() > 0
     destination = (purpose.mask((purpose == "W") & repeat, "R")
                           .mask((purpose == "S") & repeat, "C"))
@@ -149,8 +144,6 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
     # Origin purpose: trip 1 from the reported place, later trips from the
     # previous trip's destination purpose BEFORE the demotion, so R and C
     # never reach this column.
-    first_trip = (trips.tipo_lugar_origen.map(build_map("PurposeOrigin"))
-                       .fillna(mapping("PurposeOrigin")["default"]))
     origin = purpose.groupby(level=PERSON).shift(1).fillna(first_trip)
 
     duration = legs.groupby(level=[0, 1, 2]).traslado_min.sum().reindex(trips.index)
@@ -159,7 +152,7 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
         "HouseholdId": _household_ids(viv).reindex(
             trips.index.get_level_values("folio_vivienda")).to_numpy(),
         "PersonNumber": trips.index.get_level_values("folio_habitante"),
-        # Renumbered, because dropping untimed trips leaves gaps.
+        # Renumbered: load_eod's chain cleaning leaves gaps in folio_viaje.
         "TripNumber": trips.groupby(level=PERSON).cumcount().to_numpy() + 1,
         "StartTime": (trips.hora_inicio_h * 100 + trips.hora_inicio_m).astype(int).to_numpy(),
         "Mode": mode.to_numpy(),
@@ -173,15 +166,10 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
 
 
 def build(tables) -> ODTables:
-    """Build all three tables from an :class:`~eodgdl.EODTables`.
-
-    Trips with no reported start time are dropped, with a warning, before
-    anything that depends on the trip table is derived.
-    """
+    """Build all three tables from an :class:`~eodgdl.EODTables` as ``load_eod`` returns it."""
     viv, hab, trips, legs = tables
-    timed = _drop_untimed_trips(trips)
     return ODTables(
         build_households(viv, hab),
-        build_people(hab, timed, viv),
-        build_trips(timed, legs, viv),
+        build_people(hab, trips, viv),
+        build_trips(trips, legs, viv),
     )

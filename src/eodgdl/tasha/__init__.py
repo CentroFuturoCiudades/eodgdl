@@ -13,7 +13,8 @@ inside this subpackage and are meant to be read and edited by hand.
     tasha.check_mappings()              # mappings.yaml vs. model_schema.yaml
 
     od = tasha.build(load_eod("data"))  # the three model input tables
-    tasha.validate_all(*od)
+    tasha.validate_all(*od)             # contract violations: must be empty
+    tasha.chain_report(od.trips)        # data-quality counts: read, don't fail
 """
 from eodgdl.tasha.build import (
     ODTables,
@@ -24,6 +25,7 @@ from eodgdl.tasha.build import (
 )
 from eodgdl.tasha._schema import (
     build_map,
+    chain_report,
     check_mappings,
     column_spec,
     columns,
@@ -67,4 +69,5 @@ __all__ = [
     # Validation
     "validate",
     "validate_all",
+    "chain_report",
 ]

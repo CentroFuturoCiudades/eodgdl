@@ -145,6 +145,10 @@ people:
   PersonNumber:
     source: folio_habitante
     derivation: Index level, 1-based.
+    note: >-
+      281 surveyed persons (0.48%) have no row: load_eod excludes the persons
+      whose day has an untimed trip (eodgdl.eod.clean_trip_chains). Their
+      household's reported size still counts them in NumberOfPersons.
 
   Age:
     source: edad
@@ -302,22 +306,31 @@ trips:
 
   TripNumber:
     source: folio_viaje
-    derivation: Verbatim.
+    derivation: >-
+      Position in the chain, in folio_viaje order, renumbered 1..n: load_eod's
+      chain cleaning leaves gaps in folio_viaje where it dropped rows.
     note: >-
-      Verified already consecutive from 1 within every person, so no renumbering
-      is needed.
+      folio_viaje — the order the interview recorded the trips — is the
+      authoritative chain order; the start times are not. The evidence and the
+      four cleaning rules live with the loader, eodgdl.eod.clean_trip_chains:
+      the survey elicits one weekday per person as home-based tours, and in
+      folio order 99.8% of adjacent trips start in the zone the previous one
+      ended in, against 67% under start-time order for the people whose times
+      disagree. Decided 2026-09-01; until then the contract said start-time
+      order while the builder used folio order.
 
   StartTime:
     source: [hora_inicio_h, hora_inicio_m]
-    derivation: >-
-      hora_inicio_h * 100 + hora_inicio_m. The 325 trips reporting neither are
-      DROPPED, and the affected people's remaining trips are renumbered so
-      TripNumber stays consecutive from 1.
+    derivation: hora_inicio_h * 100 + hora_inicio_m.
     note: >-
-      Dropping shortens 325 trip chains. PurposeOrigin on trips 2+ copies the
-      previous SURVIVING trip's destination purpose, so a chain with a hole in
-      it is stitched across the gap rather than broken. The builder warns with
-      the exact count each run.
+      The hours are the ones load_eod returns, after its chain cleaning: the
+      281 persons with an untimed trip are gone (1,142 trips), and 579 start
+      times entered on a 12-hour clock were moved forward 12 hours. 1,411
+      trips (1,322 people, 2.5% of travellers) still start before their
+      predecessor and are kept; tasha.chain_report counts them on every build.
+      The rules, their evidence and the rejected alternatives — dropping those
+      people, imputing the untimed trips — are documented in eodgdl.eod. The
+      builder refuses a trip table with untimed rows rather than guess.
 
   Mode:
     source: modo_principal
@@ -374,10 +387,13 @@ trips:
     default: O
     derivation: >-
       TRIP 1 only: map tipo_lugar_origen through `values`, which forces it to
-      home vs. not-home. TRIPS 2+: copy the previous trip's PurposeDestination,
-      taken BEFORE the R/C demotion, so R and C never reach this column.
+      home vs. not-home. TRIPS 2+: copy the previous surviving trip's
+      PurposeDestination, taken BEFORE the R/C demotion, so R and C never
+      reach this column.
     note: >-
-      152,164 of 154,662 trips start at 'Su casa'.
+      152,164 of 154,662 trips in the shipped survey start at 'Su casa'. Never
+      H on a trip whose PurposeDestination is H: load_eod drops those rows,
+      see PurposeDestination.
 
   ZoneOrigin:
     source: origen
@@ -401,12 +417,19 @@ trips:
       Otros (especifique): O
     default: O
     derivation: >-
-      Then rank each person's work and school trips in start-time order: every
-      W after the first becomes R, every S after the first becomes C.
+      Then rank each person's work and school trips in chain order
+      (TripNumber): every W after the first becomes R, every S after the first
+      becomes C.
     note: >-
       LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
-      all collapse into O. Guardería (217) is placed with school. 332 trips have
-      no motivo_viaje and fall to the default O.
+      all collapse into O. Guardería (217) is placed with school. 7 trips have
+      no motivo_viaje and fall to the default O. Two of load_eod's chain rules
+      shape this column upstream (eodgdl.eod): 84 'Regresar a Casa' trips
+      whose destination zone is not the household's already carry the motive
+      their destination type implies (22 Estudiar, 13 Trabajar, 22 Compras, 27
+      other), and 468 returns home made while already at home are gone — so
+      the contract's rule that no trip goes from H to H holds with no work
+      here, and the 13 Trabajar recodes set an EmploymentZone like any other.
 
   ZoneDestination:
     source: destino
@@ -416,7 +439,9 @@ trips:
     source: ponderador
     derivation: trips.ponderador verbatim.
     note: >-
-      Survey-provided trip design weight; sums to 11,796,386. Stage 3 of the
+      Survey-provided trip design weight; sums to 11,796,386 in the survey as
+      shipped (load_eod(clean_chains=False)) and to 11,701,226 after load_eod's
+      chain cleaning. Stage 3 of the
       survey's three-stage expansion (Informe Técnico Final, p. 16): the person
       weight, scaled by 0.56767147 for bus trips only. modo_principal is the sole
       driver — all 119,201 non-bus trips carry their person's weight exactly, and

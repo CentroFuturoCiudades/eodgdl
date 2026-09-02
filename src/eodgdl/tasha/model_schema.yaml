@@ -248,6 +248,16 @@ tables:
   trips:
     file: od_trips.csv
     key: [HouseholdId, PersonNumber, TripNumber]
+    notes: >-
+      Rows form a chain per person: TripNumber order is the order the trips
+      were made, and each trip starts where the previous one ended. The
+      contract enforces what a builder can guarantee — TripNumber runs 1..n
+      with no gaps, PurposeOrigin is never R or C, and no trip goes from H to
+      H (a return home made from home is not a trip). It does not enforce
+      zone continuity or increasing StartTime along the chain, because a
+      survey can violate both and a builder cannot repair them without
+      inventing data; a producer reports those as counts instead
+      (eodgdl: tasha.chain_report).
     columns:
       HouseholdId:
         dtype: int
@@ -263,7 +273,13 @@ tables:
         dtype: int
         role: key
         required: true
-        description: Consecutive from 1 within each person, in start-time order.
+        description: >-
+          Consecutive from 1 within each person, in chain order: the order the
+          survey recorded the trips, which is the order the person made them.
+        notes: >-
+          Chain order is NOT start-time order. Do not renumber by StartTime:
+          where the two disagree it is the reported time that is wrong, not the
+          sequence (see StartTime).
 
       StartTime:
         dtype: int
@@ -272,6 +288,12 @@ tables:
         format: hour * 100 + minute
         description: 08:00 is 800; 17:45 is 1745.
         range: [0, 2359]
+        notes: >-
+          A reported attribute, not the chain's ordering key. It need not
+          increase along a person's chain: a trip that starts before its
+          predecessor is a defect in the reported time, to be repaired or
+          tolerated, never a reason to reorder the trips. A producer says how
+          many such trips remain (tasha.chain_report).
 
       Mode:
         dtype: str
@@ -304,7 +326,8 @@ tables:
         description: >-
           Trip 1: where the person started the day (home vs. elsewhere).
           Trips 2+: the previous trip's PurposeDestination, taken BEFORE the
-          R / C demotion, so R and C never appear here.
+          R / C demotion, so R and C never appear here. Never H on a trip
+          whose PurposeDestination is also H.
         notes: >-
           The column is PurposeOrigin, and PurposeOrigin is what eodgdl writes.
           The downstream model misspells it "PuposeOrigin", as do any outputs
@@ -335,8 +358,10 @@ tables:
           C: Return to school — second and later school trips
         description: >-
           Map the source purpose to H/W/S/M/F/E/O, then rank each person's work
-          and school trips: every work destination after the first becomes R,
-          every school destination after the first becomes C.
+          and school trips in chain order: every work destination after the
+          first becomes R, every school destination after the first becomes C.
+          A trip coded H while the person is already at home (PurposeOrigin H)
+          is not a trip and must not appear.
 
       ZoneDestination:
         dtype: str

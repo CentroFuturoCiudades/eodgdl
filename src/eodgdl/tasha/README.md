@@ -42,8 +42,13 @@ eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 ```
 
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
-changes the output without touching `build.py`. It warns on each run about the
-325 trips dropped for having no reported start time.
+changes the output without touching `build.py`. It expects the tables as
+`load_eod` returns them, trip chains already cleaned by
+`eodgdl.eod.clean_trip_chains` — the 281 persons with an untimed trip
+excluded, 84 mislabelled returns recoded, 468 returns home made from home
+dropped, 579 12-hour-clock start times moved — and refuses a trip table with
+untimed rows. What that cleaning does not repair, `tasha.chain_report(od.trips)`
+counts; see "Validating" below.
 
 Zone columns hold the survey's own AGEB CVEGEO or locality id as a **string**.
 Read them back with `dtype=str` — `tasha.zone_columns(table)` lists them —
@@ -143,6 +148,7 @@ invariants the contract states in prose rather than in a domain:
 
 - a non-worker has no sector (`EmploymentStatus` and `Occupation` are `O` together);
 - the return purposes `R`/`C` never appear as a trip *origin*;
+- no trip goes from `H` to `H` — a return home made from home is not a trip;
 - `HouseholdId` is dense and 0-based;
 - every person's `TripNumber` runs 1..n with no gaps;
 - `NumberOfPersons` is never below the person rows the household actually has —
@@ -150,13 +156,27 @@ invariants the contract states in prose rather than in a domain:
 
 It returns a list of strings, raises nothing and mutates nothing.
 
+`validate` checks what a conforming table *must* satisfy. Two chain properties
+are deliberately not in that list, because the survey violates them and a
+builder cannot repair them without inventing data: that each trip starts in
+the zone the previous one ended in, and that start times increase along the
+chain. `tasha.chain_report(trips)` counts those instead, together with tours
+that do not begin or end at home, and the CLI prints it after every build and
+validate without changing the exit code. On the shipped data:
+
+```
+152 trips (150 people) do not start in the zone the previous trip ended in
+1411 trips (1322 people) start earlier than the trip before them
+192 trips start at the same minute as the trip before them
+899 people whose first trip does not start at home
+412 people whose last trip does not end at home
+```
+
 ## Open items
 
 ### Column gaps
 
 `eodgdl tasha gaps` lists these; the full reasoning is in each mapping's `note`.
-Resolved: the 325 trips with no start time are dropped and the affected people's
-remaining trips renumbered, with a warning on every build.
 
 - **`DwellingType`** (pending) — no source exists. The dwellings file has no
   dwelling-type question and no address fields, so there is no interior-unit
@@ -178,21 +198,20 @@ remaining trips renumbered, with a warning on every build.
 No mapping `status` can carry these — they are about the shape of the output
 rather than about one column's coding, so nothing surfaces them automatically.
 
-- **Trip ordering.** `model_schema.yaml` says `TripNumber` is consecutive from 1
-  "in start-time order", and both the R/C demotion and the `PurposeOrigin` chain
-  are specified against that order. `build.py` uses the trip table's row order —
-  `folio_viaje` — instead, via `groupby(...).cumcount()` and `shift(1)`. The two
-  disagree for **1,849 of 52,758 people**: 2,009 trips start earlier than the
-  trip before them, and only 93 of those look like legitimate overnight wraps
-  (previous start ≥ 18:00, next ≤ 06:00). The same row order picks
-  `EmploymentZone` / `SchoolZone`, which take `.first()` over a person's work and
-  school trips.
-
-  Decide which order is authoritative — most likely `folio_viaje`, as the chain
-  order the interview actually recorded, in which case it is the contract's
-  wording that should change — and then have `validate()` check it. Nothing
-  detects this today: the numbers are consecutive under either reading, so the
-  `TripNumber` check passes regardless.
+- **Trip ordering — resolved 2026-09-01.** `folio_viaje` is the authoritative
+  chain order and the contract now says so; the start times are the noisy
+  field. The evidence and the four chain rules that follow from it live with
+  the loader, `eodgdl.eod.clean_trip_chains`; the mapping notes point there,
+  and `reports/trip_chains.qmd` walks through every problem with examples.
+  What remains is data quality the build reports rather than repairs
+  (`tasha.chain_report`): 1,411 trips in 1,322 people still start before the
+  trip before them, about 124 of them plausible night shifts, and 152 trips
+  do not start where the previous one ended. Two follow-ups were tried the
+  same day: recoding the `Regresar a Casa` trips whose `tipo_lugar_destino`
+  says the place was not a home is now a survey-level recode in `load_eod`,
+  guarded by the zone (84 trips); imputing the untimed trips instead of
+  excluding their person-days was prototyped and rejected — the numbers are
+  in `eodgdl.eod`.
 
 - **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
   `zones.alternatives` offers `ID_ZONAEOD` (71 zones) and `MZONA` (601) as the

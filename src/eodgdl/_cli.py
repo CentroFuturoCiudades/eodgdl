@@ -73,6 +73,18 @@ def _report(problems: list[str], ok_message: str) -> int:
     return 0
 
 
+def _chain_notes(trips) -> None:
+    """Print tasha.chain_report: informational, never changes the exit code."""
+    from eodgdl import tasha
+
+    notes = tasha.chain_report(trips)
+    if notes:
+        print("chain diagnostics (informational; the cleaning rules are in eodgdl.eod):")
+        for note in notes:
+            print(f"  - {note}")
+        print()
+
+
 def _tasha(args) -> int:
     from pathlib import Path
 
@@ -100,6 +112,7 @@ def _tasha(args) -> int:
             df.to_csv(path, index=False)
             print(f"wrote {path}  ({len(df):,} rows)")
         print()
+        _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")
 
     directory = Path(args.directory)
@@ -118,6 +131,8 @@ def _tasha(args) -> int:
     if not frames:
         print(f"no od_*{args.suffix}.csv files found in {directory}")
         return 1
+    if "trips" in frames:
+        _chain_notes(frames["trips"])
     return _report(tasha.validate_all(**frames), "conforms to model_schema.yaml")
 
 

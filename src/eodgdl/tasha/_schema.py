@@ -397,6 +397,15 @@ def _invariants(df, table):
                     f"trips: {leaked} rows where PurposeOrigin is R or C; the "
                     "return codes belong to PurposeDestination only"
                 )
+        if {"PurposeOrigin", "PurposeDestination"} <= set(df.columns):
+            # "A return home made from home is not a trip": the chain says the
+            # person is already at home, so the row cannot be scheduled.
+            home_to_home = int(((df.PurposeOrigin == "H") & (df.PurposeDestination == "H")).sum())
+            if home_to_home:
+                out.append(
+                    f"trips: {home_to_home} rows go from H to H; a return home made "
+                    "from home is not a trip, and the builder must drop it"
+                )
         if {"HouseholdId", "PersonNumber", "TripNumber"} <= set(df.columns):
             chains = df.groupby(["HouseholdId", "PersonNumber"]).TripNumber.agg(
                 ["min", "max", "count", "nunique"]
@@ -415,6 +424,68 @@ def _invariants(df, table):
                     "the contract requires 1..n with no gaps"
                 )
     return out
+
+
+_CHAIN_COLUMNS = (
+    "HouseholdId", "PersonNumber", "TripNumber", "StartTime",
+    "PurposeOrigin", "PurposeDestination", "ZoneOrigin", "ZoneDestination",
+)
+
+
+def chain_report(trips):
+    """Data-quality facts about the trip chains that the contract cannot demand.
+
+    ``validate`` checks what a conforming table MUST satisfy. This reports, as
+    counts, what a survey can leave imperfect and a builder cannot repair
+    without inventing data: zone continuity (each trip starts where the
+    previous one ended), start-time order along the chain, and tours that do
+    not begin or end at home. Read it to judge a build, not to fail it.
+
+    Returns a list of human-readable lines; empty means every chain is clean.
+    Nothing is raised and nothing is modified.
+    """
+    missing = [c for c in _CHAIN_COLUMNS if c not in trips.columns]
+    if missing:
+        return [f"trips: chain report needs the columns {missing}"]
+    person = ["HouseholdId", "PersonNumber"]
+    t = trips.sort_values(person + ["TripNumber"], kind="stable")
+    g = t.groupby(person, sort=False)
+    prev_zone = g.ZoneDestination.shift(1)
+    prev_time = g.StartTime.shift(1)
+    has_prev = prev_zone.notna()
+
+    def people(mask):
+        return int(t.loc[mask, person].drop_duplicates().shape[0])
+
+    lines = []
+    breaks = has_prev & (t.ZoneOrigin.astype(str) != prev_zone.astype(str))
+    if breaks.any():
+        lines.append(
+            f"trips: {int(breaks.sum())} trips ({people(breaks)} people) do not "
+            "start in the zone the previous trip ended in"
+        )
+    earlier = has_prev & (t.StartTime < prev_time)
+    if earlier.any():
+        lines.append(
+            f"trips: {int(earlier.sum())} trips ({people(earlier)} people) start "
+            "earlier than the trip before them; StartTime is not in chain order "
+            "for those people"
+        )
+    ties = has_prev & (t.StartTime == prev_time)
+    if ties.any():
+        lines.append(
+            f"trips: {int(ties.sum())} trips start at the same minute as the trip "
+            "before them"
+        )
+    first = t[g.cumcount() == 0]
+    away = int((first.PurposeOrigin != "H").sum())
+    if away:
+        lines.append(f"trips: {away} people whose first trip does not start at home")
+    last = t[g.cumcount(ascending=False) == 0]
+    out = int((last.PurposeDestination != "H").sum())
+    if out:
+        lines.append(f"trips: {out} people whose last trip does not end at home")
+    return lines
 
 
 def validate_all(households=None, people=None, trips=None):
