@@ -310,27 +310,40 @@ trips:
       Position in the chain, in folio_viaje order, renumbered 1..n: load_eod's
       chain cleaning leaves gaps in folio_viaje where it dropped rows.
     note: >-
-      folio_viaje — the order the interview recorded the trips — is the
-      authoritative chain order; the start times are not. The evidence and the
-      four cleaning rules live with the loader, eodgdl.eod.clean_trip_chains:
-      the survey elicits one weekday per person as home-based tours, and in
-      folio order 99.8% of adjacent trips start in the zone the previous one
-      ended in, against 67% under start-time order for the people whose times
-      disagree. Decided 2026-09-01; until then the contract said start-time
-      order while the builder used folio order.
+      The row order is the chain. folio_viaje itself is a generated sequence
+      number with no information of its own, but the zones and the times pin
+      the sequence down — for 99.9% of clean days with three or more trips the
+      row order is the only permutation that is both zone-continuous and
+      time-monotone — and the row order is that sequence: in it 99.8% of
+      adjacent trips start where the previous one ended, against 67% under
+      start-time order for the people whose times disagree. The evidence and
+      the five cleaning rules live with the loader, eodgdl.eod.clean_trip_chains.
+      Decided 2026-09-01; until then the contract said start-time order while
+      the builder used row order. Re-sequencing whole tours by time was tested
+      on 2026-09-02 and rejected: it resolves under 10% of the inversions and
+      misreads night shifts.
 
   StartTime:
     source: [hora_inicio_h, hora_inicio_m]
     derivation: hora_inicio_h * 100 + hora_inicio_m.
     note: >-
       The hours are the ones load_eod returns, after its chain cleaning: the
-      281 persons with an untimed trip are gone (1,142 trips), and 579 start
-      times entered on a 12-hour clock were moved forward 12 hours. 1,411
-      trips (1,322 people, 2.5% of travellers) still start before their
-      predecessor and are kept; tasha.chain_report counts them on every build.
-      The rules, their evidence and the rejected alternatives — dropping those
-      people, imputing the untimed trips — are documented in eodgdl.eod. The
-      builder refuses a trip table with untimed rows rather than guess.
+      281 persons with an untimed trip are gone (1,142 trips), and 2,029
+      mistyped start hours in 1,549 chains were repaired by the fewest typo
+      edits — a 12-hour-clock entry, an extra or missing leading 1, or both —
+      that let every trip start after the previous one arrived (its start plus
+      its leg minutes, 15 minutes of tolerance), applied only where the
+      cheapest reading is unique (eodgdl.eod._repair_start_times). Those rows
+      are marked in trips.hora_inicio_ajuste; a consumer that wants to treat
+      them as uncertain has the flag, though this column does not carry it.
+      838 trips (765 people) still start before their predecessor and 883
+      start before the previous trip could have arrived by more than the
+      tolerance; they are kept and tasha.chain_report counts them on every
+      build. The rules, their
+      evidence and the rejected alternatives — dropping those people,
+      imputing the untimed trips, re-sequencing tours — are documented in
+      eodgdl.eod. The builder refuses a trip table with untimed rows rather
+      than guess.
 
   Mode:
     source: modo_principal
@@ -397,7 +410,14 @@ trips:
 
   ZoneOrigin:
     source: origen
-    derivation: trips.origen verbatim — the AGEB CVEGEO or locality id.
+    derivation: trips.origen as load_eod returns it — the AGEB CVEGEO or locality id.
+    note: >-
+      load_eod sets 120 origins to the household's zone: the trip follows a
+      'Regresar a Casa' that reached home but was recorded as starting
+      elsewhere, usually at a stop visited earlier in the day
+      (eodgdl.eod._start_from_home_after_return). The 32 continuity breaks
+      that remain in the built table are ones where either side could be
+      wrong; tasha.chain_report counts them.
 
   PurposeDestination:
     source: motivo_viaje

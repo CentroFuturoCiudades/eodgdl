@@ -471,6 +471,15 @@ def chain_report(trips):
             "earlier than the trip before them; StartTime is not in chain order "
             "for those people"
         )
+    if "Duration" in t.columns:
+        minutes = (t.StartTime // 100) * 60 + t.StartTime % 100
+        prev_arrival = (minutes + t.Duration).groupby([t.HouseholdId, t.PersonNumber], sort=False).shift(1)
+        early = prev_arrival.notna() & (minutes < prev_arrival)
+        if early.any():
+            lines.append(
+                f"trips: {int(early.sum())} trips ({people(early)} people) start before the "
+                "previous trip could have arrived, its StartTime plus its Duration"
+            )
     ties = has_prev & (t.StartTime == prev_time)
     if ties.any():
         lines.append(

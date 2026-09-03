@@ -46,8 +46,9 @@ changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
 `eodgdl.eod.clean_trip_chains` — the 281 persons with an untimed trip
 excluded, 84 mislabelled returns recoded, 468 returns home made from home
-dropped, 579 12-hour-clock start times moved — and refuses a trip table with
-untimed rows. What that cleaning does not repair, `tasha.chain_report(od.trips)`
+dropped, 120 trips after a return home made to start at home, 2,029
+mistyped start hours repaired and flagged in `hora_inicio_ajuste` — and refuses
+a trip table with untimed rows. What that cleaning does not repair, `tasha.chain_report(od.trips)`
 counts; see "Validating" below.
 
 Zone columns hold the survey's own AGEB CVEGEO or locality id as a **string**.
@@ -159,15 +160,16 @@ It returns a list of strings, raises nothing and mutates nothing.
 `validate` checks what a conforming table *must* satisfy. Two chain properties
 are deliberately not in that list, because the survey violates them and a
 builder cannot repair them without inventing data: that each trip starts in
-the zone the previous one ended in, and that start times increase along the
-chain. `tasha.chain_report(trips)` counts those instead, together with tours
+the zone the previous one ended in, and that each trip starts after the
+previous one arrived. `tasha.chain_report(trips)` counts those instead, together with tours
 that do not begin or end at home, and the CLI prints it after every build and
 validate without changing the exit code. On the shipped data:
 
 ```
-152 trips (150 people) do not start in the zone the previous trip ended in
-1411 trips (1322 people) start earlier than the trip before them
-192 trips start at the same minute as the trip before them
+32 trips (32 people) do not start in the zone the previous trip ended in
+838 trips (765 people) start earlier than the trip before them
+1667 trips (1517 people) start before the previous trip could have arrived
+125 trips start at the same minute as the trip before them
 899 people whose first trip does not start at home
 412 people whose last trip does not end at home
 ```
@@ -198,15 +200,19 @@ validate without changing the exit code. On the shipped data:
 No mapping `status` can carry these — they are about the shape of the output
 rather than about one column's coding, so nothing surfaces them automatically.
 
-- **Trip ordering — resolved 2026-09-01.** `folio_viaje` is the authoritative
-  chain order and the contract now says so; the start times are the noisy
-  field. The evidence and the four chain rules that follow from it live with
-  the loader, `eodgdl.eod.clean_trip_chains`; the mapping notes point there,
-  and `reports/trip_chains.qmd` walks through every problem with examples.
-  What remains is data quality the build reports rather than repairs
-  (`tasha.chain_report`): 1,411 trips in 1,322 people still start before the
-  trip before them, about 124 of them plausible night shifts, and 152 trips
-  do not start where the previous one ended. Two follow-ups were tried the
+- **Trip ordering — resolved 2026-09-01.** The row order is the chain and the
+  contract now says so; the start times are the noisy field. `folio_viaje` is
+  a generated number, but the zones and times pin the sequence and the row
+  order matches it for 99.9% of clean multi-trip days; re-sequencing tours by
+  time was tested and rejected (under 10% of inversions, misreads night
+  shifts). The evidence and the five chain rules live with the loader,
+  `eodgdl.eod.clean_trip_chains`; the mapping notes point there, and
+  `reports/trip_chains.qmd` walks through every problem with examples. What
+  remains is data quality the build reports rather than repairs
+  (`tasha.chain_report`): 838 trips in 765 people still start before the
+  trip before them, 883 start before the previous trip could have arrived by
+  more than the 15-minute tolerance, and 32 trips do not start where the
+  previous one ended. Two follow-ups were tried the
   same day: recoding the `Regresar a Casa` trips whose `tipo_lugar_destino`
   says the place was not a home is now a survey-level recode in `load_eod`,
   guarded by the zone (84 trips); imputing the untimed trips instead of

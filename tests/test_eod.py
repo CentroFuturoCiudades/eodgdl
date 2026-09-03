@@ -16,14 +16,16 @@ SHOP = "Comercio, mercado, tienda o centro comercial"
 
 
 def _trips(rows):
-    """A trips table in load_eod's shape from (person, hour, minute, motivo[, type, zone]) rows.
+    """A trips table in load_eod's shape from (person, hour, minute, motivo[, type, zone, minutes]) rows.
 
     Every trip leaves from home; a 'Regresar a Casa' arrives at home and at
     'Su casa', anything else arrives ELSEWHERE at a shop, unless the row says.
+    Travel minutes are 0 unless given.
     """
-    rows = [tuple(r) + (None,) * (6 - len(r)) for r in rows]
+    rows = [tuple(r) + (None,) * (7 - len(r)) for r in rows]
     df = pd.DataFrame(rows, columns=["person", "hora_inicio_h", "hora_inicio_m",
-                                     "motivo_viaje", "tipo_lugar_destino", "destino"])
+                                     "motivo_viaje", "tipo_lugar_destino", "destino", "traslado1_min"])
+    df["traslado1_min"] = df.traslado1_min.fillna(0).astype("Int64")
     home = df.motivo_viaje == "Regresar a Casa"
     df["tipo_lugar_destino"] = df.tipo_lugar_destino.fillna(home.map({True: "Su casa", False: SHOP}))
     df["destino"] = df.destino.fillna(home.map({True: AGEB, False: ELSEWHERE}))
@@ -60,7 +62,7 @@ def test_a_return_home_made_from_home_is_not_a_trip():
     assert counts["home_to_home"] == 3
     assert cleaned.loc[(1, 1)].motivo_viaje.tolist() == ["Trabajar", "Regresar a Casa"]
     assert len(cleaned.loc[(1, 2)]) == 4
-    # folio_viaje is left as recorded, so the gap shows what was dropped.
+    # folio_viaje is left as shipped, so the gap shows what was dropped.
     assert cleaned.loc[(1, 1)].index.tolist() == [2, 3]
 
 
@@ -81,24 +83,73 @@ def test_a_return_that_did_not_reach_home_takes_its_destination_type():
     assert cleaned.loc[(1, 2)].motivo_viaje.tolist() == ["Trabajar", "Regresar a Casa"]
 
 
-def test_twelve_hour_clock_is_corrected_only_when_it_restores_order():
+def test_a_trip_after_a_return_home_starts_at_home():
     trips = _trips([
-        (1, 8, 0, "Trabajar"), (1, 5, 30, "Regresar a Casa"),            # 5:30 -> 17:30
+        (1, 8, 0, "Trabajar"), (1, 17, 0, "Regresar a Casa"),
+        (1, 18, 0, "Compras (comida)"), (1, 19, 0, "Regresar a Casa"),
+        (2, 8, 0, "Trabajar", "Fábrica o taller", ELSEWHERE),   # a return that did not reach home...
+        (2, 17, 0, "Regresar a Casa", "Su casa", ELSEWHERE),
+        (2, 18, 0, "Compras (comida)"), (2, 19, 0, "Regresar a Casa"),
+    ])
+    trips.loc[(1, 1, 3), "origen"] = ELSEWHERE     # carried over from the morning stop
+    cleaned, _, counts = clean_trip_chains(trips, VIV)
+    assert counts["origins_repaired"] == 1
+    assert cleaned.loc[(1, 1, 3), "origen"] == AGEB
+    assert cleaned.loc[(1, 2, 3), "origen"] == AGEB   # ...leaves the next origin alone: either side could be wrong
+
+
+def test_start_hours_are_repaired_by_the_fewest_typo_edits():
+    trips = _trips([
+        (1, 8, 0, "Trabajar"), (1, 5, 30, "Regresar a Casa"),            # 5:30 -> 17:30, a 12-hour entry
         (2, 8, 0, "Trabajar"), (2, 5, 30, "Regresar a Casa"),
-        (2, 6, 0, "Compras (comida)"), (2, 9, 0, "Regresar a Casa"),     # a run of PM entries
-        (3, 19, 0, "Trabajar"), (3, 1, 0, "Regresar a Casa"),            # 13:00 < 19:00: left alone
+        (2, 6, 0, "Compras (comida)"), (2, 9, 0, "Regresar a Casa"),     # a run of them: all three move
+        (3, 19, 0, "Trabajar"), (3, 1, 0, "Regresar a Casa"),            # an overnight wrap is left alone
         (4, 8, 0, "Trabajar"), (4, 7, 0, "Regresar a Casa"),
-        (4, 13, 0, "Compras (comida)"), (4, 14, 0, "Regresar a Casa"),   # 19:00 > 13:00: left alone
+        (4, 13, 0, "Compras (comida)"), (4, 14, 0, "Regresar a Casa"),   # no reading within the cost cap
+        (5, 7, 24, "Compras (comida)"), (5, 7, 37, "Regresar a Casa"),
+        (5, 19, 0, "Trabajar"), (5, 16, 30, "Regresar a Casa"),          # 19:00 -> 9:00, an extra leading 1
+        (6, 14, 0, "Trabajar"), (6, 13, 50, "Regresar a Casa"),          # ten minutes back: minute noise
+        (7, 11, 0, "Trabajar"), (7, 8, 0, "Regresar a Casa"),
+        (7, 18, 13, "Llevar o recoger a alguien"), (7, 18, 22, "Regresar a Casa"),  # 8:00 -> 18:00: 20:00 would overtake
     ])
     cleaned, _, counts = clean_trip_chains(trips, VIV)
     hours = cleaned.hora_inicio_h.groupby(level="folio_habitante").apply(list)
-    assert hours[1] == [8, 17]
-    # Strict by design: 5:30 -> 17:30 would overtake the 6:00 that follows, so
-    # the run is left alone and tasha.chain_report counts it instead.
-    assert hours[2] == [8, 5, 6, 9]
-    assert hours[3] == [19, 1]
+    flags = cleaned.hora_inicio_ajuste.groupby(level="folio_habitante").apply(list)
+    assert hours[1] == [8, 17] and flags[1] == ["", "+12h"]
+    assert hours[2] == [8, 17, 18, 21]
+    assert hours[3] == [19, 1] and flags[3] == ["", ""]
     assert hours[4] == [8, 7, 13, 14]
-    assert counts["moved_12h"] == 1
+    assert hours[5] == [7, 7, 9, 16] and flags[5] == ["", "", "-10h", ""]
+    assert hours[6] == [14, 13]
+    assert hours[7] == [11, 18, 18, 18] and flags[7] == ["", "+10h", "", ""]
+    assert counts["start_times_edited"] == 6 and counts["chains_repaired"] == 4
+
+
+def test_a_trip_cannot_start_before_the_previous_one_arrived():
+    # Household 8, person 3: the two-minute step at the end is a 32-minute
+    # contradiction once the 30-minute drive is counted, and only one reading
+    # within the menu resolves the whole chain.
+    trips = _trips([
+        (1, 7, 24, "Compras (comida)", None, None, 5), (1, 7, 37, "Regresar a Casa", None, None, 5),
+        (1, 19, 0, "Trabajar", None, None, 30), (1, 16, 30, "Regresar a Casa", None, None, 30),
+        (1, 18, 2, "Trabajar", None, None, 30), (1, 18, 0, "Regresar a Casa", None, None, 30),
+    ])
+    cleaned, _, counts = clean_trip_chains(trips, VIV)
+    assert cleaned.hora_inicio_h.tolist() == [7, 7, 9, 16, 18, 20]
+    assert cleaned.hora_inicio_ajuste.tolist() == ["", "", "-10h", "", "", "-10h+12h"]
+    assert counts["start_times_edited"] == 2 and counts["chains_repaired"] == 1
+
+
+def test_start_hour_search_declines_ambiguous_and_manufactured_readings():
+    trips = _trips([
+        (1, 7, 16, "Compras (comida)"), (1, 7, 31, "Regresar a Casa"),
+        (1, 15, 30, "Estudiar"), (1, 19, 0, "Regresar a Casa"),
+        (1, 18, 5, "Estudiar"), (1, 19, 36, "Regresar a Casa"),           # household 430: evening class, not a night shift
+    ])
+    cleaned, _, counts = clean_trip_chains(trips, VIV)
+    assert cleaned.hora_inicio_h.tolist() == [7, 7, 15, 19, 20, 21]
+    assert cleaned.hora_inicio_ajuste.tolist() == ["", "", "", "", "-10h+12h", "-10h+12h"]
+    assert (cleaned.hora_inicio_h >= 5).all()
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")

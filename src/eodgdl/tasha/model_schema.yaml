@@ -274,12 +274,14 @@ tables:
         role: key
         required: true
         description: >-
-          Consecutive from 1 within each person, in chain order: the order the
-          survey recorded the trips, which is the order the person made them.
+          Consecutive from 1 within each person, in chain order: the sequence
+          in which the person made the trips.
         notes: >-
           Chain order is NOT start-time order. Do not renumber by StartTime:
           where the two disagree it is the reported time that is wrong, not the
-          sequence (see StartTime).
+          sequence (see StartTime). In the EOD 2023 the row order carries the
+          sequence, as its zone continuity shows; folio_viaje is only a
+          generated number for it.
 
       StartTime:
         dtype: int

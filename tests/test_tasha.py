@@ -214,8 +214,8 @@ def test_build_conforms():
 
     # What load_eod's cleaning does not repair is reported, at these levels.
     report = " | ".join(tasha.chain_report(od.trips))
-    assert "152 trips (150 people) do not start in the zone" in report
-    assert "1411 trips (1322 people) start earlier" in report
+    assert "32 trips (32 people) do not start in the zone" in report
+    assert "838 trips (765 people) start earlier" in report
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")

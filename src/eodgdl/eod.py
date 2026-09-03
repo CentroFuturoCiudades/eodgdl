@@ -48,6 +48,22 @@ _MOTIVO_POR_TIPO_LUGAR_DESTINO = {
 HOME_MOTIVE = "Regresar a Casa"
 HOME_PLACE = "Su casa"
 
+# Start-time repair. Each entry is one way a start hour can have been mistyped,
+# with the cost the search minimises: (name, cost, lowest hour it applies to,
+# highest hour, hours added). The costs rank the mechanisms by how common they
+# are — the 12-hour clock is the dominant one — and break ties between readings
+# that would otherwise be equally cheap. Decided 2026-09-03 from the diagnosis
+# behind _repair_start_times().
+_START_TIME_EDITS = (
+    ("+12h", 1.0, 0, 11, 12),        # 12-hour clock without AM/PM
+    ("-10h", 1.2, 15, 19, -10),      # an extra leading 1, only where it yields a morning hour
+    ("+10h", 1.5, 0, 9, 10),         # a missing leading 1
+    ("-10h+12h", 2.0, 10, 19, 2),    # an extra leading 1 on a 12-hour-clock entry
+)
+_START_TIME_TOLERANCE = 15   # minutes: an inversion this small is minute noise, not an hour error
+_START_TIME_MAX_COST = 4.0   # give up rather than rewrite a day
+START_TIME_FLAG = "hora_inicio_ajuste"   # column load_eod adds: the edit applied, "" if none
+
 
 class EODTables(NamedTuple):
     """The four linked levels of the cleaned EOD survey."""
@@ -88,14 +104,20 @@ def clean_eod(df: pd.DataFrame, level: str) -> pd.DataFrame:
 
 # --------------------------------------------------------------- trip chains
 # The survey records each person's trips for one weekday ("el día de ayer o el
-# día hábil más reciente") as a chain in folio_viaje order — the order the trips
-# were made — and that order is authoritative: in it, 99.8% of adjacent trips
-# start in the zone the previous one ended in, whereas sorting the 1,849 people
-# whose start times are not monotone by start time keeps only 67% of those
-# links and makes 'Regresar a Casa' the first trip of 1,191 of them. The start
-# times are the noisy field. The four rules below repair what can be repaired
-# without inventing data and remove what cannot be scheduled; the rest is left
-# for the consumer to count (eodgdl.tasha.chain_report).
+# día hábil más reciente") as a chain. folio_viaje is a generated sequence
+# number and carries no information of its own, but the zones and the times pin
+# the sequence down — for 99.9% of clean days with three or more trips the row
+# order is the only permutation that is both zone-continuous and time-monotone —
+# and the row order is that sequence: 99.8% of adjacent trips start where the
+# previous one ended, whereas sorting the 1,849 people whose start times are
+# not monotone by time keeps only 67% of those links and makes 'Regresar a
+# Casa' the first trip of 1,191 of them. Where the two disagree the start time
+# is the noisy field: re-sequencing whole home-based tours resolves under 10%
+# of the inversions and misreads night shifts, so the row order is kept and the
+# times are repaired instead, where a unique cheapest reading exists. The rules
+# below repair what the chain itself implies, remove what cannot be scheduled,
+# mark what they had to guess, and leave the rest for the consumer to count
+# (eodgdl.tasha.chain_report).
 
 
 def _person_ids(trips: pd.DataFrame) -> np.ndarray:
@@ -180,75 +202,196 @@ def _drop_home_to_home_returns(trips: pd.DataFrame) -> pd.DataFrame:
     return trips[keep]
 
 
-def _fix_twelve_hour_clock(trips: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Move forward 12 hours a start time that was entered on a 12-hour clock.
+def _start_from_home_after_return(trips: pd.DataFrame, home: np.ndarray) -> tuple[pd.DataFrame, int]:
+    """Make a trip that follows a return home start in the home zone.
 
-    A trip is moved when it starts earlier than the trip before it, its hour is
-    11 or less, and adding 12 hours puts it at or after the previous trip and
-    at or before the next one — so the correction never creates an inversion
-    it did not find, and a run of consecutive 12-hour entries is left alone.
-    The scan is sequential: a moved trip is the "previous" its successor is
-    compared against. Of the 2,011 trips in the shipped survey that start
-    before their predecessor, 82% are 'Regresar a Casa' and half follow a
-    'Trabajar'; this rule moves 579 (a previous-only rule would move 887 but
-    overtake the following trip 206 times), about 130 of them after a trip
-    starting at or after 17:00, which could be genuine night-shift returns.
-    1,411 inversions in 1,322 people remain — about 124 look like night
-    shifts, 88 are within 15 minutes, the rest are typos with no safe repair —
-    and are kept: dropping those people would remove 3.4% of weighted travel,
-    concentrated in 4+ trip days and evening and night workers. Returns the
-    trips and the number moved.
+    A trip whose origin is not where the previous trip ended breaks the chain.
+    The breaks are wrong zones, not wrong sequence: of the 176 people with one,
+    82 admit no continuous ordering at all and only one of the other 94 has an
+    ordering the times agree with. In 147 of the 178 breaks the previous trip
+    is a 'Regresar a Casa' that reached the household's zone, and in 95 of
+    those the offending origin is a stop visited earlier in the day, as if
+    carried over from it. The person was at home, so the origin becomes the
+    home zone — the reading a home-based activity model makes anyway. The
+    other breaks (a return that did not reach home, an origin at home after a
+    trip that went elsewhere) are left, since either side could be wrong.
+    Returns the trips and the number of origins repaired.
+    """
+    prev_return = (trips.motivo_viaje == HOME_MOTIVE).groupby(level=PERSON).shift(1)
+    prev_dest = trips.destino.astype(str).groupby(level=PERSON).shift(1)
+    fix = (prev_return.fillna(False).astype(bool).to_numpy()
+           & (prev_dest.to_numpy() == home) & (trips.origen.astype(str).to_numpy() != home))
+    if fix.any():
+        trips = trips.copy()
+        trips.loc[fix, "origen"] = home[fix]
+    return trips, int(fix.sum())
+
+
+def _leg_minutes(trips: pd.DataFrame, legs: pd.DataFrame | None) -> np.ndarray:
+    """Travel minutes per trip, from ``legs`` or from the traslado*_min columns; zeros if neither."""
+    if legs is not None:
+        return (legs.groupby(level=[0, 1, 2]).traslado_min.sum()
+                    .reindex(trips.index).fillna(0).to_numpy(dtype=float))
+    cols = [c for c in trips.columns if c.startswith("traslado") and c.endswith("_min")]
+    if cols:
+        return trips[cols].sum(axis=1, min_count=1).fillna(0).to_numpy(dtype=float)
+    return np.zeros(len(trips))
+
+
+def _overnight(prev: float, this: float) -> bool:
+    return prev >= 18 * 60 and this <= 6 * 60
+
+
+def _chain_needs_repair(start: np.ndarray, travel: np.ndarray) -> bool:
+    """Does some trip start before the previous one could have arrived, beyond the tolerance?"""
+    tol = _START_TIME_TOLERANCE
+    return any(b < a + tr - tol and not _overnight(a, b)
+               for a, b, tr in zip(start[:-1], start[1:], travel[:-1]))
+
+
+def _search_edits(hours: np.ndarray, mins: np.ndarray, travel: np.ndarray):
+    """The unique fewest-cost combination of edits that makes one chain feasible, or None.
+
+    Feasible means every trip starts no earlier than the previous trip's
+    arrival — its start plus its travel minutes — less the tolerance. Depth-first
+    over the trips, pruned by the running cost and by the chain so far; an
+    overnight wrap is accepted only between two unedited trips, so the search
+    cannot manufacture a night shift. The cheapest reading must be unique.
+    """
+    tol, cap = _START_TIME_TOLERANCE, _START_TIME_MAX_COST
+    options = [[("", 0.0, h)] + [(name, c, h + d) for name, c, lo, hi, d in _START_TIME_EDITS if lo <= h <= hi]
+               for h in hours]
+    n = len(hours)
+    best = [cap + 1e-9]
+    found: list[tuple[str, ...]] = []
+    chosen: list[str] = [""] * n
+
+    def walk(i, cost, prev_arrival, prev_start, prev_edited):
+        if cost > best[0] + 1e-9:
+            return
+        if i == n:
+            if cost < best[0] - 1e-9:
+                best[0] = cost
+                found.clear()
+            found.append(tuple(chosen))
+            return
+        for name, c, h in options[i]:
+            start = h * 60 + mins[i]
+            edited = name != ""
+            if prev_arrival is not None and not (
+                start >= prev_arrival - tol
+                or (not edited and not prev_edited and _overnight(prev_start, start))
+            ):
+                continue
+            chosen[i] = name
+            walk(i + 1, cost + c, start + travel[i], start, edited)
+
+    walk(0, 0.0, None, None, False)
+    return found[0] if len(found) == 1 else None
+
+
+def _repair_start_times(trips: pd.DataFrame, legs: pd.DataFrame | None = None) -> tuple[pd.DataFrame, dict]:
+    """Repair mistyped start hours with the fewest edits that make a chain monotone.
+
+    The start times are the noisy field, and the noise has a structure: hours
+    entered on a 12-hour clock, and an extra or missing leading 1 (19:00 for
+    9:00, 8:00 for 18:00), sometimes both on one field. A chain is feasible
+    when every trip starts no earlier than the previous trip's arrival — its
+    start plus its leg minutes — less ``_START_TIME_TOLERANCE``; an overnight
+    wrap between a trip at or after 18:00 and one by 06:00 is not a violation.
+    For every infeasible chain the search tries the menu in
+    ``_START_TIME_EDITS`` on each trip and keeps the cheapest combination that
+    makes the chain feasible, provided it is unique and costs at most
+    ``_START_TIME_MAX_COST``. A chain with no such reading is left as it is.
+    Every edited row is marked in the ``START_TIME_FLAG`` column with the edit
+    applied, so a consumer can treat it as uncertain.
+
+    On the shipped survey 2,314 chains are infeasible; 1,549 get a unique
+    reading and 2,029 rows change (+12h 662, an extra leading 1 428, both 787,
+    a missing leading 1 152), none of them to an hour before 05:00. The strict
+    12-hour rule this replaced moved 579 rows; the search moves 536 of them
+    identically, reads 5 differently because the arrival constraint rules out
+    the 12-hour reading, and leaves 38 in chains it cannot resolve as a whole.
+    838 inversions in 765 people remain, and 883 trips in 765 people still
+    start before the previous trip could have arrived by more than the
+    tolerance; tasha.chain_report counts both. Household 8, person 3 is the
+    worked example: 07:24, 07:37, 19:00, 16:30, 18:02, 18:00, with 30-minute
+    drives, becomes feasible by reading the 19:00 as 09:00 and the closing
+    18:00 as 20:00 — the two-minute step at the end is a 32-minute
+    contradiction once the drive is counted. Returns the trips and a dict
+    with ``start_times_edited`` and ``chains_repaired``.
     """
     hours = trips.hora_inicio_h.to_numpy(dtype=int)
-    start = (hours * 60 + trips.hora_inicio_m.to_numpy(dtype=int)).astype(float)
+    mins = trips.hora_inicio_m.to_numpy(dtype=int)
+    travel = _leg_minutes(trips, legs)
     pid = _person_ids(trips)
-    fixed = start.copy()
-    moved = np.zeros(len(trips), dtype=bool)
-    n = len(trips)
-    for i in range(1, n):
-        if pid[i] != pid[i - 1] or fixed[i] >= fixed[i - 1] or hours[i] > 11:
+    first = np.flatnonzero(np.r_[True, pid[1:] != pid[:-1]])
+    last = np.r_[first[1:], len(trips)]
+    delta = {name: d for name, _, _, _, d in _START_TIME_EDITS}
+    new_hours = hours.copy()
+    flag = np.full(len(trips), "", dtype=object)
+    chains = 0
+    for a, b in zip(first, last):
+        if not _chain_needs_repair(hours[a:b] * 60 + mins[a:b], travel[a:b]):
             continue
-        candidate = fixed[i] + 12 * 60
-        if candidate < fixed[i - 1]:
+        edits = _search_edits(hours[a:b], mins[a:b], travel[a:b])
+        if edits is None:
             continue
-        if i + 1 < n and pid[i + 1] == pid[i] and candidate > start[i + 1]:
-            continue
-        fixed[i] = candidate
-        moved[i] = True
-    if moved.any():
-        trips = trips.copy()
-        trips["hora_inicio_h"] = trips.hora_inicio_h.where(~moved, trips.hora_inicio_h + 12)
-    return trips, int(moved.sum())
+        chains += 1
+        for j, name in enumerate(edits):
+            if name:
+                new_hours[a + j] += delta[name]
+                flag[a + j] = name
+    trips = trips.copy()
+    trips["hora_inicio_h"] = pd.array(new_hours, dtype="Int64")
+    trips[START_TIME_FLAG] = flag
+    return trips, {"start_times_edited": int((flag != "").sum()), "chains_repaired": chains}
 
 
-def clean_trip_chains(trips: pd.DataFrame, viv: pd.DataFrame) -> tuple[pd.DataFrame, pd.MultiIndex, dict]:
-    """Apply the four chain rules to a trip table in folio_viaje order.
+def _home_zone(trips: pd.DataFrame, viv: pd.DataFrame) -> np.ndarray:
+    """The household's zone id on every trip row."""
+    return viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
+
+
+def clean_trip_chains(
+    trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None
+) -> tuple[pd.DataFrame, pd.MultiIndex, dict]:
+    """Apply the five chain rules to a trip table in row (folio_viaje) order.
 
     In order: exclude the persons whose day has an untimed trip; recode the
     'Regresar a Casa' trips that did not reach the household's zone from their
-    destination type; drop returns home made while already at home; move
-    12-hour-clock start times forward 12 hours. Each rule's evidence is in its
-    docstring. ``viv`` supplies the household zone (``ageb``).
+    destination type; drop returns home made while already at home; make a
+    trip that follows a return home start in the home zone; repair mistyped
+    start hours with the fewest edits that let every trip start after the
+    previous one arrived. The first two orderings matter (the drop reads the
+    recoded motives, the origin
+    repair reads the surviving neighbour); the time repair is independent of
+    the others. Each rule's evidence is in its docstring. ``viv`` supplies the
+    household zone (``ageb``); ``legs`` supplies travel minutes for the time
+    repair's tie-break when the table no longer carries the traslado columns.
 
     Returns the cleaned trips (folio_viaje untouched, so gaps mark the dropped
-    rows), the persons excluded, and a dict of counts: ``incomplete_persons``,
-    ``incomplete_trips``, ``recoded_returns``, ``home_to_home``, ``moved_12h``.
+    rows; a ``hora_inicio_ajuste`` column marks the edited start times), the
+    persons excluded, and a dict of counts: ``incomplete_persons``,
+    ``incomplete_trips``, ``recoded_returns``, ``home_to_home``,
+    ``origins_repaired``, ``start_times_edited``, ``chains_repaired``.
     """
     trips = trips.sort_index()
     n0 = len(trips)
     trips, dropped = _drop_incomplete_days(trips)
     n1 = len(trips)
-    home = viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
-    trips, recoded = _recode_returns_by_destination(trips, home)
+    trips, recoded = _recode_returns_by_destination(trips, _home_zone(trips, viv))
     trips = _drop_home_to_home_returns(trips)
     n2 = len(trips)
-    trips, moved = _fix_twelve_hour_clock(trips)
+    trips, repaired = _start_from_home_after_return(trips, _home_zone(trips, viv))
+    trips, times = _repair_start_times(trips, legs)
     counts = {
         "incomplete_persons": len(dropped),
         "incomplete_trips": n0 - n1,
         "recoded_returns": recoded,
         "home_to_home": n1 - n2,
-        "moved_12h": moved,
+        "origins_repaired": repaired,
+        **times,
     }
     return trips, dropped, counts
 
@@ -275,9 +418,11 @@ def load_eod(
     By default the trip chains are cleaned (:func:`clean_trip_chains`): the 281
     persons whose day has an untimed trip leave ``hab`` and ``trips`` together,
     84 mislabelled 'Regresar a Casa' trips take their destination type's motive,
-    468 returns home made from home are dropped, 579 12-hour-clock start times
-    are moved forward, and ``hab.viajes_contados`` is recounted. ``folio_viaje``
-    is left as recorded, so a gap marks a dropped row. Pass
+    468 returns home made from home are dropped, 120 trips that follow a return
+    home start in the home zone, 2,029 mistyped start hours are repaired and
+    marked in a ``hora_inicio_ajuste`` column, and ``hab.viajes_contados`` is
+    recounted. ``folio_viaje`` is left as shipped, so a gap marks a dropped
+    row. Pass
     ``clean_chains=False`` for the survey as shipped — the expansion factors
     reconcile to the published totals only on that.
 
