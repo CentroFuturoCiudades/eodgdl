@@ -1,0 +1,944 @@
+---
+title: "Loading the EOD 2023"
+subtitle: "What `load_eod` does to the shipped files before the chain rules: headers, blanks, dates, three hand corrections, typing, one value per grain, and the legs table"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import os
+from pathlib import Path
+
+
+def _find_data_dir() -> Path:
+    """Walk up from the working dir to locate the repo's data/ folder."""
+    marker = "IMEPLAN_Base_Viviendas_Master.csv"
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        cand = base / "data"
+        if (cand / marker).exists():
+            return cand.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl data/ directory.")
+
+
+os.environ.setdefault("EODGDL_DATA_DIR", str(_find_data_dir()))
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pandera.pandas as pa
+
+from eodgdl import clean_eod, imeplan_rename_map, load_eod, rename_imeplan
+from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
+from eodgdl.eod import _VIAJES_MEDIO_FIXES
+from eodgdl.schemas import hab_schema, trips_schema, viv_schema
+from eodgdl.tasha._schema import _lookups, load_mappings
+
+plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
+BLUE, ORANGE, GREY = "#2c7fb8", "#e6550d", "#969696"
+P = ["folio_vivienda", "folio_habitante"]
+DATA = Path(os.environ["EODGDL_DATA_DIR"])
+FILES = {"viviendas": VIVIENDAS_CSV, "habitantes": HABITANTES_CSV, "viajes": VIAJES_CSV}
+INDEX = {"viviendas": ["folio_vivienda"], "habitantes": P, "viajes": P + ["folio_viaje"]}
+SCHEMA = {"viviendas": viv_schema, "habitantes": hab_schema, "viajes": trips_schema}
+TABLE = {"viviendas": "viv", "habitantes": "hab", "viajes": "trips"}
+
+
+def fmt(n) -> str:
+    return f"{round(float(n)):,}"
+
+
+def pct(x, d=1) -> str:
+    return f"{100 * float(x):.{d}f}%"
+
+
+def show(df):
+    return df.style.hide(axis="index")
+
+
+def md_table(rows, header):
+    out = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+    out += ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]
+    return "\n".join(out) + "\n"
+```
+
+```{python}
+#| label: load
+#| include: false
+
+# The pipeline, one step at a time, exactly as load_eod runs it.
+rmap = imeplan_rename_map()
+raw = {t: pd.read_csv(DATA / f, encoding="ISO-8859-1", low_memory=False) for t, f in FILES.items()}
+glossary = {t: pd.read_csv(DATA / f.replace("Master", "Glosario"), encoding="ISO-8859-1", header=None)
+            for t, f in FILES.items()}
+renamed = {t: rename_imeplan(df, t) for t, df in raw.items()}
+indexed = {t: renamed[t].set_index(INDEX[t]) for t in FILES}
+cleaned = {t: clean_eod(indexed[t], t) for t in FILES}
+typed = {t: SCHEMA[t](cleaned[t]).sort_index() for t in FILES}
+shipped = load_eod(clean_chains=False)       # everything in this note, no chain rules
+clean = load_eod()                           # what load_eod() returns by default
+viv_s, hab_s, trips_s, legs_s = shipped
+
+assert {t: df.shape for t, df in raw.items()} == {"viviendas": (17_901, 18), "habitantes": (58_061, 59), "viajes": (154_662, 58)}
+assert (viv_s.shape, hab_s.shape, trips_s.shape, legs_s.shape) == ((17_901, 17), (58_061, 54), (154_662, 23), (170_509, 3))
+```
+
+```{python}
+#| label: files
+#| include: false
+
+n_cols = {t: df.shape[1] for t, df in raw.items()}
+n_rows = {t: len(df) for t, df in raw.items()}
+unmapped = {t: [c for c in raw[t].columns if c not in rmap[t]] for t in FILES}
+absent = {t: [k for k in rmap[t] if k not in raw[t].columns] for t in FILES}
+assert all(not v for v in unmapped.values()) and all(not v for v in absent.values())
+glossary_matches = {t: list(glossary[t][0]) == list(raw[t].columns) for t in FILES}
+assert all(glossary_matches.values())
+longest_header = {t: int(raw[t].columns.str.len().max()) for t in FILES}
+file_sorted = {t: bool(indexed[t].index.is_monotonic_increasing) for t in FILES}
+index_unique = {t: bool(indexed[t].index.is_unique) for t in FILES}
+assert all(index_unique.values()) and not file_sorted["viviendas"] and file_sorted["habitantes"] and file_sorted["viajes"]
+nan_cells = {t: int(indexed[t].isna().sum().sum()) for t in FILES}
+nan_share = {t: nan_cells[t] / indexed[t].size for t in FILES}
+nan_cols = {t: int((indexed[t].isna().sum() > 0).sum()) for t in FILES}
+
+# the header blocks repeated across files
+hh_block = [c for c in renamed["viviendas"].columns if c in renamed["habitantes"].columns and c in renamed["viajes"].columns and c != "folio_vivienda"]
+person_block = [c for c in renamed["habitantes"].columns if c in renamed["viajes"].columns and c not in hh_block and c not in P]
+assert hh_block == ["fecha", "municipio", "ageb", "centralidad", "ponderador"]
+assert len(person_block) == 13
+
+file_tbl = pd.DataFrame({
+    "file": [FILES[t] for t in FILES],
+    "table": [TABLE[t] for t in FILES],
+    "rows": [fmt(n_rows[t]) for t in FILES],
+    "columns": [n_cols[t] for t in FILES],
+    "longest header (chars)": [longest_header[t] for t in FILES],
+    "rows in folio order": ["yes" if file_sorted[t] else "no" for t in FILES],
+    "empty cells": [f"{fmt(nan_cells[t])} ({pct(nan_share[t])})" for t in FILES],
+})
+
+rename_examples = [
+    ("viviendas", "Incluyéndolo, ¿cuántas personas viven permanentemente en su vivienda contando a los bebés y personas adultas mayores?"),
+    ("viviendas", "¿Cuántos ... tienen en esta vivienda? | Vehículos (autos o camionetas)"),
+    ("habitantes", "Durante la semana pasada trabajó:"),
+    ("habitantes", "¿Qué medios de transporte utiliza para el fin de semana? (Registrar todos los que utiliza) | Taxi plataforma (Uber/Didi)"),
+    ("viajes", "¿A qué hora comenzó su viaje? | Hora de inicio | Horas"),
+    ("viajes", "Traslados que utilizó para su viaje: | Traslado 1 | Medio"),
+    ("viajes", "¿En qué tipo de lugar inició su primer viaje?"),
+]
+assert all(h in rmap[t] for t, h in rename_examples)
+rename_tbl = pd.DataFrame({"file": [t for t, _ in rename_examples],
+                           "header as shipped": [h for _, h in rename_examples],
+                           "column in eodgdl": [rmap[t][h] for t, h in rename_examples]})
+
+# the ledger: rows × columns after every step
+def _shape(df):
+    return f"{len(df):,} × {df.shape[1]}"
+
+
+hh_cols = ["municipio", "ageb", "centralidad"]
+person_cols = ["fecha", "dia_semana_viajes", "parentesco", "sexo_nacimiento", "genero_identidad", "grupo_edad", "edad",
+               "estado_civil", "escolaridad", "trabajo_semana_pasada", "ocupacion", "giro_empresa",
+               "tiene_discapacidad", "tipo_discapacidad"]
+after_dedup = {"viviendas": typed["viviendas"], "habitantes": typed["habitantes"].drop(columns=hh_cols),
+               "viajes": typed["viajes"].drop(columns=hh_cols + person_cols)}
+ledger = pd.DataFrame([
+    {"step": "read the CSV (ISO-8859-1)", **{TABLE[t]: _shape(raw[t]) for t in FILES}, "legs": "—"},
+    {"step": "rename the headers", **{TABLE[t]: _shape(renamed[t]) for t in FILES}, "legs": "—"},
+    {"step": "index by folio", **{TABLE[t]: _shape(indexed[t]) for t in FILES}, "legs": "—"},
+    {"step": "clean_eod: blanks, dates, hand fixes", **{TABLE[t]: _shape(cleaned[t]) for t in FILES}, "legs": "—"},
+    {"step": "pandera schema, sort by folio", **{TABLE[t]: _shape(typed[t]) for t in FILES}, "legs": "—"},
+    {"step": "one value per grain", **{TABLE[t]: _shape(after_dedup[t]) for t in FILES}, "legs": "—"},
+    {"step": "unpivot the legs", "viv": _shape(viv_s), "hab": _shape(hab_s), "trips": _shape(trips_s), "legs": _shape(legs_s)},
+    {"step": "chain rules (see the trip-chains note)", "viv": _shape(clean.viv), "hab": _shape(clean.hab), "trips": _shape(clean.trips), "legs": _shape(clean.legs)},
+])
+```
+
+```{python}
+#| label: blanks
+#| include: false
+
+TOKENS = ["N/D", "ND", ""]
+token_counts = {t: {tok: int((indexed[t].select_dtypes(exclude="number") == tok).sum().sum()) for tok in TOKENS} for t in FILES}
+assert all(v == 0 for d in token_counts.values() for v in d.values())
+other_tokens = ["NA", "N/A", "n/d", "No aplica", "NULL", "-", "S/D", " "]
+other_counts = {t: int(indexed[t].select_dtypes(exclude="number").isin(other_tokens).sum().sum()) for t in FILES}
+assert all(v == 0 for v in other_counts.values())
+untrimmed = {t: int(sum((s.dropna() != s.dropna().str.strip()).sum() for _, s in indexed[t].select_dtypes(exclude="number").items())) for t in FILES}
+assert all(v == 0 for v in untrimmed.values())
+same_nan = {t: bool((cleaned[t].isna().sum() == indexed[t].isna().sum()).all()) for t in FILES}
+assert all(same_nan.values())
+
+viv, hab, trips = typed["viviendas"], typed["habitantes"], typed["viajes"]
+
+
+def _subset(name, answered, asked):
+    """`answered` never outside `asked`; returns how many asked rows are blank."""
+    assert not (answered & ~asked).any(), name
+    return int((asked & ~answered).sum())
+
+
+# person table: skip rules the blanks follow exactly
+timed = trips.hora_inicio_h.notna()
+working = hab.ocupacion.isin(["Patrón o empresario", "Empleado", "Trabajador independiente",
+                              "Trabajador del campo", "Persona trabajadora del hogar", "Profesor"])
+skip = {
+    ("hab", "razon_no_viaje"): ("asked only of those who did not leave home", _subset("razon", hab.razon_no_viaje.notna(), hab.salio_casa_ayer == "No")),
+    ("hab", "dia_semana_viajes"): ("asked only of those with a trip", _subset("dia", hab.dia_semana_viajes.notna(), hab.viajes_contados > 0)),
+    ("hab", "tipo_discapacidad"): ("asked only of those with a disability", _subset("tipo_disc", hab.tipo_discapacidad.notna(), hab.tiene_discapacidad == "Sí")),
+    ("hab", "requiere_acompanamiento"): ("asked only of those with a disability", _subset("req", hab.requiere_acompanamiento.notna(), hab.tiene_discapacidad == "Sí")),
+    ("hab", "razon_acompanamiento"): ("asked only of those who need company", _subset("razon_ac", hab.razon_acompanamiento.notna(), hab.requiere_acompanamiento == "Sí")),
+    ("hab", "quien_apoya_viajes"): ("asked only of those who need company", _subset("quien", hab.quien_apoya_viajes.notna(), hab.requiere_acompanamiento == "Sí")),
+    ("hab", "giro_empresa"): ("asked only of the working occupations", _subset("giro", hab.giro_empresa.notna(), working)),
+    ("trips", "motivo_viaje"): ("blank on the 325 untimed trips (trip-chains note) and 7 timed ones", None),
+    ("trips", "tipo_lugar_destino"): ("blank on the 325 untimed trips and 7 timed ones", None),
+    ("trips", "con_quien_viajo"): ("asked only of trips made in company", _subset("con_quien", trips.con_quien_viajo.notna(), trips.viajo_acompanado.isin(["Acompañado algunos traslados", "Acompañado todos los traslados"]))),
+    ("trips", "rol_en_vehiculo"): ("asked only of trips with a car or motorcycle leg", None),
+    ("trips", "estacionamiento_pago_total"): ("asked only where parking was paid", _subset("pago_total", trips.estacionamiento_pago_total.notna(), trips.pago_estacionamiento == "Sí")),
+    ("trips", "estacionamiento_pago_tipo"): ("asked only where parking was paid", _subset("pago_tipo", trips.estacionamiento_pago_tipo.notna(), trips.pago_estacionamiento == "Sí")),
+    ("trips", "estacionamiento_frecuencia"): ("asked only where parking was paid", _subset("frec", trips.estacionamiento_frecuencia.notna(), trips.pago_estacionamiento == "Sí")),
+    ("trips", "acompanante_fuera_hogar"): ("answered on 17,827 timed trips; no rule found", None),
+}
+legmodes = legs_s.traslado_medio.astype(str).groupby(level=[0, 1, 2]).agg(set)
+has_auto_leg = legmodes.map(lambda s: bool(s & {"AUTOMÓVIL PARTICULAR", "MOTOCICLETA"})).reindex(trips.index).fillna(False).astype(bool)
+skip[("trips", "rol_en_vehiculo")] = (skip[("trips", "rol_en_vehiculo")][0], _subset("rol", trips.rol_en_vehiculo.notna(), has_auto_leg))
+n_untimed = int((~timed).sum())
+assert n_untimed == 325
+assert int((trips.motivo_viaje.isna() & timed).sum()) == 7
+
+no_rule = {
+    ("viv", "donde_estacionan"): "blank in 4,447 dwellings with a car or motorcycle; answered in 209 without one",
+    ("viv", "problema_movilidad_principal"): "no rule; 3,563 dwellings skip both problem questions",
+    ("viv", "problema_tp_principal"): "no rule; 3,563 dwellings skip both problem questions",
+    ("hab", "tiene_discapacidad"): "no rule; blank at every age",
+    ("hab", "escolaridad"): "no rule; every blank is an adult",
+    ("hab", "trabajo_semana_pasada"): "no rule; nearly all blanks are adults",
+    ("hab", "ocupacion"): "no rule; every blank is an adult",
+    ("trips", "viajo_acompanado"): "no rule; blank on 38% of timed trips, at every mode and position",
+    ("trips", "ocupantes_auto_moto"): f"asked with the vehicle role; {fmt((trips.rol_en_vehiculo.notna() & trips.ocupantes_auto_moto.isna()).sum())} roles without a count, {fmt((trips.rol_en_vehiculo.isna() & trips.ocupantes_auto_moto.notna()).sum())} counts without a role",
+    ("trips", "estacionamiento_lugar"): f"asked of car and motorcycle trips; {fmt((trips.rol_en_vehiculo.notna() & trips.estacionamiento_lugar.isna()).sum())} roles without an answer, {fmt((trips.rol_en_vehiculo.isna() & trips.estacionamiento_lugar.notna()).sum())} answers without a role",
+    ("trips", "pago_estacionamiento"): f"asked of car and motorcycle trips; {fmt((trips.estacionamiento_lugar.isna() & trips.pago_estacionamiento.notna()).sum())} answers without a parking place",
+    ("hab", "parentesco"): f"no rule; {fmt(hab.parentesco.isna().sum())} persons at every age",
+    ("hab", "estado_civil"): f"no rule; every blank is 12 or older",
+    ("viv", "informante_principal"): f"no rule; {fmt(viv.informante_principal.isna().sum())} dwellings",
+}
+assert (hab.edad[hab.estado_civil.isna()] >= 12).all()
+assert int((viv.donde_estacionan.isna() & ((viv.n_autos_camionetas != "0") | (viv.n_motos != "0"))).sum()) == 4_447
+assert int((viv.donde_estacionan.notna() & (viv.n_autos_camionetas == "0") & (viv.n_motos == "0")).sum()) == 209
+assert int((viv.problema_tp_principal.isna() & viv.problema_movilidad_principal.isna()).sum()) == 3_563
+assert (hab.edad[hab.escolaridad.isna()] >= 18).all() and (hab.edad[hab.ocupacion.isna()] >= 18).all()
+weekend_blank = int(hab.filter(like="weekend_").isna().all(axis=1).sum())
+assert weekend_blank == 188 and int(hab.filter(like="weekend_").isna().any(axis=1).sum()) == 188
+
+# which TASHA output columns read each survey column, from every `source` in mappings.yaml
+readers = {}
+for out_table, columns in load_mappings().items():
+    if out_table == "meta":
+        continue
+    for out_col, entry in columns.items():
+        if isinstance(entry, dict):
+            for _, names, _ in _lookups(entry):
+                for name in names:
+                    readers.setdefault(name, []).append(out_col)
+readers = {k: list(dict.fromkeys(v)) for k, v in readers.items()}
+assert "motivo_viaje" in readers and "traslado_pago" not in readers
+
+
+def read_by(col):
+    return ", ".join(readers[col]) if col in readers else "no"
+
+
+rows = []
+for tname, df in [("viv", viv_s), ("hab", hab_s), ("trips", trips_s), ("legs", legs_s)]:
+    miss = df.isna().sum()
+    miss = miss[miss > 0].sort_values(ascending=False)
+    for col, n in miss.items():
+        if col.startswith("weekend_"):
+            continue
+        key = (tname, col)
+        if key in skip:
+            reads, gap = skip[key]
+            reads = reads if gap is None else f"{reads}; {fmt(gap)} asked and blank"
+        elif key in no_rule:
+            reads = no_rule[key]
+        elif col in ("hora_inicio_h", "hora_inicio_m"):
+            reads = "the 325 untimed trips (trip-chains note)"
+        elif key == ("legs", "traslado_pago"):
+            reads = "nine bus legs of three persons with no fare"
+        else:
+            reads = "—"
+        rows.append((tname, col, fmt(n), pct(n / len(df)), reads, read_by(col)))
+assert "—" not in {r[4] for r in rows}
+rows.append(("hab", "weekend_* (33 columns)", fmt(weekend_blank), pct(weekend_blank / len(hab)), "the whole weekend block blank for 188 persons", "no"))
+blank_tbl = pd.DataFrame(rows, columns=["table", "column", "blank", "share", "what a blank means", "read by the TASHA build"])
+blank_used = sorted({r[1] for r in rows if r[5] != "no"})
+```
+
+```{python}
+#| label: dates
+#| include: false
+
+fecha_raw = indexed["viviendas"].fecha
+assert fecha_raw.str.fullmatch(r"\d{1,2}-[A-Z][a-z]{2}-\d{2}").all()
+n_unpadded = int((fecha_raw.str.len() == 8).sum())
+months = sorted(fecha_raw.str[-6:-3].unique(), key=lambda m: ["Jan", "Feb", "Mar", "Apr"].index(m))
+assert months == ["Jan", "Feb", "Mar", "Apr"]
+d_viv = viv.fecha.dt.tz_localize(None)
+d_hab = hab.fecha.dt.tz_localize(None)
+assert str(viv.fecha.dtype) == "datetime64[ns, UTC]"
+assert (viv.fecha.dt.hour == 0).all()
+first_day, last_day = d_viv.min().date(), d_viv.max().date()
+n_days = int(d_viv.nunique())
+dow_viv = d_viv.dt.dayofweek.value_counts().sort_index()
+sat_share = float(dow_viv.get(5, 0) / len(viv))
+sundays = int(dow_viv.get(6, 0))
+assert sundays == 10
+per_day = d_viv.value_counts().sort_index()
+per_month = d_viv.dt.to_period("M").value_counts().sort_index()
+
+hh_dates = d_hab.groupby(level=0).nunique()
+hh_multi = int((hh_dates > 1).sum())
+hh_spread = (d_hab.groupby(level=0).max() - d_hab.groupby(level=0).min()).dt.days
+spread_max = int(hh_spread.max())
+spread_over_week = int((hh_spread > 7).sum())
+assert hh_multi == 1_095 and spread_max == 91
+viv_is_first = float((d_viv == d_hab.groupby(level=0).first()).mean())
+assert viv_is_first == 1.0
+persons_differ = int((d_hab != d_viv.reindex(d_hab.index.get_level_values(0)).to_numpy()).sum())
+assert persons_differ == 1_120
+
+# fecha is the interview date, not the travel day: the trip-chains note measures the gap
+h = hab[hab.dia_semana_viajes.notna()]
+dow = {"Lunes": 0, "Martes": 1, "Miércoles": 2, "Jueves": 3, "Viernes": 4}
+prev_working = h.fecha.dt.dayofweek.map({1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 0: 4, 6: 4})
+ref_match = float((h.dia_semana_viajes.astype(str).map(dow).astype(int) == prev_working.to_numpy()).mean())
+```
+
+```{python}
+#| label: fixes
+#| include: false
+
+# the three cells, as shipped and as set
+fix_rows = []
+for (fv, fh, fj), (col, value) in _VIAJES_MEDIO_FIXES.items():
+    slot = col[len("traslado")]
+    as_shipped = indexed["viajes"].loc[(fv, fh, fj), col]
+    fix_rows.append({"household": fv, "person": fh, "trip": fj, "leg": int(slot), "as shipped": as_shipped,
+                     "minutes": int(indexed["viajes"].loc[(fv, fh, fj), f"traslado{slot}_min"]),
+                     "fare (MXN)": float(indexed["viajes"].loc[(fv, fh, fj), f"traslado{slot}_pago"]),
+                     "set by load_eod": value})
+fix_tbl = pd.DataFrame(fix_rows)
+assert (fix_tbl["as shipped"] == "17").all() and (fix_tbl.minutes == 5).all() and (fix_tbl["fare (MXN)"] == 10).all()
+assert (fix_tbl["set by load_eod"] == "Mototaxi").all()
+fix_tbl["fare (MXN)"] = fix_tbl["fare (MXN)"].map(lambda x: f"{x:g}")
+n_fixes = len(fix_tbl)
+fix_homes = viv.ageb.astype(str).loc[fix_tbl.household.unique()].unique()
+assert len(fix_homes) == 1
+fix_home = fix_homes[0]
+fix_zone = str(viv.centralidad.loc[fix_tbl.household.iloc[0]])
+fix_mun = str(viv.municipio.loc[fix_tbl.household.iloc[0]])
+
+# what happens without them: the schema refuses to coerce a value outside the mode levels
+no_fix = indexed["viajes"].copy()
+no_fix["fecha"] = pd.to_datetime(no_fix.fecha, format="%d-%b-%y")
+try:
+    trips_schema(no_fix)
+    rejected = []
+except (pa.errors.SchemaError, pa.errors.SchemaErrors) as err:
+    rejected = [c for c in ["traslado1_medio", "traslado4_medio", "traslado5_medio"] if c in str(err)]
+assert rejected == ["traslado1_medio", "traslado4_medio", "traslado5_medio"]
+
+# every other leg, by mode: what 5 minutes for 10 pesos looks like
+L = pd.concat([pd.DataFrame({"medio": indexed["viajes"][f"traslado{i}_medio"], "min": indexed["viajes"][f"traslado{i}_min"],
+                             "pago": indexed["viajes"][f"traslado{i}_pago"]}) for i in range(1, 6)]).dropna(subset="medio")
+L["min"] = L["min"].astype(float)
+by_mode = (L[L.medio != "17"].groupby("medio")
+            .agg(legs=("min", "size"), median_minutes=("min", "median"), median_fare=("pago", "median"),
+                 fare_is_10=("pago", lambda s: float((s == 10).mean())), five_min_or_less=("min", lambda s: float((s <= 5).mean())))
+            .sort_values("legs", ascending=False))
+short_paid = L[(L["min"] <= 5) & (L.pago == 10) & (L.medio != "17")].medio.value_counts()
+short_paid_share = (short_paid / by_mode.legs.reindex(short_paid.index)).sort_values(ascending=False)
+walk_fare0 = float((L[L.medio == "A PIE"].pago == 0).mean())
+assert walk_fare0 > 0.999
+mode_tbl = by_mode.reset_index().rename(columns={"medio": "mode", "median_minutes": "median minutes", "median_fare": "median fare",
+                                                  "fare_is_10": "share paying exactly 10 pesos", "five_min_or_less": "share of 5 minutes or less"})
+mode_tbl["legs"] = mode_tbl.legs.map(fmt)
+mode_tbl["median minutes"] = mode_tbl["median minutes"].map(lambda x: f"{x:g}")
+mode_tbl["median fare"] = mode_tbl["median fare"].map(lambda x: f"{x:g}")
+mode_tbl["share paying exactly 10 pesos"] = mode_tbl["share paying exactly 10 pesos"].map(pct)
+mode_tbl["share of 5 minutes or less"] = mode_tbl["share of 5 minutes or less"].map(pct)
+
+
+def person_legs(key):
+    """One person's trips as shipped, legs spelled out, and what load_eod did to each."""
+    t = indexed["viajes"].loc[key]
+    home = viv.ageb.astype(str).loc[key[0]]
+    zone = lambda z: "home" if z == home else z
+    out = []
+    for fj, row in t.iterrows():
+        legs = []
+        for i in range(1, 6):
+            m = row[f"traslado{i}_medio"]
+            if pd.isna(m):
+                break
+            legs.append(f"{m} ({int(row[f'traslado{i}_min'])} min, ${row[f'traslado{i}_pago']:g})")
+        fixes = [f"leg {col[len('traslado')]} → {v}" for (fv, fh, fjx), (col, v) in _VIAJES_MEDIO_FIXES.items()
+                 if (fv, fh, fjx) == (key[0], key[1], fj)]
+        out.append({"trip": fj, "start": f"{int(row.hora_inicio_h):02d}:{int(row.hora_inicio_m):02d}",
+                    "motive": row.motivo_viaje, "origin": zone(row.origen), "destination": zone(row.destino),
+                    "main mode": row.modo_principal, "legs as shipped": "; ".join(legs),
+                    "after load_eod": "; ".join(fixes) or "kept"})
+    return pd.DataFrame(out)
+```
+
+```{python}
+#| label: schema
+#| include: false
+
+cat_cols = {t: [c for c in typed[t].columns if isinstance(typed[t][c].dtype, pd.CategoricalDtype)] for t in FILES}
+n_levels = {t: sum(len(typed[t][c].cat.categories) for c in cat_cols[t]) for t in FILES}
+introduced = {t: {c: int(typed[t][c].isna().sum() - cleaned[t][c].isna().sum()) for c in typed[t].columns
+                  if typed[t][c].isna().sum() != cleaned[t][c].isna().sum()} for t in FILES}
+assert all(not v for v in introduced.values())
+dtype_changes = []
+for t in FILES:
+    for c in typed[t].columns:
+        before, after = str(cleaned[t][c].dtype), str(typed[t][c].dtype)
+        if before != after and not isinstance(typed[t][c].dtype, pd.CategoricalDtype):
+            dtype_changes.append((TABLE[t], c, before, after))
+dtype_tbl = pd.DataFrame(dtype_changes, columns=["table", "column", "as read", "after the schema"])
+assert len(dtype_tbl) == 10
+for t in FILES:
+    for c in typed[t].columns:
+        if str(typed[t][c].dtype) == "Int64":
+            s = cleaned[t][c].dropna().astype(float)
+            assert (s == s.round()).all(), c
+fractional_fares = int((L.pago.dropna() != L.pago.dropna().round()).sum())
+unused = []
+for t in FILES:
+    for c in cat_cols[t]:
+        u = sorted(set(typed[t][c].cat.categories) - set(typed[t][c].dropna().unique()))
+        if u:
+            unused.append((TABLE[t], c, len(typed[t][c].cat.categories), ", ".join(u)))
+unused_tbl = pd.DataFrame(unused, columns=["table", "column", "levels declared", "never observed"])
+assert set(unused_tbl.column) == {"centralidad", "traslado2_medio", "traslado3_medio", "traslado4_medio", "traslado5_medio"}
+assert all(SCHEMA[t].strict for t in FILES)
+
+# zone ids
+zone_rows = []
+for tname, cname, s in [("viv", "ageb", viv.ageb), ("hab", "ageb", hab.ageb), ("trips", "origen", trips.origen), ("trips", "destino", trips.destino)]:
+    s = s.astype(str)
+    letter = s.str[-1].str.isalpha()
+    zone_rows.append((tname, cname, fmt((s.str.len() == 13).sum()), fmt((s.str.len() == 9).sum()),
+                      fmt(letter.sum()), fmt(s.nunique()), int(s[letter].nunique())))
+zone_tbl = pd.DataFrame(zone_rows, columns=["table", "column", "13-character AGEB ids", "9-character locality ids",
+                                            "ids ending in a letter", "distinct ids", "distinct ids ending in a letter"])
+assert zone_tbl["distinct ids ending in a letter"].max() == 154
+assert viv.ageb.nunique() == 1_046 and trips.origen.nunique() == 1_701
+access = trips.zona_origen.astype(str).str.startswith(("Acceso", "Aeropuerto")) | trips.zona_destino.astype(str).str.startswith(("Acceso", "Aeropuerto"))
+n_access = int(access.sum())
+assert n_access == 3_074
+n_letter_trip = int((trips.origen.astype(str).str[-1].str.isalpha() | trips.destino.astype(str).str[-1].str.isalpha()).sum())
+```
+
+```{python}
+#| label: dedup
+#| include: false
+
+nun_hh = hab.groupby("folio_vivienda").nunique().max()
+hh_const = list(nun_hh[nun_hh == 1].index)
+assert hh_const == hh_cols
+assert list(trips.groupby("folio_vivienda").nunique().max().loc[lambda s: s == 1].index) == hh_cols
+nun_p = trips.drop(columns=hh_cols).groupby(P).nunique().max()
+p_const = list(nun_p[nun_p == 1].index)
+assert set(p_const) == set(person_cols) | {"tipo_lugar_origen"}
+assert "tipo_lugar_origen" in p_const and "tipo_lugar_origen" not in hab.columns
+
+hh_pond_multi = int((hab.groupby("folio_vivienda").ponderador.nunique() > 1).sum())
+hh_pond_match = float((hab.groupby("folio_vivienda").ponderador.first() == viv.ponderador).mean())
+trip_pond_match = float((trips.ponderador.to_numpy() == hab.ponderador.reindex(trips.index.droplevel(2)).to_numpy()).mean())
+trip_pond_multi = int((trips.groupby(P).ponderador.nunique() > 1).sum())
+assert hh_pond_multi == 632
+assert nun_hh["fecha"] == 3 and nun_hh["ponderador"] == 3 and nun_p["ponderador"] == 3
+
+dedup_rows = [(c, "household", "hab, trips", "equal to viv") for c in hh_cols]
+dedup_rows += [(c, "person", "trips", "equal to hab") for c in person_cols]
+dedup_tbl = pd.DataFrame(dedup_rows, columns=["column", "constant within", "dropped from", "asserted"])
+kept_rows = [
+    ("fecha", "hab", f"varies within {fmt(hh_multi)} households: members interviewed on different days"),
+    ("ponderador", "hab", f"varies within {fmt(hh_pond_multi)} households: the person weight is its own calibration stage"),
+    ("ponderador", "trips", f"varies within {fmt(trip_pond_multi)} persons; equals the person weight on {pct(trip_pond_match)} of trips"),
+    ("tipo_lugar_origen", "trips", "constant within a person (asked once, for the first trip) but hab has no such column"),
+]
+kept_tbl = pd.DataFrame(kept_rows, columns=["column", "kept on", "why"])
+cells_removed = len(hab) * len(hh_cols) + len(trips) * (len(hh_cols) + len(person_cols))
+assert cells_removed == 174_183 + 2_629_254
+```
+
+```{python}
+#| label: legs
+#| include: false
+
+tr = after_dedup["viajes"]
+present = pd.DataFrame({i: tr[f"traslado{i}_medio"].notna() for i in range(1, 6)})
+n_slots = present.sum(axis=1)
+assert (n_slots == tr.n_traslados).all()
+gaps = pd.concat([~present[i] & present[[j for j in range(i + 1, 6)]].any(axis=1) for i in range(1, 5)], axis=1).any(axis=1)
+assert not gaps.any()
+legs_per_trip = n_slots.value_counts().sort_index()
+assert int(legs_per_trip.sum()) == len(tr) and int((legs_per_trip * legs_per_trip.index).sum()) == len(legs_s)
+multi_share = float((n_slots > 1).mean())
+mins = pd.concat([tr[f"traslado{i}_min"].astype(float) for i in range(1, 6)], axis=1).set_axis(range(1, 6), axis=1)
+modes = pd.concat([tr[f"traslado{i}_medio"].astype(object) for i in range(1, 6)], axis=1).set_axis(range(1, 6), axis=1)
+principal = tr.modo_principal.astype(object)
+in_legs = modes.eq(principal, axis=0).any(axis=1)
+assert in_legs.all()
+is_longest = mins.eq(mins.max(axis=1), axis=0)
+longest_modes = modes.where(is_longest)
+principal_is_longest = longest_modes.eq(principal, axis=0).any(axis=1)
+n_not_longest = int((~principal_is_longest).sum())
+assert n_not_longest == 12
+ties = (is_longest.sum(axis=1) > 1) & (tr.n_traslados > 1)
+tie_modes = longest_modes[ties].apply(lambda r: tuple(sorted(set(r.dropna()))), axis=1)
+tie_real = tie_modes.map(len) > 1
+n_ties = int(tie_real.sum())
+tie_tbl = (pd.DataFrame({"tied modes": tie_modes[tie_real].map(lambda t: " / ".join(t)), "main mode": principal[ties][tie_real]})
+             .value_counts().reset_index(name="trips").sort_values(["tied modes", "trips"], ascending=[True, False]))
+top_ties = tie_tbl[tie_tbl["tied modes"].isin(tie_tbl.groupby("tied modes").trips.sum().nlargest(4).index)].reset_index(drop=True)
+not_longest_tbl = tr[~principal_is_longest].copy()
+nl_rows = []
+for key, row in not_longest_tbl.iterrows():
+    legs = [f"{row[f'traslado{i}_medio']} {int(row[f'traslado{i}_min'])}′" for i in range(1, 6) if pd.notna(row[f"traslado{i}_medio"])]
+    nl_rows.append({"household": key[0], "person": key[1], "trip": key[2], "main mode": row.modo_principal, "legs": "; ".join(legs)})
+not_longest_show = pd.DataFrame(nl_rows).head(6)
+
+fare_nan = legs_s[legs_s.traslado_pago.isna()]
+assert len(fare_nan) == 9 and (fare_nan.traslado_medio.astype(str) == "CAMIÓN O AUTOBÚS").all()
+fare_nan_people = fare_nan.index.droplevel([2, 3]).nunique()
+walk_paid = int(((legs_s.traslado_medio.astype(str) == "A PIE") & (legs_s.traslado_pago > 0)).sum())
+big_fares = legs_s[legs_s.traslado_pago >= 500]
+n_big = len(big_fares)
+big_car = int((big_fares.traslado_medio.astype(str) == "AUTOMÓVIL PARTICULAR").sum())
+leg_minutes = legs_s.groupby(level=[0, 1, 2]).traslado_min.sum()
+assert (leg_minutes > 0).all()
+leg_checks = pd.DataFrame({
+    "check": ["legs per trip equals the survey's own count (n_traslados)", "leg slots are filled in order, no gaps",
+              "the main mode is one of the trip's leg modes", "the main mode is the mode of a longest leg",
+              "legs with a mode but no minutes", "legs with a mode but no fare", "walk legs with a fare",
+              "legs with a fare of 500 pesos or more"],
+    "trips or legs": [f"{fmt(len(tr))} of {fmt(len(tr))}", f"{fmt(len(tr))} of {fmt(len(tr))}",
+                      f"{fmt(in_legs.sum())} of {fmt(len(tr))}", f"{fmt(principal_is_longest.sum())} of {fmt(len(tr))}",
+                      "0", f"{len(fare_nan)} (all bus, {fare_nan_people} persons)", fmt(walk_paid), f"{n_big} ({big_car} by car)"],
+})
+example_legs = legs_s.loc[(9530, 3)].reset_index()
+example_legs["traslado_medio"] = example_legs.traslado_medio.astype(str)
+example_legs.columns = ["trip", "leg", "mode", "minutes", "fare (MXN)"]
+example_legs["fare (MXN)"] = example_legs["fare (MXN)"].map(lambda x: f"{x:g}")
+```
+
+# Summary {.unnumbered}
+
+The EOD 2023 ships as three CSV files whose headers are the questionnaire's own
+questions, one row per dwelling, person and trip, with a trip's up to five legs spread
+across fifteen columns. `eodgdl.load_eod()` turns them into four linked tables. This note
+documents every change it makes on the way that is not one of the trip-chain rules, which
+have their own note: it renames the `{python} sum(n_cols.values())` headers to stable
+snake_case names (@sec-rename), normalises blanks (@sec-blanks), parses the interview
+date (@sec-dates), corrects `{python} n_fixes` cells by hand (@sec-fixes), types every
+column against an explicit schema (@sec-schema), keeps each fact at one grain
+(@sec-dedup), and unpivots the legs into a table of their own (@sec-legs).
+
+Three findings matter for anyone reading the tables. The loader loses nothing: every
+value in the files sits inside the declared levels, the blank-token rule never fires on
+these files, and no leg or row disappears before the chain rules. The blanks are mostly
+skip logic — a question not asked is a blank, not an unknown — and @tbl-blanks says
+which. And the `{python} n_fixes` hand corrections replace a bare code `17` in a leg's
+mode with a label chosen by hand; the code has no key in the shipped glossaries, the
+legs are `{python} int(fix_tbl.minutes.iloc[0])` minutes for
+`{python} int(fix_tbl["fare (MXN)"].iloc[0])` pesos, and without the fix the schema rejects the
+file on all three.
+
+::: {.callout-note title="How to read this note"}
+`load_eod(clean_chains=False)` is the subject: the survey as shipped, after every step
+here and before the chain rules. Every count is recomputed when the document renders and
+the structural claims are `assert`ed in the chunks, so a rendering failure is a real
+finding. Column names are `eodgdl`'s; @tbl-rename shows how they relate to the headers.
+:::
+
+# The files as shipped {#sec-files}
+
+```{python}
+#| label: tbl-files
+#| tbl-cap: "The three master files. Headers are the questionnaire's questions verbatim, ISO-8859-1 encoded; the glossary file beside each master lists exactly the same headers in the same order. Empty cells are read as missing."
+show(file_tbl)
+```
+
+Each file carries a household block — `fecha`, `municipio`, `ageb`, `centralidad`,
+`ponderador` — and the trips file repeats `{python} len(person_block)` person columns
+from the persons file on every trip row, so the same fact is stored at up to three grains
+(@sec-dedup). Folios are unique in every file. The persons and trips files come in
+folio order; the dwellings file does not, and `load_eod` sorts all three. The trip
+sequence within a person is the row order of the trips file, and sorting by folio
+preserves it (the trip-chains note argues why that order is the chain).
+
+@tbl-ledger follows the shape of each table through the pipeline.
+
+```{python}
+#| label: tbl-ledger
+#| tbl-cap: "Rows × columns after each step of load_eod. The folio columns become the index at the third step; the chain rules are the last row and are the subject of the trip-chains note."
+show(ledger)
+```
+
+# Headers become names {#sec-rename}
+
+The `{python} sum(n_cols.values())` headers are questions of up to
+`{python} max(longest_header.values())` characters, with the multi-part ones joined by
+` | `. `rename_imeplan` maps each to a snake_case name from
+`imeplan_rename_map.json`, which ships inside the package as code configuration so a
+rename never needs the network. Every header in the three files has an entry and every
+entry matches a header, and the glossary files list the same headers. The map is renames
+only: which values a column may take is the schema's business (@sec-schema).
+
+```{python}
+#| label: tbl-rename
+#| tbl-cap: "Seven of the renames. The weekend blocks (20 modes and 13 destinations) become weekend_mode_* and weekend_dest_*; the five leg slots become traslado{1..5}_{medio,min,pago}."
+show(rename_tbl)
+```
+
+A header that is not in the map keeps its Spanish name and then fails the schema, which
+is strict for all three tables (@sec-schema), so a changed source file cannot load with a
+silently unnamed column.
+
+# Blanks {#sec-blanks}
+
+`clean_eod` replaces the tokens `N/D`, `ND` and the empty string with a missing value.
+On the shipped files this rule never fires: none of the three tokens appears in any cell,
+nor does any other placeholder (`NA`, `N/A`, `No aplica`, a dash, whitespace), and no
+value carries leading or trailing spaces. Every missing value in the loaded tables was an
+empty field in the CSV, which `pandas` reads as missing already; the rule is a guard for
+other releases of the files.
+
+What the blanks mean is skip logic, for the most part. @tbl-blanks lists every column with
+a blank and the rule it follows; where the rule is exact the chunk asserts it, and the
+table also counts the rows that were asked and still blank.
+
+```{python}
+#| label: tbl-blanks
+#| tbl-cap: "Every column of the loaded tables with a blank, before the chain rules, and what the blank means. 'Asked only of' rules are exact: no answer appears outside the asked set. The counts after the semicolon are rows inside the asked set with no answer. The last column names the TASHA output columns whose mapping reads the survey column, from every source in mappings.yaml."
+show(blank_tbl)
+```
+
+The model build reads `{python} len(blank_used)` of these columns. A blank there becomes a
+default code (`EmploymentStatus`, `Occupation`, `PurposeDestination`), a false condition
+(`StudentStatus`; the passenger override on `Mode` treats a missing vehicle role as the
+driver), or never reaches the build (the untimed trips leave with their persons under the
+chain rules before `StartTime` is made). Each mapping's `note` in `mappings.yaml` says
+which.
+
+Three blanks a consumer should know about are not skip logic. `tiene_discapacidad` is
+blank for `{python} pct(hab.tiene_discapacidad.isna().mean(), 0)` of persons of every
+age, so the disability questions were skipped for a quarter of the sample: those who
+answer *Sí* are `{python} pct(float(hab.tiene_discapacidad.dropna().eq("Sí").mean()), 1)`
+of the persons asked and `{python} pct(float((hab.tiene_discapacidad == "Sí").mean()), 1)`
+of everyone. `escolaridad` and `ocupacion` are blank only for
+adults. And `viajo_acompanado` is blank on `{python} pct(float(trips.viajo_acompanado[timed].isna().mean()), 0)`
+of timed trips with no pattern by mode, position or number of legs, so company on a trip
+is observed for six trips in ten.
+
+# The interview date {#sec-dates}
+
+`fecha` is written `dd-Mon-yy` with English month abbreviations and no zero padding on
+`{python} fmt(n_unpadded)` of the `{python} fmt(len(viv))` dwellings (`1-Feb-23`).
+`clean_eod` parses it with that format, and the schema types it as a UTC midnight. The
+time zone is a convention: the value is a calendar date, and comparing it with an
+America/Mexico_City timestamp would shift it, so treat it as a date.
+
+Fieldwork ran from `{python} first_day.strftime("%-d %B %Y")` to `{python} last_day.strftime("%-d %B %Y")` on `{python} n_days`
+distinct days (@fig-dates). `{python} pct(sat_share, 0)` of dwellings were interviewed on
+a Saturday and `{python} sundays` on a Sunday.
+
+```{python}
+#| label: fig-dates
+#| fig-cap: "Dwellings interviewed per calendar day. Weekend interviews are common on Saturdays; the sample is spread over January to April 2023, not concentrated in one season."
+#| fig-alt: "Bar chart of the number of dwellings interviewed on each day from 23 January to 29 April 2023. Weekday bars in blue reach roughly 200 to 350 dwellings on most days; Saturday and Sunday bars in orange are of similar height on Saturdays and nearly absent on Sundays. A gap of several days with no interviews appears in early April."
+days = pd.date_range(per_day.index.min(), per_day.index.max())
+counts = per_day.reindex(days).fillna(0)
+is_weekend = days.dayofweek >= 5
+fig, ax = plt.subplots(figsize=(9, 3.4))
+ax.bar(days[~is_weekend], counts[~is_weekend], width=1.0, color=BLUE, label="Monday to Friday")
+ax.bar(days[is_weekend], counts[is_weekend], width=1.0, color=ORANGE, label="Saturday and Sunday")
+ax.set_ylabel("dwellings interviewed")
+ax.legend(frameon=False)
+for s in ["top", "right"]:
+    ax.spines[s].set_visible(False)
+plt.tight_layout(); plt.show()
+```
+
+The date is the interview, not the travel day: the survey asks about *yesterday or the
+most recent working day*, and the weekday the person reports is the working day before
+`fecha` for `{python} pct(ref_match, 0)` of persons (the trip-chains note takes this up).
+A household is not always interviewed in one visit either. `{python} fmt(hh_multi)`
+households have members interviewed on two or three different days,
+`{python} fmt(spread_over_week)` of them more than a week apart and one
+`{python} spread_max` days apart, so `{python} fmt(persons_differ)` persons carry a date
+that is not their dwelling's. The dwelling's `fecha` is the date of its first listed
+member in every case. This is why `fecha` survives the de-duplication of @sec-dedup: it is
+a person-level fact.
+
+# Three cells corrected by hand {#sec-fixes}
+
+`_VIAJES_MEDIO_FIXES` in `eodgdl.eod` sets `{python} n_fixes` cells of the trips file. All
+three are a leg's mode recorded as the bare string `17` where every other leg carries a
+label; the glossaries and the technical report have no code list, so what `17` stood for
+in the field system is not documented. The three legs are alike: `{python} int(fix_tbl.minutes.iloc[0])`
+minutes for `{python} int(fix_tbl["fare (MXN)"].iloc[0])` pesos at the home end of a bus trip,
+by two persons of two households in the same AGEB (`{python} fix_home`, zone
+`{python} fix_zone`, `{python} fix_mun`).
+
+```{python}
+#| label: tbl-fixes
+#| tbl-cap: "The three corrected cells: what the file says, what the leg looks like, and the label load_eod gives it."
+show(fix_tbl)
+```
+
+```{python}
+#| label: tbl-fix-person1
+#| tbl-cap: "Household 9560, person 4, as shipped. Both trips of the day carry the coded leg at the home end: leg 1 on the way out, leg 4 on the way back, each 5 minutes for 10 pesos next to two 9.50-peso bus legs."
+show(person_legs((9560, 4)))
+```
+
+```{python}
+#| label: tbl-fix-person2
+#| tbl-cap: "Household 9530, person 3, as shipped. Trip 3 closes with the same coded leg after a 50-minute bus ride; the rest of the day is untouched."
+show(person_legs((9530, 3)))
+```
+
+**Why the fix exists.** `17` is outside the mode levels, and the schema refuses to
+coerce a value it cannot place — in every slot, nullable or not — so without the fix the
+trips file does not load at all; the chunk behind this paragraph verifies that all three
+cells are named in the rejection. Nulling them instead would have dropped three legs in
+the unpivot of @sec-legs and left their trips with an `n_traslados` that disagrees with
+their legs.
+
+**What the label is.** The loader labels all three *Mototaxi*. An earlier reading gave
+the first a walk and the other two a bus, and neither matched the leg:
+`{python} pct(walk_fare0, 2)` of walking legs cost nothing, and a bus leg is a median
+`{python} int(by_mode.loc["CAMIÓN O AUTOBÚS", "median_minutes"])` minutes. Counted over
+every leg in the file, a leg of five minutes or less for exactly 10 pesos is most often a
+bus leg, because buses are so common (`{python} fmt(short_paid.iloc[0])` of
+`{python} fmt(short_paid.sum())`); as a share of a mode's own legs it is typical of
+*`{python} short_paid_share.index[0]`* and *`{python} short_paid_share.index[1]`*
+(@tbl-modes), and the households are in a Tlajomulco zone where mototaxis feed the bus
+corridors. The three legs are `{python} 3 * int(fix_tbl.minutes.iloc[0])` minutes out of
+`{python} fmt(legs_s.traslado_min.sum())` and change no statistic, and the trips' main
+mode stays the bus the survey recorded; but the label is a judgement, and the comment on
+`_VIAJES_MEDIO_FIXES` says so.
+
+```{python}
+#| label: tbl-modes
+#| tbl-cap: "Every leg in the file by mode, as shipped, minus the three coded legs: how long a leg is, what it costs, and how often it is exactly 10 pesos or 5 minutes or less."
+show(mode_tbl)
+```
+
+# Typing and validation {#sec-schema}
+
+Each table is validated against a `pandera` schema with `coerce=True`, so the schema is
+also the typing step. `{python} sum(len(v) for v in cat_cols.values())` columns become
+categoricals with the survey's levels enumerated in `eodgdl.schemas`
+(`{python} fmt(sum(n_levels.values()))` levels in all, some ordered: income bands, age
+groups, vehicle counts, the trip duration band, the weekday). A value outside its levels
+makes the schema refuse the column rather than null it — that is what the three `17`
+cells trigger without their fix (@sec-fixes) — so a successful load is itself the proof
+that every other value in the files sits inside the declared levels, and the chunk checks
+besides that no column gains a missing value under the schema. @tbl-dtypes lists the
+other type changes.
+The integer columns read as floats because they have blanks are all whole numbers; the
+fare columns stay floats because `{python} fmt(fractional_fares)` fares have centavos.
+
+```{python}
+#| label: tbl-dtypes
+#| tbl-cap: "Columns whose dtype the schema changes, other than the categoricals. Int64 is pandas' nullable integer."
+show(dtype_tbl)
+```
+
+The schema also checks that every weight is positive, that every zone id is 9 or 13
+characters long, and that each *Sí/No* column in the weekend blocks uses both answers.
+It declares levels the data never use (@tbl-unused): the seven access-point and airport
+pseudo-zones are legal for a home zone but no dwelling is in one, while
+`{python} fmt(n_access)` trips start or end in one; and the rarer modes never appear in
+the later leg slots.
+
+```{python}
+#| label: tbl-unused
+#| tbl-cap: "Declared levels with no observation. The trip's zona_origen and zona_destino use all 71 zones; a dwelling's centralidad uses 64."
+show(unused_tbl)
+```
+
+**Zone ids are strings.** A zone id is either a 13-character INEGI AGEB key or a
+9-character locality key, and `{python} int(zone_tbl["distinct ids ending in a letter"].max())`
+of the trip zones end in a letter (@tbl-zones). Read numerically, those become missing and
+the rest lose nothing but their type; `eodgdl` reads them as strings everywhere and
+`tasha.validate` flags a column that was parsed as an integer. `{python} fmt(n_letter_trip)`
+trips have such an id at one end or the other.
+
+```{python}
+#| label: tbl-zones
+#| tbl-cap: "Zone ids by shape, as shipped. The same 1,046 ids serve as home zones; trips reach 1,701."
+show(zone_tbl)
+```
+
+All three schemas are strict, so an unexpected column fails the load rather than passing
+through unnamed and untyped.
+
+# One value per grain {#sec-dedup}
+
+The files repeat household facts on every person and trip row, and person facts on every
+trip row. `load_eod` drops a column from the finer table when its value is constant
+within every group of the coarser one and equals the coarser table's value, both checked
+with an `assert` (@tbl-dedup). If the source data ever disagree with themselves at two
+grains, these asserts are what fails first.
+
+```{python}
+#| label: tbl-dedup
+#| tbl-cap: "Columns removed from hab and trips because the coarser table already holds them. 174,183 cells leave hab and 2,629,254 leave trips."
+show(dedup_tbl)
+```
+
+The rule is what keeps three columns that look like duplicates (@tbl-kept). `fecha` is
+in the household block of all three files but varies within `{python} fmt(hh_multi)`
+households (@sec-dates). `ponderador` is present at every grain and is a different number
+at each: the dwelling, person and trip weights are three nested calibration stages, and
+the person weight differs within `{python} fmt(hh_pond_multi)` households, the trip
+weight within `{python} fmt(trip_pond_multi)` persons; the expansion-factors note derives
+all three. And `tipo_lugar_origen` — the type of place the first trip left from, asked
+once — is constant within a person but has no home in `hab`, so it stays on the trips.
+
+```{python}
+#| label: tbl-kept
+#| tbl-cap: "Columns that repeat across files but are not dropped, and why."
+show(kept_tbl)
+```
+
+# The legs table {#sec-legs}
+
+A trip's legs sit in fifteen columns, `traslado{1..5}_{medio,min,pago}`. `load_eod`
+unpivots them into `legs`, indexed by `(folio_vivienda, folio_habitante, folio_viaje,
+folio_traslado)`, keeping a slot when it has a mode, and drops the fifteen columns from
+the trips. @tbl-legchecks is what the unpivot can be checked against. The survey's own
+leg count agrees with the filled slots on every trip, the slots are filled in order, and
+after the fixes of @sec-fixes no filled slot lacks a mode, so `{python} fmt(len(legs_s))`
+legs come out of `{python} fmt(len(trips_s))` trips and nothing is lost.
+`{python} pct(multi_share)` of trips have more than one leg.
+
+```{python}
+#| label: tbl-legchecks
+#| tbl-cap: "The unpivot and the fields it carries, checked. The fare gaps and oddities are left as shipped."
+show(leg_checks)
+```
+
+```{python}
+#| label: tbl-example-legs
+#| tbl-cap: "The legs of household 9530, person 3 (the day of @tbl-fix-person2) as load_eod returns them: one row per leg, the coded fifth leg of trip 3 now labelled."
+show(example_legs)
+```
+
+**The main mode is the survey's.** `modo_principal` stays on the trip table as shipped
+and is what the model build reads for its mode. It is always one of the trip's leg modes,
+and the mode of a longest leg on all but `{python} n_not_longest` trips (@tbl-notlongest),
+where a transit leg beats a longer walk. When two legs tie for longest
+(`{python} fmt(n_ties)` trips) the survey breaks the tie inconsistently (@tbl-ties): bus
+against light rail goes either way about equally. Nothing in `load_eod` derives or
+overrides it; a consumer wanting a rule-based main mode has the legs to build one.
+
+```{python}
+#| label: tbl-notlongest
+#| tbl-cap: "Six of the twelve trips whose main mode is not the longest leg's. A 61-minute walk to a 45-minute Mi Macro ride, repeated by several persons, is the recurring case."
+show(not_longest_show)
+```
+
+```{python}
+#| label: tbl-ties
+#| tbl-cap: "How the survey names the main mode when two legs tie for longest, for the four most common ties."
+show(top_ties)
+```
+
+# What the loader leaves alone {#sec-untouched}
+
+Everything below was seen while writing this note and is left as shipped, because a fix
+would invent data or belongs to a consumer's judgement.
+
+- **Blanks without a rule.** A quarter of persons have no disability answer, four in ten
+  timed trips no company answer, and `{python} fmt(int(hab.escolaridad.isna().sum()))`
+  adults no schooling (@tbl-blanks). They are missing, not *No*.
+- **The `17` legs.** Labelled *Mototaxi* by hand; the label is a judgement (@sec-fixes).
+- **Fares.** `{python} len(fare_nan)` bus legs have no fare, `{python} walk_paid` walking
+  legs have one, and `{python} n_big` legs cost 500 pesos or more, `{python} big_car` of them
+  by car — a day's fuel or a month's parking rather than a fare. The build does not use
+  fares.
+- **The main mode's tie-breaks** (@sec-legs).
+- **The interview date's time zone and the dates inside a household** (@sec-dates).
+- **Weights.** Three weights that differ within households and persons; the
+  expansion-factors note is the place to read before using any of them.
+- **The reported duration band against the leg minutes**, and everything about the
+  chain, are in the trip-chains note.
+
+# Recommendations {#sec-recommendations}
+
+| item | status | recommendation | where |
+|---|---|---|---|
+| header renames | done | keep the map renames-only; a new header must be added to the map and to the schema together | `imeplan_rename_map.json`, `schemas.py` |
+| blank tokens | done, inert | the rule stays as a guard; its docstring now says the blanks are skip logic and points to @tbl-blanks | `clean_eod` |
+| interview date | done | kept as a UTC-midnight timestamp by decision; the docstring says to treat it as a date and never as the travel day | `clean_eod`, consumers |
+| the three `17` legs | done, label is a judgement | relabelled *Mototaxi*, the mode whose legs the fare and duration fit; the constant's comment records that `17` is an undocumented code and the label a judgement. IMEPLAN's code list would settle it | `_VIAJES_MEDIO_FIXES` |
+| schema coercion | done, lossless | keep `coerce=True`: a value outside the declared levels fails the load loudly, which is right; when a future file adds a level, add it to the schema deliberately | `schemas.py` |
+| one value per grain | done | keep the asserts; they are the first thing to fail if a future file disagrees with itself | `load_eod` |
+| legs unpivot | done, tested | the checks of @tbl-legchecks are now a test | `tests/test_eod.py` |
+| main mode | decided | `modo_principal` stays the build's source as the survey's own answer; the `Mode` note in `mappings.yaml` now says what it is and where a rule-based one would go | `mappings.yaml` |
+| fares | done, documented | left as shipped; the `load_eod` docstring flags the missing, walking and 500-peso fares, and nothing in the package reads them | `load_eod` |
+
+: Every step in this note, with its status and where a change would go. {#tbl-recs}
+
+# Appendix: reproducing this note {.unnumbered}
+
+```python
+from eodgdl import load_eod, rename_imeplan, clean_eod, imeplan_rename_map
+from eodgdl.schemas import viv_schema, hab_schema, trips_schema
+
+shipped = load_eod(clean_chains=False)   # every step in this note, no chain rules
+clean = load_eod()                        # ...plus the five chain rules
+
+# the steps one at a time, for the trips file
+import pandas as pd
+raw = pd.read_csv("data/IMEPLAN_Base_Viajes_Master.csv", encoding="ISO-8859-1", low_memory=False)
+trips = (raw.pipe(rename_imeplan, table="viajes")
+            .set_index(["folio_vivienda", "folio_habitante", "folio_viaje"])
+            .pipe(clean_eod, level="viajes")       # blanks, fecha, the three fixes
+            .pipe(trips_schema)                    # typing and validation
+            .sort_index())
+```
+
+The rename map is `src/eodgdl/imeplan_rename_map.json`; the schemas and their levels are
+`src/eodgdl/schemas.py`; the hand corrections are `_VIAJES_MEDIO_FIXES` in
+`src/eodgdl/eod.py`, and the de-duplication and the unpivot are the body of `load_eod`
+in the same file. The survey's design is described in
+`data/Informe_Tecnico_Final_EOD_2023.pdf`.

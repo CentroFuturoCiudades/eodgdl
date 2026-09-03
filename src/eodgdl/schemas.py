@@ -276,7 +276,7 @@ viv_schema = pa.DataFrameSchema(
         "tiene_internet": si_no_col,
         "dispuesto_participar_futuro": si_no_col,
     },
-    strict=False,
+    strict=True,
     coerce=True,
     index=pa.Index(int, name="folio_vivienda", unique=True, coerce=True),
 )

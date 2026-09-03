@@ -172,3 +172,22 @@ def test_load_eod_can_return_the_survey_as_shipped():
     assert (len(hab), len(trips), len(legs)) == (58_061, 154_662, 170_509)
     assert trips.ponderador.sum() == 11_796_386        # the published trip total
     assert trips.hora_inicio_h.isna().sum() == 325
+
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_legs_unpivot_is_lossless():
+    """Every filled traslado slot becomes a leg, in order, with a mode and minutes."""
+    viv, hab, trips, legs = load_eod(DATA_DIR, clean_chains=False)
+    trip_levels = ["folio_vivienda", "folio_habitante", "folio_viaje"]
+    per_trip = legs.groupby(level=trip_levels).size()
+    assert (per_trip.reindex(trips.index).fillna(0) == trips.n_traslados).all()
+    # slots are filled in order: folio_traslado is 1..n within every trip
+    position = legs.groupby(level=trip_levels).cumcount() + 1
+    assert (position.to_numpy() == legs.index.get_level_values("folio_traslado").to_numpy()).all()
+    assert not legs.traslado_medio.isna().any()
+    assert (legs.traslado_min > 0).all()
+    # the survey's main mode is always one of the trip's leg modes
+    leg_modes = legs.traslado_medio.astype(str).groupby(level=trip_levels).agg(set).reindex(trips.index)
+    assert all(m in modes for m, modes in zip(trips.modo_principal.astype(str), leg_modes))
+    assert not any(c.startswith("traslado") for c in trips.columns)
+

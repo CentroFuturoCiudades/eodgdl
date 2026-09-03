@@ -382,6 +382,11 @@ trips:
       on 134,095 trips, so treat null as driver for auto modes. The other 36
       'Acompañante' trips are on transit, walk or ride-hail and keep their
       mapped mode.
+      modo_principal is the survey's own answer, kept as shipped: it is always one
+      of the trip's leg modes and the mode of a longest leg on all but 12 of
+      154,662 trips, where a transit leg beats a longer walk; when two legs tie
+      for longest (711 trips) the survey breaks the tie inconsistently. A
+      rule-based main mode would have to be derived from legs here and said so.
 
   PurposeOrigin:
     source: tipo_lugar_origen

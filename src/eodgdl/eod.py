@@ -17,12 +17,22 @@ log = logging.getLogger(__name__)
 PERSON = ["folio_vivienda", "folio_habitante"]
 
 # Manual fixes for known data-entry errors in the "viajes" (trips) table, keyed by
-# (folio_vivienda, folio_habitante, folio_viaje) → (column, corrected value). Source:
-# manual review against the survey instrument; see README "Data provenance".
+# (folio_vivienda, folio_habitante, folio_viaje) → (column, corrected value).
+# All three cells carry the bare string '17' in a leg-mode field where every
+# other leg carries a label. Neither the glossaries nor the technical report
+# list mode codes, so what 17 stood for in the field system is undocumented.
+# The three legs are alike — 5 minutes for 10 pesos at the home end of a bus
+# trip, by two persons of two households in AGEB 1409700251418 (Tlajomulco) —
+# and without a label the trip schema rejects the file, since 17 is outside
+# the mode levels. The label is a judgement, not a reading of the code: of the
+# survey's modes, Mototaxi is the one whose legs look like this (a short paid
+# feeder to the bus), decided 2026-09-03; the earlier reading as a walk and a
+# bus fitted neither the fare nor the duration. See reports/loading.qmd,
+# "Three cells corrected by hand".
 _VIAJES_MEDIO_FIXES = {
-    (9560, 4, 1): ("traslado1_medio", "A PIE"),
-    (9560, 4, 2): ("traslado4_medio", "CAMIÓN O AUTOBÚS"),
-    (9530, 3, 3): ("traslado5_medio", "CAMIÓN O AUTOBÚS"),
+    (9560, 4, 1): ("traslado1_medio", "Mototaxi"),
+    (9560, 4, 2): ("traslado4_medio", "Mototaxi"),
+    (9530, 3, 3): ("traslado5_medio", "Mototaxi"),
 }
 
 # A 'Regresar a Casa' whose destination zone is not the household's did not go
@@ -85,9 +95,17 @@ def rename_imeplan(df: pd.DataFrame, table: str) -> pd.DataFrame:
 
 
 def clean_eod(df: pd.DataFrame, level: str) -> pd.DataFrame:
-    """Normalize INEGI missing tokens to NaN, parse the date column, apply manual fixes.
+    """Normalize missing tokens to NaN, parse the date column, apply manual fixes.
 
     ``level`` in {"habitantes", "viviendas", "viajes"}.
+
+    The token rule (``N/D``, ``ND``, the empty string) is inert on the 2023
+    release: none of the tokens appears in the shipped files, so every missing
+    value is an empty CSV field, and most blanks are skip logic — a question
+    not asked, not an unknown answer. ``reports/loading.qmd`` lists every
+    column with blanks and the rule it follows. ``fecha`` is the interview
+    date, not the travel day; the schema types it as a UTC midnight, so treat
+    it as a calendar date.
     """
     df = df.copy()
 
@@ -425,6 +443,11 @@ def load_eod(
     row. Pass
     ``clean_chains=False`` for the survey as shipped — the expansion factors
     reconcile to the published totals only on that.
+
+    ``legs`` carries the fare as reported (``traslado_pago``): nine bus legs
+    have none, seventeen walking legs have one, and 145 legs of 500 pesos or
+    more are a day's fuel or a month's parking rather than a fare. Nothing in
+    the package reads it.
 
     Returns an :class:`EODTables` named tuple ``(viv, hab, trips, legs)``.
     """
