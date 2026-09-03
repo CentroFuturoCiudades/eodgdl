@@ -49,7 +49,9 @@ excluded, 84 mislabelled returns recoded, 468 returns home made from home
 dropped, 120 trips after a return home made to start at home, 2,029
 mistyped start hours repaired and flagged in `hora_inicio_ajuste` — and refuses
 a trip table with untimed rows. What that cleaning does not repair, `tasha.chain_report(od.trips)`
-counts; see "Validating" below.
+counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
+another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: a
+consumer who wants independent observations filters `hab` and `trips` on it before building.
 
 Zone columns hold the survey's own AGEB CVEGEO or locality id as a **string**.
 Read them back with `dtype=str` — `tasha.zone_columns(table)` lists them —

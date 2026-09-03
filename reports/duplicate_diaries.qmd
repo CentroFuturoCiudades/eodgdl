@@ -1,0 +1,614 @@
+---
+title: "Diaries repeated across households"
+subtitle: "Persons in different households of the same block whose trip diaries agree leg by leg, with start times shifted by a few minutes: how many, where, what they look like, and what the loader does about them"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import os
+from pathlib import Path
+
+
+def _find_data_dir() -> Path:
+    """Walk up from the working dir to locate the repo's data/ folder."""
+    marker = "IMEPLAN_Base_Viviendas_Master.csv"
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        cand = base / "data"
+        if (cand / marker).exists():
+            return cand.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl data/ directory.")
+
+
+os.environ.setdefault("EODGDL_DATA_DIR", str(_find_data_dir()))
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.ticker import PercentFormatter
+
+from eodgdl import load_eod, rename_imeplan
+from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
+from eodgdl.eod import _VIAJES_MEDIO_FIXES
+
+plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
+BLUE, ORANGE, GREY = "#2c7fb8", "#e6550d", "#969696"
+P = ["folio_vivienda", "folio_habitante"]
+DATA = Path(os.environ["EODGDL_DATA_DIR"])
+
+
+def fmt(n) -> str:
+    return f"{round(float(n)):,}"
+
+
+def pct(x, d=1) -> str:
+    return f"{100 * float(x):.{d}f}%"
+
+
+def show(df):
+    return df.style.hide(axis="index")
+```
+
+```{python}
+#| label: load
+#| include: false
+
+# The files as shipped, every cell a string, so that the diaries are compared on what the
+# file says and not on what the schema makes of it. The one change applied is load_eod's
+# relabelling of the three '17' leg-mode cells, which the twins of @sec-case supplied.
+def read(fname, table):
+    df = pd.read_csv(DATA / fname, encoding="ISO-8859-1", dtype=str, keep_default_na=False)
+    df = rename_imeplan(df, table)
+    for c in ["folio_vivienda", "folio_habitante", "folio_viaje"]:
+        if c in df:
+            df[c] = df[c].astype(int)
+    return df
+
+
+viv, hab, trips = read(VIVIENDAS_CSV, "viviendas"), read(HABITANTES_CSV, "habitantes"), read(VIAJES_CSV, "viajes")
+trips = trips.sort_values(P + ["folio_viaje"]).reset_index(drop=True)
+for (fv, fh, fj), (col, value) in _VIAJES_MEDIO_FIXES.items():
+    trips.loc[(trips.folio_vivienda == fv) & (trips.folio_habitante == fh) & (trips.folio_viaje == fj), col] = value
+trips["ponderador"] = pd.to_numeric(trips.ponderador)
+trips["start"] = pd.to_numeric(trips.hora_inicio_h, errors="coerce") * 60 + pd.to_numeric(trips.hora_inicio_m, errors="coerce")
+n_persons_with_trips = trips.groupby(P).ngroups
+```
+
+```{python}
+#| label: diaries
+#| include: false
+
+# A diary is the person's trips in row order. The loose signature keeps what the survey
+# asks about each trip except the numbers that a respondent reports from memory: origin
+# and destination AGEB, motive, destination place type, leg count and each leg's mode.
+# The exact signature adds every leg's minutes and fare. Start times are kept aside and
+# compared separately.
+def num(v):
+    try:
+        return f"{float(v):g}"      # '10.0' and '10.00' are one fare
+    except ValueError:
+        return v
+
+
+modes = [f"traslado{i}_medio" for i in range(1, 6)]
+mins = [f"traslado{i}_min" for i in range(1, 6)]
+fares = [f"traslado{i}_pago" for i in range(1, 6)]
+core = trips[["origen", "destino", "motivo_viaje", "tipo_lugar_destino", "n_traslados"] + modes].agg("|".join, axis=1)
+detail = trips[mins + fares].map(num).agg("|".join, axis=1)
+trips["loose"] = core
+trips["exact"] = core + "|" + detail
+trips["moving"] = ((trips[modes] != "A PIE") & (trips[modes] != "")).any(axis=1)
+
+per = trips.groupby(P).agg(n=("exact", "size"), exact=("exact", " ## ".join), loose=("loose", " ## ".join),
+                           times=("start", list), company=("viajo_acompanado", list), fecha=("fecha", "first"), moving=("moving", "any"),
+                           ageb=("ageb", "first"), main_modes=("modo_principal", list)).reset_index()
+demo = ["parentesco", "sexo_nacimiento", "edad", "escolaridad", "trabajo_semana_pasada", "ocupacion"]
+per = per.merge(hab[P + demo], on=P, how="left")
+per["mun"] = per.folio_vivienda.map(viv.set_index("folio_vivienda").municipio)
+per["fecha_viv"] = per.folio_vivienda.map(viv.set_index("folio_vivienda").fecha)
+per["transplant"] = per.fecha != per.fecha_viv
+per["substantive"] = per.moving & (per.n >= 2)
+BLOCK = ["ageb", "fecha"]                    # an interview block: one AGEB on one date
+for k in ["exact", "loose"]:
+    per[f"{k}_hh"] = per.groupby(BLOCK + [k]).folio_vivienda.transform("nunique")
+    per[f"{k}_anywhere"] = per.groupby(k).folio_vivienda.transform("nunique")
+    per[f"{k}_in_hh"] = per.groupby(["folio_vivienda", k]).folio_habitante.transform("size")
+sub = per[per.substantive]
+n_sub = len(sub)
+n_loose = int((sub.loose_hh > 1).sum())
+n_exact = int((sub.exact_hh > 1).sum())
+n_exact_other_date = int(((sub.exact_anywhere > 1) & (sub.exact_hh == 1)).sum())
+assert n_sub == 37_903 and n_loose == 4_026 and n_exact == 2_345
+exact_share = n_exact / n_loose
+within_loose = per[per.substantive & (per.loose_in_hh > 1)]
+within_exact_share = float((within_loose.exact_in_hh > 1).mean())
+n_within_exact = int((per.substantive & (per.exact_in_hh > 1)).sum())
+by_trips = pd.crosstab(sub[sub.loose_hh > 1].n.clip(upper=5), sub[sub.loose_hh > 1].exact_hh > 1)
+```
+
+```{python}
+#| label: twins
+#| include: false
+
+# For every person whose exact diary repeats in another household, the closest twin: the
+# other household's person with the same diary whose start times are nearest.
+ex = sub[sub.exact_hh > 1].copy()
+rows = []
+for _, g in ex.groupby(BLOCK + ["exact"]):
+    recs = g.to_dict("records")
+    for a in recs:
+        best = None
+        for b in recs:
+            if b["folio_vivienda"] == a["folio_vivienda"]:
+                continue
+            offs = np.abs(np.asarray(a["times"], float) - np.asarray(b["times"], float))
+            off = float(np.nanmax(offs)) if not np.isnan(offs).all() else np.nan
+            same_demo = all(a[c] == b[c] for c in ["parentesco", "sexo_nacimiento", "edad"])
+            key = (np.nan_to_num(off, nan=1e9), 0 if same_demo else 1)
+            if best is None or key < best[0]:
+                best = (key, dict(max_offset=off, offsets=offs.tolist(), same_demo=same_demo,
+                                  twin_hh=b["folio_vivienda"], twin_p=b["folio_habitante"],
+                                  folio_gap=abs(a["folio_vivienda"] - b["folio_vivienda"])))
+        rows.append({**{k: a[k] for k in P}, **best[1]})
+ex = ex.merge(pd.DataFrame(rows), on=P)
+BINS, LABELS = [-1, 0, 10, 30, 24 * 60], ["identical", "1–10 min", "11–30 min", "over 30 min"]
+ex["kind"] = pd.cut(ex.max_offset, BINS, labels=LABELS)
+kind_counts = ex.kind.value_counts().reindex(LABELS)
+assert kind_counts.tolist() == [215, 1_578, 143, 409]
+n_ident, n_shift, n_loosely = int(kind_counts.iloc[0]), int(kind_counts.iloc[1]), int(kind_counts.iloc[2:].sum())
+same_demo_n = int(ex.same_demo.sum())
+groups = ex.groupby(BLOCK + ["exact"]).folio_vivienda.nunique()
+
+# the loader's flag is exactly the identical-time and shifted classes
+flagged = load_eod(clean_chains=False).hab.diario_repetido
+n_flag = int(flagged.sum())
+assert n_flag == n_ident + n_shift == 1_793
+assert set(flagged[flagged].index) == set(map(tuple, ex[ex.kind.isin(LABELS[:2])][P].to_numpy()))
+n_groups = len(groups)
+group_sizes = groups.value_counts().sort_index()
+kind_by_trips = pd.crosstab(ex.n.clip(upper=4), ex.kind, normalize="index")
+
+# every paired trip's start-time difference, across households and (the baseline) within them
+offs = pd.Series([o for l in ex.offsets for o in l]).dropna()
+wrows = []
+for _, g in per[per.substantive & (per.exact_in_hh > 1)].groupby(["folio_vivienda", "exact"]):
+    ts = [np.asarray(t, float) for t in g.times]
+    for i in range(1, len(ts)):
+        wrows += np.abs(ts[0] - ts[i]).tolist()
+woffs = pd.Series(wrows).dropna()
+off_counts = offs.value_counts().sort_index()
+at10, at11 = int(off_counts.get(10, 0)), int(off_counts.get(11, 0))
+assert at10 > 10 * at11
+cross_bins = pd.cut(offs, BINS, labels=LABELS).value_counts().reindex(LABELS)
+within_bins = pd.cut(woffs, BINS, labels=LABELS).value_counts().reindex(LABELS)
+cross_shift_share = float(cross_bins.iloc[1] / cross_bins.sum())
+within_ident_share = float(within_bins.iloc[0] / within_bins.sum())
+within_shift_share = float(within_bins.iloc[1] / within_bins.sum())
+offset_tbl = pd.DataFrame({"start-time difference": LABELS,
+                           "paired trips, twin in another household": [fmt(x) for x in cross_bins],
+                           "share": [pct(x / cross_bins.sum()) for x in cross_bins],
+                           "paired trips, twin in the same household": [fmt(x) for x in within_bins],
+                           "share ": [pct(x / within_bins.sum()) for x in within_bins]})
+
+# company and demographics, by kind
+comp = {k: pd.Series([c for s in ex[ex.kind == k].company for c in s]).replace("", "not answered").value_counts() for k in LABELS}
+comp_tbl = pd.DataFrame(comp).fillna(0).astype(int)
+comp_tbl = comp_tbl.reindex(["Sólo", "Acompañado todos los traslados", "Acompañado algunos traslados", "not answered"])
+comp_share = (comp_tbl / comp_tbl.sum()).map(pct)
+comp_share.insert(0, "company on the trip", comp_share.index)
+demo_tbl = pd.crosstab(ex.kind, ex.same_demo).reindex(LABELS)
+demo_tbl.columns = ["twin is a different person", "twin has the same relationship, sex and age"]
+demo_tbl.insert(0, "start-time difference", demo_tbl.index)
+demo_tbl = demo_tbl.map(lambda x: fmt(x) if not isinstance(x, str) else x)
+shift = ex[ex.kind == "1–10 min"]
+shift_gap_median = int(shift.folio_gap.median())
+shift_transplants = int(shift.transplant.sum())
+all_transplants = int(per.transplant.sum())
+```
+
+```{python}
+#| label: case
+#| include: false
+
+# The case that surfaced the pattern: the two persons with the coded '17' legs and their
+# twins in household 879.
+CASE = {(9560, 4): (879, 7), (9530, 3): (879, 3)}
+T = trips.set_index(P + ["folio_viaje"])
+
+
+def legs_text(row):
+    out = []
+    for i in range(1, 6):
+        m = row[f"traslado{i}_medio"]
+        if m == "":
+            break
+        out.append(f"{m} ({num(row[f'traslado{i}_min'])} min, ${num(row[f'traslado{i}_pago'])})")
+    return "; ".join(out)
+
+
+case_rows = []
+for (fv, fh), (tv, th) in CASE.items():
+    a, b = T.loc[(fv, fh)], T.loc[(tv, th)]
+    ha, hb = hab.set_index(P).loc[(fv, fh)], hab.set_index(P).loc[(tv, th)]
+    for (fj, ra), (tj, rb) in zip(a.iterrows(), b.iterrows()):
+        case_rows.append({"person": f"{fv}/{fh} ({ha.sexo_nacimiento}, {ha.edad}, {ha.ocupacion})", "trip": fj,
+                          "start": f"{ra.hora_inicio_h}:{ra.hora_inicio_m}", "motive": ra.motivo_viaje,
+                          "legs": legs_text(ra),
+                          "twin": f"{tv}/{th} ({hb.sexo_nacimiento}, {hb.edad}, {hb.ocupacion})", "twin trip": tj,
+                          "twin start": f"{rb.hora_inicio_h}:{rb.hora_inicio_m}", "twin legs": legs_text(rb)})
+case_tbl = pd.DataFrame(case_rows)
+# 9530/3 and 879/3 are exact twins over the whole diary; 879/7 carries two more walking
+# trips than 9560/4, so that pair is a partial repeat the whole-diary definition misses
+assert ex.set_index(P).loc[(9530, 3), "kind"] == "1–10 min" and ex.set_index(P).loc[(9530, 3), "twin_hh"] == 879
+assert (9560, 4) not in set(map(tuple, ex[P].to_numpy())) and len(T.loc[(879, 7)]) == len(T.loc[(9560, 4)]) + 2
+```
+
+```{python}
+#| label: where
+#| include: false
+
+per["twin"] = per.set_index(P).index.isin(ex.set_index(P).index)
+per["shifted"] = per.set_index(P).index.isin(shift.set_index(P).index)
+per["month"] = pd.to_datetime(per.fecha, format="%d-%b-%y").dt.strftime("%Y-%m")
+S = per[per.substantive]
+batch = S.groupby(["ageb", "fecha"]).agg(persons=("twin", "size"), twins=("twin", "sum"), shifted=("shifted", "sum"),
+                                         households=("folio_vivienda", "nunique")).reset_index()
+b10 = batch[batch.persons >= 10].copy()
+b10["share"] = b10.twins / b10.persons
+n_batches, n_batches_clean = len(b10), int((b10.twins == 0).sum())
+batch_q = b10.share.quantile([0.5, 0.75, 0.9, 0.99])
+top_batches = b10.sort_values("twins", ascending=False).head(10)
+top_tbl = pd.DataFrame({"AGEB": top_batches.ageb, "interview date": top_batches.fecha, "households": top_batches.households,
+                        "persons with a diary": top_batches.persons, "with a twin": top_batches.twins,
+                        "shifted 1–10 min": top_batches.shifted, "share with a twin": top_batches.share.map(pct)})
+mun_tbl = S.groupby("mun").agg(persons=("twin", "size"), twins=("twin", "sum"), shifted=("shifted", "sum"))
+mun_tbl["share"] = mun_tbl.twins / mun_tbl.persons
+mun_range = (mun_tbl.share.min(), mun_tbl.share.max())
+mun_show = mun_tbl.reset_index().rename(columns={"mun": "municipality", "persons": "persons with a diary", "twins": "with a twin", "shifted": "shifted 1–10 min"})
+mun_show["share"] = mun_show.share.map(pct)
+month_tbl = S.groupby("month").agg(persons=("twin", "size"), twins=("twin", "sum"), shifted=("shifted", "sum"))
+month_tbl["share"] = month_tbl.twins / month_tbl.persons
+month_show = month_tbl.reset_index().rename(columns={"persons": "persons with a diary", "twins": "with a twin", "shifted": "shifted 1–10 min"})
+month_show["share"] = month_show.share.map(pct)
+
+# weight
+W = trips.merge(per[P + ["twin", "shifted"]], on=P, how="left")
+w_total = W.ponderador.sum()
+rows_twin, w_twin = int(W.twin.sum()), W[W.twin].ponderador.sum() / w_total
+rows_shift, w_shift = int(W.shifted.sum()), W[W.shifted].ponderador.sum() / w_total
+mode_all = W.modo_principal.value_counts(normalize=True)
+mode_shift = W[W.shifted].modo_principal.value_counts(normalize=True)
+mode_tbl = pd.DataFrame({"main mode": mode_all.index[:8], "all trips": mode_all.iloc[:8].map(pct).to_numpy(),
+                         "trips of shifted twins": mode_shift.reindex(mode_all.index[:8]).fillna(0).map(pct).to_numpy()})
+```
+
+```{python}
+#| label: rosters
+#| include: false
+
+# Whole households entered twice: the same member roster (relationship, sex, age of every
+# member) in the same AGEB.
+hab["item"] = hab.parentesco + "/" + hab.sexo_nacimiento + "/" + hab.edad
+ro = hab.groupby("folio_vivienda").agg(roster=("item", lambda s: " | ".join(sorted(s))), size=("item", "size"),
+                                       ageb=("ageb", "first"), fecha=("fecha", "first")).reset_index()
+ro = ro[ro["size"] >= 2].copy()
+ro["gid"] = ro.groupby(["ageb", "roster"]).ngroup()
+ro["n_same"] = ro.groupby("gid").folio_vivienda.transform("size")
+rd = ro[ro.n_same > 1].sort_values(["gid", "folio_vivienda"])
+pairs = rd.groupby("gid").agg(first=("folio_vivienda", "min"), last=("folio_vivienda", "max"), members=("size", "first"),
+                              dates=("fecha", "nunique"), copies=("folio_vivienda", "size"))
+n_pairs = len(pairs)
+assert n_pairs == 60 and (pairs.copies == 2).all()
+pairs_same_date = int((pairs.dates == 1).sum())
+pairs_late = int((pairs["last"] >= 17_900).sum())
+n_late_hh = int((viv.folio_vivienda >= 17_900).sum())
+max_folio = int(viv.folio_vivienda.max())
+vv = viv.set_index("folio_vivienda")
+vcols = [c for c in viv.columns if c not in ("folio_vivienda", "fecha")]
+same_answers = pd.Series([(vv.loc[r["first"], vcols] == vv.loc[r["last"], vcols]).mean() for _, r in pairs.iterrows()])
+pairs_identical = int((same_answers == 1).sum())
+m = rd.merge(per[P + ["exact"]], on="folio_vivienda", how="left")
+m["shared"] = m.groupby(["gid", "exact"]).folio_vivienda.transform("nunique") > 1
+roster_with_trips = int(m.exact.notna().sum())
+roster_shared = int(m.shared.sum())
+late_tbl = pairs[pairs["last"] >= 17_900].sort_values("last")
+late_show = pd.DataFrame({"first entry": late_tbl["first"], "second entry": late_tbl["last"], "members": late_tbl.members})
+```
+
+# Summary {.unnumbered}
+
+The survey lists `{python} fmt(n_persons_with_trips)` persons with at least one trip. For
+`{python} fmt(n_sub)` of them the diary is substantive — two or more trips, at least one
+not on foot — and for `{python} fmt(n_exact)` of those (`{python} pct(n_exact / n_sub)`)
+the whole diary is also the diary of a person in *another* household of the same
+interview block — the same AGEB on the same date: the same origin and destination AGEBs,
+motives, destination place types, leg modes, leg minutes and leg fares, trip for trip.
+
+The pairs are not, in the main, neighbours who travel together. For
+`{python} fmt(n_shift)` of the `{python} fmt(n_exact)` persons every start time sits one
+to ten minutes from the twin's, and the differences are spread evenly over that range
+with a cliff at ten minutes (`{python} at10` paired trips differ by exactly ten,
+`{python} at11` by eleven). People who travel together report the same time: within a
+household, twins agree to the minute on `{python} pct(within_ident_share)` of their trips.
+The twin is a different person in `{python} pct(1 - same_demo_n / n_exact)` of the pairs.
+The pattern is what a diary copied from one record to another and nudged looks like; the
+mechanism itself is not in the files.
+
+The practice is diffuse: it appears in every municipality and month
+(`{python} pct(mun_range[0])` to `{python} pct(mun_range[1])` of persons with a diary),
+rarely above a third of any interview block. Its trips are
+`{python} pct(w_twin)` of the weighted total (`{python} pct(w_shift)` for the shifted
+pairs). A second, smaller pattern is `{python} n_pairs` pairs of whole households with an
+identical member roster in the same AGEB, `{python} pairs_late` of them a late re-entry
+with a folio above 17,900.
+
+`load_eod` flags and does not drop: `hab.diario_repetido` is True for the
+`{python} fmt(n_flag)` persons whose twin's start times all lie within ten minutes
+(@sec-recommendations). The expansion factors were calibrated on the file as shipped, and
+the identical-time pairs cannot be told from genuine shared travel by the data alone.
+
+# The case that surfaced it {#sec-case}
+
+The three leg-mode cells that read `17` (`_VIAJES_MEDIO_FIXES` in `eodgdl.eod`; the loading
+note explains the fix) belong to two persons in two households of AGEB
+`{python} per.set_index(P).loc[(9560, 4), "ageb"]`, interviewed on 28 January 2023. A
+third household in the same AGEB, interviewed the same day, holds two persons whose
+diaries repeat theirs (@tbl-case): the same zones, motives, place types, leg modes,
+minutes and fares, with start times a few minutes apart, on persons of a different age
+and sex. The copies label the coded legs *Transporte informal*, which is how the loader
+now reads them. One of the two pairs repeats the whole diary; in the other the twin adds
+two short walks after the copied trips, a partial repeat that the whole-diary definition
+below does not count, so the counts that follow are a floor. The question this note
+answers is how often the file does this.
+
+```{python}
+#| label: tbl-case
+#| tbl-cap: "Household 879 beside the two persons with the coded legs, as shipped. The twin's legs agree with the original's except that the coded '17' reads 'Transporte informal'."
+show(case_tbl)
+```
+
+# What counts as a repeated diary {#sec-definition}
+
+A **diary** is a person's trips in row order. Two signatures are compared:
+
+- **loose** — for each trip the origin and destination AGEB, the motive, the destination
+  place type, the number of legs and each leg's mode;
+- **exact** — the loose signature plus every leg's minutes and fare.
+
+Start times are kept aside and compared separately, because they are the field that
+separates the readings of @sec-signature. Walking-only diaries and single trips are left
+out: a walk to the corner shop and back in the same AGEB repeats by chance. That leaves
+`{python} fmt(n_sub)` **substantive** diaries.
+
+A diary has a **twin** when a person in another household of the same interview block —
+the same AGEB on the same interview date — carries the same signature. The block is where
+a copy would be made, and it is where the repeats are: searching the whole file instead
+adds only `{python} n_exact_other_date` exact repeats on another date, and the median gap
+between the two household folios is `{python} shift_gap_median` for the shifted pairs.
+
+`{python} fmt(n_loose)` substantive diaries have a loose twin and `{python} fmt(n_exact)`
+an exact one (@tbl-by-trips). That `{python} pct(exact_share)` of loose twins agree on
+every minute and every fare as well is high but not by itself decisive: within a
+household, where one informant often answers for everyone, `{python} pct(within_exact_share)`
+of loose twins are exact.
+
+```{python}
+#| label: tbl-by-trips
+#| tbl-cap: "Substantive diaries with a twin in another household, by trips in the diary: loose twins that are not exact (minutes or fares differ) and exact twins."
+t = by_trips.copy()
+t.columns = ["loose twin only", "exact twin"]
+t.index = [str(i) if i < 5 else "5 or more" for i in t.index]
+t.insert(0, "trips", t.index)
+show(t.map(lambda x: fmt(x) if not isinstance(x, str) else x))
+```
+
+# The signature: start times shifted by minutes {#sec-signature}
+
+For each of the `{python} fmt(n_exact)` persons the closest twin is the other household's
+person with the same diary whose start times are nearest, and the pair is classed by the
+largest difference between matching trips' start times (@tbl-kinds).
+
+```{python}
+#| label: tbl-kinds
+#| tbl-cap: "Persons with an exact twin in another household, by the largest start-time difference across their trips, and whether the twin has the same relationship to the head, sex and age."
+show(demo_tbl)
+```
+
+Three readings follow from the time differences, and the file supports only one of them
+for the bulk of the pairs:
+
+- **Identical times** (`{python} fmt(n_ident)` persons) are what two people who travel
+  together look like, or a record entered twice. Within a household, where shared trips
+  are common, `{python} pct(within_ident_share)` of paired trips agree to the minute
+  (@tbl-offsets), so this is the co-travel signature. Some of these pairs are neighbours
+  or relatives across two dwellings; some are copies; the data cannot separate them.
+- **One to ten minutes apart** (`{python} fmt(n_shift)` persons, `{python} pct(n_shift / n_exact)`)
+  is neither. @fig-offsets shows the paired trips' differences: across households they
+  are spread almost evenly over one to ten minutes and then stop — `{python} at10` trips
+  differ by exactly ten, `{python} at11` by eleven — while within households the same
+  distribution collapses onto zero. Two people reporting the same trip from memory
+  would cluster on zero and on round numbers, not fill one to ten uniformly and
+  vanish at eleven. The reading that fits is a diary copied onto another person's record
+  with each start time nudged by a small amount.
+- **More than ten minutes apart** (`{python} fmt(n_loosely)` persons) are mostly two-trip
+  commutes to the same destination with template legs ("30 minutes, no fare"), which
+  neighbours produce by chance; they are left out of the counts below.
+
+```{python}
+#| label: fig-offsets
+#| fig-cap: "Difference between the two start times of matching trips, for persons whose exact diary repeats in another household (blue) and, as the baseline for shared travel, persons whose diary repeats inside their own household (grey). Differences above 30 minutes are not drawn."
+#| fig-width: 9
+#| fig-height: 3.6
+x = np.arange(0, 31)
+cross = offs.value_counts(normalize=True).reindex(x, fill_value=0)
+within = woffs.value_counts(normalize=True).reindex(x, fill_value=0)
+fig, ax = plt.subplots()
+ax.bar(x - 0.2, cross, width=0.4, color=BLUE, label="twin in another household")
+ax.bar(x + 0.2, within, width=0.4, color=GREY, label="twin in the same household")
+ax.set_xlabel("difference between the two start times (minutes)")
+ax.set_ylabel("share of paired trips")
+ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+ax.set_xticks(range(0, 31, 5))
+ax.legend(frameon=False)
+ax.spines[["top", "right"]].set_visible(False)
+ax.grid(axis="y", color="#eeeeee")
+ax.set_axisbelow(True)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-offsets
+#| tbl-cap: "Paired trips by the difference between their start times, across households and within them."
+show(offset_tbl)
+```
+
+The other fields agree with this reading. The twin is a different person — another
+relationship to the head, sex or age — in `{python} pct(1 - same_demo_n / n_exact)` of
+the pairs, so these are not the same interview keyed twice. The company question, which
+two people travelling together would answer *Acompañado*, is answered *Sólo* or left
+blank on most of the shifted pairs' trips (@tbl-company). The share of shifted pairs does
+not fall with the length of the diary (@tbl-kind-by-trips): a four-trip diary with every
+leg's minutes and fares repeated in another dwelling and every start time moved by one
+to ten minutes is not a coincidence that longer diaries make rarer.
+
+```{python}
+#| label: tbl-company
+#| tbl-cap: "The company answer on the trips of persons with an exact twin, by the largest start-time difference of the pair."
+show(comp_share)
+```
+
+```{python}
+#| label: tbl-kind-by-trips
+#| tbl-cap: "Persons with an exact twin, by trips in the diary: share in each start-time class."
+t = kind_by_trips.copy()
+t.index = [str(i) if i < 4 else "4 or more" for i in t.index]
+t.insert(0, "trips", t.index)
+show(t.map(lambda x: pct(x) if not isinstance(x, str) else x))
+```
+
+Two details tie the case of @sec-case to the general pattern. The `{python} fmt(n_exact)`
+persons form `{python} fmt(n_groups)` distinct diaries, `{python} int(group_sizes.get(2, 0))`
+of them shared by exactly two households and the rest by three to
+`{python} int(group_sizes.index.max())`. And the copies usually sit in the same block as
+the original: the household 879 twins are unusual in living in dwellings interviewed on
+another day (their persons carry the January date inside a March household), a
+"transplant" that `{python} shift_transplants` of the `{python} fmt(n_shift)` shifted
+persons show, against `{python} fmt(all_transplants)` persons with trips in the whole file
+whose date is not their dwelling's.
+
+# Where it happens {#sec-where}
+
+The practice is spread across the fieldwork rather than concentrated in one team. Of
+the `{python} fmt(n_batches)` interview blocks (an AGEB on one date) with ten or more
+substantive diaries, `{python} fmt(n_batches_clean)` have no twin at all; the median
+block has none, the top decile has `{python} pct(batch_q.loc[0.9])` or more and the top
+percentile `{python} pct(batch_q.loc[0.99])` (@tbl-top-batches). By municipality the share of
+diaries with a twin runs from `{python} pct(mun_range[0])` to `{python} pct(mun_range[1])`
+(@tbl-mun), highest in the three small municipalities, and by month it is flat
+(@tbl-month).
+
+```{python}
+#| label: tbl-top-batches
+#| tbl-cap: "The ten interview blocks (AGEB × date) with the most persons whose diary repeats in another household."
+show(top_tbl)
+```
+
+```{python}
+#| label: tbl-mun
+#| tbl-cap: "Substantive diaries with an exact twin in another household, by municipality of the dwelling."
+show(mun_show)
+```
+
+```{python}
+#| label: tbl-month
+#| tbl-cap: "The same, by interview month."
+show(month_show)
+```
+
+# Whole households entered twice {#sec-rosters}
+
+A separate pattern: `{python} n_pairs` pairs of households in the same AGEB carry an
+identical member roster — the relationship, sex and age of every member, for households
+of two or more. `{python} pairs_same_date` pairs share the interview date; the dwelling
+questionnaire agrees on `{python} pct(same_answers.mean())` of its answers on average and
+in full for `{python} pairs_identical` pairs. Their members' diaries mostly do *not*
+repeat: of `{python} roster_with_trips` members with trips, `{python} roster_shared` carry
+a diary that is also in the twin household. These look like re-interviews or re-entries
+of the same dwelling rather than copied diaries. `{python} pairs_late` of the pairs have
+their second entry above folio 17,900, the tail of the file (`{python} n_late_hh`
+households up to folio `{python} fmt(max_folio)`), which suggests a late upload of
+records already in the base (@tbl-late).
+
+```{python}
+#| label: tbl-late
+#| tbl-cap: "Household pairs with an identical roster whose second entry has a folio above 17,900."
+show(late_show)
+```
+
+# What it weighs {#sec-impact}
+
+The `{python} fmt(n_exact)` persons with an exact twin contribute `{python} fmt(rows_twin)`
+trip rows, `{python} pct(w_twin)` of the weighted trip total; the `{python} fmt(n_shift)`
+shifted persons `{python} fmt(rows_shift)` rows and `{python} pct(w_shift)`. Their mode mix
+leans to the bus and away from the car and the walk (@tbl-modes), so removing them would
+move the mode shares by a fraction of a point. The larger cost is statistical: a copied
+diary is not an independent observation, so the effective sample is smaller than the
+row count and any estimate of dispersion from these persons is optimistic.
+
+```{python}
+#| label: tbl-modes
+#| tbl-cap: "Main mode of trips: all trips against the trips of the shifted twins."
+show(mode_tbl)
+```
+
+# What the loader does {#sec-recommendations}
+
+`load_eod` flags and does not drop. `flag_repeated_diaries` in `eodgdl.eod` adds a boolean
+`diario_repetido` column to `hab`, True for a person whose diary — the exact signature of
+@sec-definition — is also the diary of a person in another household of the same AGEB and
+interview date with every start time within ten minutes of theirs; walking-only diaries
+and single trips are left out. Both members of a pair are flagged, since the file does not
+say which is the copy. The rule marks `{python} fmt(n_flag)` persons — the identical-time
+and shifted classes of @sec-signature, exactly — and runs on the survey as shipped, before
+the chain rules, so `clean_chains=False` carries it too.
+
+- **Why not drop.** The three expansion factors reconcile only on the file as shipped
+  (see the expansion-factors note); dropping `{python} pct(w_twin)` of weighted trips would
+  break that without a re-calibration. The identical-time pairs cannot be told from
+  genuine shared travel, and the shifted pairs are plausible diaries whose only fault is
+  not being independent. A consumer who wants independent observations filters on the
+  flag in one line.
+- **What is not flagged.** Partial repeats such as the second pair of @sec-case, the
+  loosely matched pairs, and the roster pairs of @sec-rosters; the `{python} pairs_late`
+  late re-entries are listed in @tbl-late for whoever calibrates the weights next.
+- **Ask.** Whether the capture application had a copy-diary function and whether the
+  one-to-ten-minute shift is its doing is a question for IMEPLAN and the field
+  contractor; the answer would turn a signature into a mechanism.
+
+| item | status | recommendation | where |
+|---|---|---|---|
+| diaries shifted by 1–10 minutes | done, flagged | `hab.diario_repetido`; `{python} fmt(n_shift)` persons; nothing dropped | `flag_repeated_diaries` |
+| diaries with identical times | done, flagged | flagged with the above; ambiguous with shared travel, which is why it is a flag and not a drop | same |
+| whole-household re-entries | open | leave; note the `{python} pairs_late` late entries for the weights | `expansion_factors.qmd` |
+| the three `17` legs | done | relabelled from their twins | `_VIAJES_MEDIO_FIXES` |

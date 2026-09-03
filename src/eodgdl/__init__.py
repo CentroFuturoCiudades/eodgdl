@@ -6,7 +6,7 @@ try:
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
-from eodgdl.eod import EODTables, clean_eod, clean_trip_chains, load_eod, rename_imeplan
+from eodgdl.eod import EODTables, clean_eod, clean_trip_chains, flag_repeated_diaries, load_eod, rename_imeplan
 from eodgdl.taz import (
     load_imeplan_agebs,
     load_mtaz,
@@ -26,6 +26,7 @@ __all__ = [
     "rename_imeplan",
     "clean_eod",
     "clean_trip_chains",
+    "flag_repeated_diaries",
     # Zone system
     "load_zm_muns",
     "load_taz",

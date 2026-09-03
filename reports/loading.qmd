@@ -99,7 +99,7 @@ clean = load_eod()                           # what load_eod() returns by defaul
 viv_s, hab_s, trips_s, legs_s = shipped
 
 assert {t: df.shape for t, df in raw.items()} == {"viviendas": (17_901, 18), "habitantes": (58_061, 59), "viajes": (154_662, 58)}
-assert (viv_s.shape, hab_s.shape, trips_s.shape, legs_s.shape) == ((17_901, 17), (58_061, 54), (154_662, 23), (170_509, 3))
+assert (viv_s.shape, hab_s.shape, trips_s.shape, legs_s.shape) == ((17_901, 17), (58_061, 55), (154_662, 23), (170_509, 3))
 ```
 
 ```{python}
@@ -349,7 +349,7 @@ for (fv, fh, fj), (col, value) in _VIAJES_MEDIO_FIXES.items():
                      "set by load_eod": value})
 fix_tbl = pd.DataFrame(fix_rows)
 assert (fix_tbl["as shipped"] == "17").all() and (fix_tbl.minutes == 5).all() and (fix_tbl["fare (MXN)"] == 10).all()
-assert (fix_tbl["set by load_eod"] == "Mototaxi").all()
+assert (fix_tbl["set by load_eod"] == "Transporte informal").all()
 fix_tbl["fare (MXN)"] = fix_tbl["fare (MXN)"].map(lambda x: f"{x:g}")
 n_fixes = len(fix_tbl)
 fix_homes = viv.ageb.astype(str).loc[fix_tbl.household.unique()].unique()
@@ -357,6 +357,46 @@ assert len(fix_homes) == 1
 fix_home = fix_homes[0]
 fix_zone = str(viv.centralidad.loc[fix_tbl.household.iloc[0]])
 fix_mun = str(viv.municipio.loc[fix_tbl.household.iloc[0]])
+
+# the twin record: household 879, same AGEB and interview date, holds two persons whose
+# diaries duplicate these two persons' trip by trip and label the coded legs
+TWINS = {(9560, 4): (879, 7), (9530, 3): (879, 3)}
+V = indexed["viajes"]
+trip_cols = ["origen", "destino", "motivo_viaje", "tipo_lugar_destino", "n_traslados"]
+leg_cols = [f"traslado{i}_{k}" for i in range(1, 6) for k in ("medio", "min", "pago")]
+
+
+def legs_text(row):
+    out = []
+    for i in range(1, 6):
+        m = row[f"traslado{i}_medio"]
+        if pd.isna(m):
+            break
+        out.append(f"{m} ({int(row[f'traslado{i}_min'])} min, ${row[f'traslado{i}_pago']:g})")
+    return "; ".join(out)
+
+
+twin_rows, twin_diffs, twin_offsets = [], [], []
+for (fv, fh), (tv, th) in TWINS.items():
+    a, b = V.loc[(fv, fh)], V.loc[(tv, th)]
+    assert a.ageb.iloc[0] == b.ageb.iloc[0] and a.fecha.iloc[0] == b.fecha.iloc[0]   # the persons' own date, not the dwelling's
+    assert hab.loc[(tv, th), "edad"] != hab.loc[(fv, fh), "edad"]
+    for (fj, ra), (tj, rb) in zip(a.iterrows(), b.iterrows()):
+        diffs = [c for c in trip_cols + leg_cols
+                 if not (pd.isna(ra[c]) and pd.isna(rb[c])) and str(ra[c]) != str(rb[c])]
+        twin_diffs += [(fv, fh, fj, c, ra[c], rb[c]) for c in diffs]
+        off = abs(int(ra.hora_inicio_h) * 60 + int(ra.hora_inicio_m) - int(rb.hora_inicio_h) * 60 - int(rb.hora_inicio_m))
+        twin_offsets.append(off)
+        twin_rows.append({"coded record": f"{fv}/{fh}, trip {fj}", "start": f"{int(ra.hora_inicio_h):02d}:{int(ra.hora_inicio_m):02d}",
+                          "twin": f"{tv}/{th}, trip {tj}", "twin start": f"{int(rb.hora_inicio_h):02d}:{int(rb.hora_inicio_m):02d}",
+                          "twin legs as shipped": legs_text(rb),
+                          "cells that differ": "; ".join(f"{c}: {ra[c]} vs {rb[c]}" for c in diffs) or "none"})
+twin_tbl = pd.DataFrame(twin_rows)
+twin_pairs = len(twin_rows)
+twin_off_min, twin_off_max = min(twin_offsets), max(twin_offsets)
+assert twin_pairs == 7 and twin_off_max <= 9
+assert sorted((fv, fh, fj, c) for fv, fh, fj, c, _, _ in twin_diffs) == [(9530, 3, 3, "traslado5_medio"), (9560, 4, 1, "traslado1_medio"), (9560, 4, 2, "traslado4_medio")]
+assert all(a == "17" and b == "Transporte informal" for _, _, _, _, a, b in twin_diffs)
 
 # what happens without them: the schema refuses to coerce a value outside the mode levels
 no_fix = indexed["viajes"].copy()
@@ -370,8 +410,13 @@ assert rejected == ["traslado1_medio", "traslado4_medio", "traslado5_medio"]
 
 # every other leg, by mode: what 5 minutes for 10 pesos looks like
 L = pd.concat([pd.DataFrame({"medio": indexed["viajes"][f"traslado{i}_medio"], "min": indexed["viajes"][f"traslado{i}_min"],
-                             "pago": indexed["viajes"][f"traslado{i}_pago"]}) for i in range(1, 6)]).dropna(subset="medio")
+                             "pago": indexed["viajes"][f"traslado{i}_pago"], "zone": indexed["viajes"].centralidad})
+               for i in range(1, 6)]).dropna(subset="medio")
 L["min"] = L["min"].astype(float)
+bus_30F_10 = float((L[(L.medio == "CAMIÓN O AUTOBÚS") & (L.zone == fix_zone)].pago == 10).mean())
+inf_all = int((L.medio == "Transporte informal").sum())
+inf_zone = int(((L.medio == "Transporte informal") & (L.zone == fix_zone)).sum())
+assert inf_all == 14 and inf_zone == 9 and bus_30F_10 > 0.5
 by_mode = (L[L.medio != "17"].groupby("medio")
             .agg(legs=("min", "size"), median_minutes=("min", "median"), median_fare=("pago", "median"),
                  fare_is_10=("pago", lambda s: float((s == 10).mean())), five_min_or_less=("min", lambda s: float((s <= 5).mean())))
@@ -573,8 +618,8 @@ value in the files sits inside the declared levels, the blank-token rule never f
 these files, and no leg or row disappears before the chain rules. The blanks are mostly
 skip logic — a question not asked is a blank, not an unknown — and @tbl-blanks says
 which. And the `{python} n_fixes` hand corrections replace a bare code `17` in a leg's
-mode with a label chosen by hand; the code has no key in the shipped glossaries, the
-legs are `{python} int(fix_tbl.minutes.iloc[0])` minutes for
+mode with the label a twin record in the same file gives the same legs; the code has no
+key in the shipped glossaries, the legs are `{python} int(fix_tbl.minutes.iloc[0])` minutes for
 `{python} int(fix_tbl["fare (MXN)"].iloc[0])` pesos, and without the fix the schema rejects the
 file on all three.
 
@@ -740,19 +785,37 @@ cells are named in the rejection. Nulling them instead would have dropped three 
 the unpivot of @sec-legs and left their trips with an `n_traslados` that disagrees with
 their legs.
 
-**What the label is.** The loader labels all three *Mototaxi*. An earlier reading gave
-the first a walk and the other two a bus, and neither matched the leg:
-`{python} pct(walk_fare0, 2)` of walking legs cost nothing, and a bus leg is a median
-`{python} int(by_mode.loc["CAMIÓN O AUTOBÚS", "median_minutes"])` minutes. Counted over
-every leg in the file, a leg of five minutes or less for exactly 10 pesos is most often a
-bus leg, because buses are so common (`{python} fmt(short_paid.iloc[0])` of
-`{python} fmt(short_paid.sum())`); as a share of a mode's own legs it is typical of
-*`{python} short_paid_share.index[0]`* and *`{python} short_paid_share.index[1]`*
-(@tbl-modes), and the households are in a Tlajomulco zone where mototaxis feed the bus
-corridors. The three legs are `{python} 3 * int(fix_tbl.minutes.iloc[0])` minutes out of
-`{python} fmt(legs_s.traslado_min.sum())` and change no statistic, and the trips' main
-mode stays the bus the survey recorded; but the label is a judgement, and the comment on
-`_VIAJES_MEDIO_FIXES` says so.
+**What the label is.** The loader labels all three *Transporte informal*, and the label
+is read off a twin record rather than guessed. Household 879 sits in the same AGEB and was
+interviewed the same day as the two persons with the coded legs, and two of its members
+carry their diaries: person 7 repeats both trips of household 9560's person 4 and person 3
+repeats all five of household 9530's person 3, trip by trip and leg by leg — the same
+zones, motives, place types, leg modes, minutes and fares — with start times
+`{python} twin_off_min` to `{python} twin_off_max` minutes apart, on persons whose age and
+sex differ. Across the `{python} twin_pairs` paired trips the only cells that differ
+besides the start time are the three coded ones, and in household 879 they read
+*Transporte informal* (@tbl-fix-twin). The label fits the zone: of the `{python} inf_all`
+*Transporte informal* legs in the file, `{python} inf_zone` are by households in zone
+`{python} fix_zone`, and household 9530's person 3 reports another 10-peso ride from home
+under it. It is not a bus: no route numbered 17 stops within 3 km of any end of these trips
+(checked against the OpenStreetMap route relations of the Mi Transporte and Mi Macro
+systems, whose numbers carry prefixes such as T17 and MC-A17), and both persons record
+every bus leg at 9.50 pesos. An earlier reading gave the first a walk and the other two a
+bus, and a later one *Mototaxi*, argued from the survey-wide pattern of @tbl-modes, where a
+leg of five minutes or less for exactly 10 pesos is typical of
+*`{python} short_paid_share.index[0]`* and *`{python} short_paid_share.index[1]`*; the fare
+alone could not have settled it, since `{python} pct(bus_30F_10)` of the zone's bus legs
+also cost exactly 10 pesos. The three legs are `{python} 3 * int(fix_tbl.minutes.iloc[0])`
+minutes out of `{python} fmt(legs_s.traslado_min.sum())` and change no statistic, and the
+trips' main mode stays the bus the survey recorded. That two persons' diaries sit in two
+households is a finding of its own; `reports/duplicate_diaries.qmd` counts how often the
+file does this.
+
+```{python}
+#| label: tbl-fix-twin
+#| tbl-cap: "The twin records in household 879, as shipped, beside the trips that carry the coded legs. Every cell but the start time and the coded leg agrees."
+show(twin_tbl)
+```
 
 ```{python}
 #| label: tbl-modes
@@ -890,7 +953,9 @@ would invent data or belongs to a consumer's judgement.
 - **Blanks without a rule.** A quarter of persons have no disability answer, four in ten
   timed trips no company answer, and `{python} fmt(int(hab.escolaridad.isna().sum()))`
   adults no schooling (@tbl-blanks). They are missing, not *No*.
-- **The `17` legs.** Labelled *Mototaxi* by hand; the label is a judgement (@sec-fixes).
+- **The twin records behind the `17` legs.** Household 879 repeats two other persons'
+  diaries; the loader relabels the three cells and flags such persons in
+  `hab.diario_repetido` without dropping any (`reports/duplicate_diaries.qmd`, @sec-fixes).
 - **Fares.** `{python} len(fare_nan)` bus legs have no fare, `{python} walk_paid` walking
   legs have one, and `{python} n_big` legs cost 500 pesos or more, `{python} big_car` of them
   by car — a day's fuel or a month's parking rather than a fare. The build does not use
@@ -909,7 +974,8 @@ would invent data or belongs to a consumer's judgement.
 | header renames | done | keep the map renames-only; a new header must be added to the map and to the schema together | `imeplan_rename_map.json`, `schemas.py` |
 | blank tokens | done, inert | the rule stays as a guard; its docstring now says the blanks are skip logic and points to @tbl-blanks | `clean_eod` |
 | interview date | done | kept as a UTC-midnight timestamp by decision; the docstring says to treat it as a date and never as the travel day | `clean_eod`, consumers |
-| the three `17` legs | done, label is a judgement | relabelled *Mototaxi*, the mode whose legs the fare and duration fit; the constant's comment records that `17` is an undocumented code and the label a judgement. IMEPLAN's code list would settle it | `_VIAJES_MEDIO_FIXES` |
+| the three `17` legs | done | relabelled *Transporte informal*, the label the twin record in household 879 gives the same legs; the constant's comment records the evidence. `17` stays an undocumented code | `_VIAJES_MEDIO_FIXES` |
+| diaries repeated across households | done, flagged | `hab.diario_repetido` marks the persons whose diary repeats in another household of the same AGEB and date with every start time within ten minutes; nothing is dropped. `reports/duplicate_diaries.qmd` has the evidence | `flag_repeated_diaries` |
 | schema coercion | done, lossless | keep `coerce=True`: a value outside the declared levels fails the load loudly, which is right; when a future file adds a level, add it to the schema deliberately | `schemas.py` |
 | one value per grain | done | keep the asserts; they are the first thing to fail if a future file disagrees with itself | `load_eod` |
 | legs unpivot | done, tested | the checks of @tbl-legchecks are now a test | `tests/test_eod.py` |

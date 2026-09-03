@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from eodgdl import clean_trip_chains, load_eod
+from eodgdl import clean_trip_chains, flag_repeated_diaries, load_eod
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
@@ -191,3 +191,70 @@ def test_legs_unpivot_is_lossless():
     assert all(m in modes for m, modes in zip(trips.modo_principal.astype(str), leg_modes))
     assert not any(c.startswith("traslado") for c in trips.columns)
 
+
+
+# ------------------------------------------------------------- repeated diaries
+
+HAB_DATE = pd.Timestamp("2023-01-28")
+
+
+def _diary(hh, person, times, mode="CAMIÓN O AUTOBÚS", origin=AGEB, date=HAB_DATE):
+    """One person's diary: a trip out and a trip home at the given (hour, minute) pairs, one leg each."""
+    rows = []
+    for k, (h, m) in enumerate(times):
+        home = k % 2 == 1
+        rows.append({"folio_vivienda": hh, "folio_habitante": person, "folio_viaje": k + 1,
+                     "origen": origin if not home else ELSEWHERE, "destino": ELSEWHERE if not home else origin,
+                     "motivo_viaje": "Regresar a Casa" if home else "Trabajar",
+                     "tipo_lugar_destino": "Su casa" if home else "Oficina", "n_traslados": 1,
+                     "traslado1_medio": mode, "traslado1_min": 30, "traslado1_pago": 9.5,
+                     "hora_inicio_h": h, "hora_inicio_m": m})
+    return rows, {"folio_vivienda": hh, "folio_habitante": person, "fecha": date}
+
+
+def _tables(diaries, agebs):
+    trips = pd.concat([pd.DataFrame(rows) for rows, _ in diaries]).set_index(["folio_vivienda", "folio_habitante", "folio_viaje"])
+    for i in range(2, 6):                       # the empty leg slots the survey file carries
+        for k in ("medio", "min", "pago"):
+            trips[f"traslado{i}_{k}"] = float("nan")
+    hab = pd.DataFrame([h for _, h in diaries]).set_index(["folio_vivienda", "folio_habitante"])
+    viv = pd.DataFrame({"ageb": agebs}, index=pd.Index(list(agebs), name="folio_vivienda"))
+    return trips, hab, viv
+
+
+def test_a_diary_repeated_in_another_household_with_nudged_times_is_flagged():
+    diaries = [
+        _diary(1, 1, [(7, 0), (17, 0)]),                    # the pair: same diary, times 5 and 8 minutes apart
+        _diary(2, 1, [(7, 5), (17, 8)]),
+        _diary(3, 1, [(7, 11), (17, 20)]),                  # eleven and twelve minutes: outside the twin window
+        _diary(4, 1, [(7, 0), (17, 0)], date=HAB_DATE + pd.Timedelta(days=1)),   # another interview date
+        _diary(1, 2, [(8, 0), (12, 0)], mode="A PIE"),      # walks only: repeats by chance
+        _diary(2, 2, [(8, 0), (12, 0)], mode="A PIE"),
+        _diary(1, 3, [(9, 0)]),                             # a single trip
+        _diary(5, 1, [(9, 0)]),
+        _diary(6, 1, [(6, 0), (18, 0)]),                    # same diary in another AGEB
+        _diary(7, 1, [(6, 2), (18, 3)]),
+        _diary(8, 1, [(10, 0), (14, 0)]),                   # the same diary within one household
+        _diary(8, 2, [(10, 3), (14, 3)]),
+    ]
+    agebs = {1: AGEB, 2: AGEB, 3: AGEB, 4: AGEB, 5: AGEB, 6: AGEB, 7: ELSEWHERE, 8: AGEB}
+    trips, hab, viv = _tables(diaries, agebs)
+    flag = flag_repeated_diaries(trips, hab, viv)
+    assert flag.name == "diario_repetido" and flag.dtype == bool
+    assert flag[flag].index.tolist() == [(1, 1), (2, 1)]
+
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_load_eod_flags_repeated_diaries_and_drops_none():
+    viv, hab, trips, legs = load_eod(DATA_DIR, clean_chains=False)
+    assert hab.diario_repetido.dtype == bool
+    assert hab.diario_repetido.sum() == 1_793
+    assert len(hab) == 58_061 and len(trips) == 154_662
+    # the twins that surfaced the pattern: 879/3 repeats 9530/3 whole; 879/7 adds two trips to 9560/4's diary
+    assert hab.loc[(9530, 3), "diario_repetido"] and hab.loc[(879, 3), "diario_repetido"]
+    assert not hab.loc[(9560, 4), "diario_repetido"] and not hab.loc[(879, 7), "diario_repetido"]
+    # the same rule reads the legs table once the traslado columns are gone
+    assert flag_repeated_diaries(trips, hab, viv, legs).equals(hab.diario_repetido)
+    # the flag is set on the survey as shipped and survives the chain rules
+    cleaned = load_eod(DATA_DIR)
+    assert cleaned.hab.diario_repetido.sum() == 1_793

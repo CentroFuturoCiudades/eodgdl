@@ -20,19 +20,22 @@ PERSON = ["folio_vivienda", "folio_habitante"]
 # (folio_vivienda, folio_habitante, folio_viaje) → (column, corrected value).
 # All three cells carry the bare string '17' in a leg-mode field where every
 # other leg carries a label. Neither the glossaries nor the technical report
-# list mode codes, so what 17 stood for in the field system is undocumented.
-# The three legs are alike — 5 minutes for 10 pesos at the home end of a bus
-# trip, by two persons of two households in AGEB 1409700251418 (Tlajomulco) —
+# list mode codes, so what 17 stood for in the field system is undocumented,
 # and without a label the trip schema rejects the file, since 17 is outside
-# the mode levels. The label is a judgement, not a reading of the code: of the
-# survey's modes, Mototaxi is the one whose legs look like this (a short paid
-# feeder to the bus), decided 2026-09-03; the earlier reading as a walk and a
-# bus fitted neither the fare nor the duration. See reports/loading.qmd,
-# "Three cells corrected by hand".
+# the mode levels. The label comes from a twin record: household 879, in the
+# same AGEB (1409700251418, Tlajomulco) and interviewed the same day
+# (28-Jan-23), holds two persons (3 and 7) whose diaries duplicate these two
+# persons' trip by trip and leg by leg — same zones, motives, minutes and
+# fares, start times one to nine minutes apart — and label exactly these
+# three legs 'Transporte informal' (5 minutes for 10 pesos, the fare person 3
+# of 9530 also reports under that label on another trip). Bus route 17 was
+# ruled out: no route numbered 17 stops within 3 km of any end of these
+# trips. Decided 2026-09-03; see reports/loading.qmd, "Three cells corrected
+# by hand", and reports/duplicate_diaries.qmd for the twin records.
 _VIAJES_MEDIO_FIXES = {
-    (9560, 4, 1): ("traslado1_medio", "Mototaxi"),
-    (9560, 4, 2): ("traslado4_medio", "Mototaxi"),
-    (9530, 3, 3): ("traslado5_medio", "Mototaxi"),
+    (9560, 4, 1): ("traslado1_medio", "Transporte informal"),
+    (9560, 4, 2): ("traslado4_medio", "Transporte informal"),
+    (9530, 3, 3): ("traslado5_medio", "Transporte informal"),
 }
 
 # A 'Regresar a Casa' whose destination zone is not the household's did not go
@@ -73,6 +76,22 @@ _START_TIME_EDITS = (
 _START_TIME_TOLERANCE = 15   # minutes: an inversion this small is minute noise, not an hour error
 _START_TIME_MAX_COST = 4.0   # give up rather than rewrite a day
 START_TIME_FLAG = "hora_inicio_ajuste"   # column load_eod adds: the edit applied, "" if none
+
+# Repeated diaries. A person's diary — the trips in row order, each read as its
+# origin and destination zone, motive, destination place type and every leg's
+# mode, minutes and fare — is also the diary of a person in another household
+# of the same AGEB and interview date for some 2,360 persons, and for two
+# thirds of them every start time sits within ten minutes of the twin's: the
+# differences fill one to ten minutes evenly and stop there (217 paired trips
+# differ by exactly ten, 11 by eleven), whereas people who travel together
+# agree to the minute (within a household, 69% of paired trips). The twin is a
+# different person in 87% of the pairs. That is a diary copied onto another
+# record and nudged, not shared travel; which of the pair is the copy cannot
+# be told, so both are flagged and neither is dropped — the expansion factors
+# reconcile only on the file as shipped. Decided 2026-09-03 from the diagnosis
+# in reports/duplicate_diaries.qmd.
+DIARY_FLAG = "diario_repetido"          # column load_eod adds to hab: True when the diary repeats
+_DIARY_TWIN_MAX_OFFSET = 10             # minutes: the largest start-time difference a twin may show
 
 
 class EODTables(NamedTuple):
@@ -414,6 +433,99 @@ def clean_trip_chains(
     return trips, dropped, counts
 
 
+# --------------------------------------------------------------- repeated diaries
+
+
+def _as_text(df: pd.DataFrame) -> pd.Series:
+    """The rows of ``df`` joined with '|', missing values as empty strings, categoricals as their labels."""
+    cols = [df[c].astype(object).where(df[c].notna(), "").astype(str) for c in df.columns]
+    out = cols[0]
+    for c in cols[1:]:
+        out = out + "|" + c
+    return out
+
+
+def _diary_signatures(trips: pd.DataFrame, legs: pd.DataFrame | None) -> pd.DataFrame:
+    """One row per trip: its exact signature, whether a leg is not on foot, and its start minute."""
+    sig = _as_text(trips[["origen", "destino", "motivo_viaje", "tipo_lugar_destino", "n_traslados"]])
+    mode_cols = [f"traslado{i}_medio" for i in range(1, 6)]
+    if "traslado1_medio" in trips.columns:
+        leg_cols = [f"traslado{i}_{k}" for i in range(1, 6) for k in ("medio", "min", "pago")]
+        sig = sig + "|" + _as_text(trips[leg_cols])
+        modes = trips[mode_cols]
+        moving = ((modes.astype(object) != "A PIE") & modes.notna()).any(axis=1).to_numpy()
+    else:
+        if legs is None:
+            raise ValueError("trips has no traslado columns; pass legs")
+        leg_text = _as_text(legs[["traslado_medio", "traslado_min", "traslado_pago"]])
+        by_trip = leg_text.groupby(level=trips.index.names, sort=False).agg("|".join)
+        sig = sig + "|" + by_trip.reindex(trips.index).fillna("")
+        moving = (
+            (legs.traslado_medio.astype(object) != "A PIE")
+            .groupby(level=trips.index.names, sort=False).any()
+            .reindex(trips.index).fillna(False).to_numpy()
+        )
+    start = trips.hora_inicio_h.astype(float) * 60 + trips.hora_inicio_m.astype(float)
+    return pd.DataFrame({"sig": sig, "moving": moving, "start": start.to_numpy()}, index=trips.index)
+
+
+def flag_repeated_diaries(
+    trips: pd.DataFrame, hab: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None
+) -> pd.Series:
+    """True for every person whose diary repeats in another household of the same block.
+
+    A diary is the person's trips in row order, each read as its origin and
+    destination zone, motive, destination place type and every leg's mode,
+    minutes and fare; start times are compared separately. A person is flagged
+    when a person in another household of the same AGEB and interview date has
+    the same diary with every start time within ten minutes of theirs. Diaries
+    of one trip, or made only of walks, are left out: they repeat by chance.
+
+    Evidence (reports/duplicate_diaries.qmd): of 37,878 diaries of two or more
+    trips with a leg not on foot, some 2,360 repeat in another household, all in
+    the same AGEB and 99% on the same date. For two thirds of them every start
+    time is one to ten minutes from the twin's, the differences spread evenly
+    over that range and stopping at ten; within a household, where shared trips
+    are real, 69% of paired trips agree to the minute. The twin is a different
+    person in 87% of the pairs. The pattern is a diary copied onto another
+    record and nudged; which record is the copy cannot be told, so both are
+    flagged. Nothing is dropped: the flagged persons' trips are 3.5% of the
+    weighted total and the expansion factors reconcile only on the file as
+    shipped. Pairs whose times agree exactly are flagged too, although some of
+    them may be genuine shared travel across two dwellings.
+
+    ``trips`` may carry the ``traslado*`` columns or, after the legs unpivot,
+    be paired with ``legs``. ``viv`` supplies the AGEB and ``hab`` the
+    interview date. Returns a boolean Series over ``hab.index``.
+    """
+    d = _diary_signatures(trips.sort_index(), legs)
+    person = d.groupby(level=PERSON, sort=False)
+    diary = pd.DataFrame({
+        "sig": person.sig.agg(" ## ".join),
+        "n": person.size(),
+        "moving": person.moving.any(),
+        "starts": person.start.agg(list),
+    })
+    diary["ageb"] = viv.ageb.reindex(diary.index.get_level_values("folio_vivienda")).to_numpy()
+    diary["fecha"] = hab.fecha.reindex(diary.index).to_numpy()
+    diary = diary[(diary.n >= 2) & diary.moving]
+    flagged = pd.Series(False, index=hab.index, name=DIARY_FLAG)
+    for _, group in diary.groupby(["ageb", "fecha", "sig"], sort=False, observed=True):
+        if group.index.get_level_values("folio_vivienda").nunique() < 2:
+            continue
+        keys = list(group.index)
+        starts = [np.asarray(s, dtype=float) for s in group.starts]
+        for i, a in enumerate(keys):
+            for j, b in enumerate(keys):
+                if a[0] == b[0]:
+                    continue
+                offsets = np.abs(starts[i] - starts[j])
+                if not np.isnan(offsets).any() and offsets.max() <= _DIARY_TWIN_MAX_OFFSET:
+                    flagged.loc[a] = True
+                    break
+    return flagged
+
+
 # ------------------------------------------------------------------- loading
 
 
@@ -443,6 +555,12 @@ def load_eod(
     row. Pass
     ``clean_chains=False`` for the survey as shipped — the expansion factors
     reconcile to the published totals only on that.
+
+    Either way ``hab`` carries a boolean ``diario_repetido`` column
+    (:func:`flag_repeated_diaries`): True for the persons whose whole diary is
+    also the diary of a person in another household of the same AGEB and
+    interview date, with every start time within ten minutes. They are copies
+    with nudged times, not shared travel, and are flagged rather than dropped.
 
     ``legs`` carries the fare as reported (``traslado_pago``): nine bus legs
     have none, seventeen walking legs have one, and 145 legs of 500 pesos or
@@ -505,6 +623,11 @@ def load_eod(
         .equals(df_hab.loc[df_hab.viajes_contados > 0, cols])
     )
     df_trips = df_trips.drop(columns=cols)
+
+    # Flag the diaries that repeat in another household, on the survey as shipped:
+    # the chain rules below edit start times and drop rows, and the flag reads both.
+    df_hab[DIARY_FLAG] = flag_repeated_diaries(df_trips, df_hab, df_viv)
+    log.info("repeated diaries flagged: %d persons", int(df_hab[DIARY_FLAG].sum()))
 
     if clean_chains:
         df_trips, dropped, counts = clean_trip_chains(df_trips, df_viv)
