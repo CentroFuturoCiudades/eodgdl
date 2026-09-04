@@ -44,12 +44,15 @@ eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
-`eodgdl.eod.clean_trip_chains` — the 281 persons with an untimed trip
-excluded, 84 mislabelled returns recoded, 468 returns home made from home
-dropped, 120 trips after a return home made to start at home, 2,029
-mistyped start hours repaired and flagged in `hora_inicio_ajuste` — and refuses
-a trip table with untimed rows. What that cleaning does not repair, `tasha.chain_report(od.trips)`
-counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
+`eodgdl.eod.clean_trip_chains` with nothing dropped — the 325 untimed trips
+imputed, 84 mislabelled returns recoded, 124 trips after a return home made
+to start at home, 2,032 mistyped start hours repaired — and refuses a trip
+table with untimed rows. Every change is named in `trips.ajustes` and every
+defect left in `trips.problemas`; the builder leaves out the rows marked as
+non-trips there (491 returns home made while already at home and 38
+duplicates of an untimed return, `eodgdl.eod.non_trips`), since the contract
+forbids a trip from H to H. What that cleaning does not repair,
+`tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
 another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: a
 consumer who wants independent observations filters `hab` and `trips` on it before building.
 
@@ -211,15 +214,17 @@ rather than about one column's coding, so nothing surfaces them automatically.
   `eodgdl.eod.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs
-  (`tasha.chain_report`): 838 trips in 765 people still start before the
-  trip before them, 883 start before the previous trip could have arrived by
+  (`tasha.chain_report`): 839 trips in 766 people still start before the
+  trip before them, 885 start before the previous trip could have arrived by
   more than the 15-minute tolerance, and 32 trips do not start where the
-  previous one ended. Two follow-ups were tried the
-  same day: recoding the `Regresar a Casa` trips whose `tipo_lugar_destino`
-  says the place was not a home is now a survey-level recode in `load_eod`,
-  guarded by the zone (84 trips); imputing the untimed trips instead of
-  excluding their person-days was prototyped and rejected — the numbers are
-  in `eodgdl.eod`.
+  previous one ended; `trips.problemas` marks each. Two follow-ups were
+  tried the same day: recoding the `Regresar a Casa` trips whose
+  `tipo_lugar_destino` says the place was not a home is now a survey-level
+  recode in `load_eod`, guarded by the zone (84 trips); and the untimed
+  trips, whose person-days were excluded until 2026-09-03, are now imputed
+  from the duplicate return that follows them or from their nearest timed
+  trips, so nothing is dropped — the held-out scores are in
+  `eodgdl.eod._impute_untimed_trips`.
 
 - **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
   `zones.alternatives` offers `ID_ZONAEOD` (71 zones) and `MZONA` (601) as the

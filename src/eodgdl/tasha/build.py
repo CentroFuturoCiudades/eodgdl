@@ -6,10 +6,13 @@ as ``derivation`` prose — the R/C demotion, the passenger override, the
 work/school zone lookups — is implemented below, and the prose is its spec.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
-``eodgdl.eod.clean_trip_chains`` (persons with an untimed trip excluded,
-mislabelled returns recoded, returns home made from home dropped, 12-hour-clock
-start times moved). The builder refuses a trip table with untimed rows rather
-than guess at them.
+``eodgdl.eod.clean_trip_chains`` (untimed trips imputed, mislabelled returns
+recoded, mistyped start hours repaired, and nothing dropped). The rows that
+cleaning marks as not being trips — returns home made while already at home,
+and the home-to-home rows that duplicate an untimed return — stay in
+``trips`` under ``problemas`` and the builder leaves them out, since the
+contract forbids a trip from H to H. The builder refuses a trip table with
+untimed rows rather than guess at them.
 
     from eodgdl import load_eod, tasha
 
@@ -24,6 +27,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
+from eodgdl.eod import non_trips
 from eodgdl.tasha._schema import build_map, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
@@ -118,14 +122,19 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
 
 
 def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
-    """od_trips.csv, one row per trip, in chain (folio_viaje) order."""
+    """od_trips.csv, one row per trip, in chain (folio_viaje) order.
+
+    The rows ``load_eod`` marked as non-trips (``eodgdl.eod.non_trips``) are
+    left out; ``TripNumber`` is renumbered over them and over the gaps in
+    ``folio_viaje``.
+    """
     untimed = int((trips.hora_inicio_h.isna() | trips.hora_inicio_m.isna()).sum())
     if untimed:
         raise ValueError(
-            f"{untimed:,} trips have no start time; load_eod() excludes their persons "
+            f"{untimed:,} trips have no start time; load_eod() imputes them "
             "(clean_chains=True) — pass its tables rather than the survey as shipped"
         )
-    trips = trips.sort_index()
+    trips = trips[~non_trips(trips)].sort_index()
 
     # Mode: the modo_principal lookup, then the passenger override.
     mode = trips.modo_principal.map(build_map("Mode"))
@@ -152,7 +161,7 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
         "HouseholdId": _household_ids(viv).reindex(
             trips.index.get_level_values("folio_vivienda")).to_numpy(),
         "PersonNumber": trips.index.get_level_values("folio_habitante"),
-        # Renumbered: load_eod's chain cleaning leaves gaps in folio_viaje.
+        # Renumbered over the non-trips left out and the gaps in folio_viaje.
         "TripNumber": trips.groupby(level=PERSON).cumcount().to_numpy() + 1,
         "StartTime": (trips.hora_inicio_h * 100 + trips.hora_inicio_m).astype(int).to_numpy(),
         "Mode": mode.to_numpy(),

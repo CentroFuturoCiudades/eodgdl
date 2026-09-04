@@ -146,9 +146,10 @@ people:
     source: folio_habitante
     derivation: Index level, 1-based.
     note: >-
-      281 surveyed persons (0.48%) have no row: load_eod excludes the persons
-      whose day has an untimed trip (eodgdl.eod.clean_trip_chains). Their
-      household's reported size still counts them in NumberOfPersons.
+      Every surveyed person has a row: load_eod's chain cleaning
+      (eodgdl.eod.clean_trip_chains) imputes the trips that lost their
+      questionnaire block rather than excluding their persons, as it did
+      until 2026-09-03.
 
   Age:
     source: edad
@@ -307,8 +308,10 @@ trips:
   TripNumber:
     source: folio_viaje
     derivation: >-
-      Position in the chain, in folio_viaje order, renumbered 1..n: load_eod's
-      chain cleaning leaves gaps in folio_viaje where it dropped rows.
+      Position in the chain, in folio_viaje order, renumbered 1..n over the
+      rows the builder leaves out: those load_eod marks as non-trips in
+      trips.problemas (a return home made while already at home, and the
+      home-to-home row that duplicates an untimed return).
     note: >-
       The row order is the chain. folio_viaje itself is a generated sequence
       number with no information of its own, but the zones and the times pin
@@ -328,22 +331,23 @@ trips:
     derivation: hora_inicio_h * 100 + hora_inicio_m.
     note: >-
       The hours are the ones load_eod returns, after its chain cleaning: the
-      281 persons with an untimed trip are gone (1,142 trips), and 2,029
-      mistyped start hours in 1,549 chains were repaired by the fewest typo
-      edits — a 12-hour-clock entry, an extra or missing leading 1, or both —
-      that let every trip start after the previous one arrived (its start plus
-      its leg minutes, 15 minutes of tolerance), applied only where the
-      cheapest reading is unique (eodgdl.eod._repair_start_times). Those rows
-      are marked in trips.hora_inicio_ajuste; a consumer that wants to treat
-      them as uncertain has the flag, though this column does not carry it.
-      838 trips (765 people) still start before their predecessor and 883
-      start before the previous trip could have arrived by more than the
-      tolerance; they are kept and tasha.chain_report counts them on every
-      build. The rules, their
+      325 trips with no start time are imputed (37 from the home-to-home
+      return that duplicates them, 288 from their nearest timed trips,
+      eodgdl.eod._impute_untimed_trips), and 2,032 mistyped start hours in
+      1,552 chains are repaired by the fewest typo edits — a 12-hour-clock
+      entry, an extra or missing leading 1, or both — that let every trip
+      start after the previous one arrived (its start plus its leg minutes,
+      15 minutes of tolerance), applied only where the cheapest reading is
+      unique (eodgdl.eod._repair_start_times). Every such row is marked in
+      trips.ajustes (hora:duplicado, hora:vecinos, hora:+12h and so on); a
+      consumer that wants to treat them as uncertain has the flag, though
+      this column does not carry it. 885 trips still start before the
+      previous trip could have arrived by more than the tolerance and are
+      marked hora_invertida in trips.problemas; they are kept and
+      tasha.chain_report counts them on every build. The rules, their
       evidence and the rejected alternatives — dropping those people,
-      imputing the untimed trips, re-sequencing tours — are documented in
-      eodgdl.eod. The builder refuses a trip table with untimed rows rather
-      than guess.
+      re-sequencing tours — are documented in eodgdl.eod. The builder refuses
+      a trip table with untimed rows rather than guess.
 
   Mode:
     source: modo_principal

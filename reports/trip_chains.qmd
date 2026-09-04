@@ -48,9 +48,17 @@ import pandas as pd
 
 from eodgdl import clean_trip_chains, load_eod, tasha
 from eodgdl.eod import (
-    _drop_home_to_home_returns,
-    _drop_incomplete_days,
+    FIX_CODES,
+    FIX_FLAG,
+    ISSUE_CODES,
+    ISSUE_FLAG,
+    _home_to_home_returns,
+    _impute_untimed_trips,
+    _nearest_donors,
     _recode_returns_by_destination,
+    _trip_features,
+    has_code,
+    non_trips,
 )
 
 plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
@@ -79,11 +87,11 @@ raw = load_eod(clean_chains=False)     # the survey as shipped
 clean = load_eod()                     # what load_eod() returns by default
 
 
-def with_helpers(tables):
-    t = tables.trips.sort_index().copy()
-    t["home"] = tables.viv.ageb.astype(str).reindex(t.index.get_level_values(0)).to_numpy()
+def with_helpers(trips, viv, legs):
+    t = trips.sort_index().copy()
+    t["home"] = viv.ageb.astype(str).reindex(t.index.get_level_values(0)).to_numpy()
     t["start"] = (t.hora_inicio_h * 60 + t.hora_inicio_m).astype("float")
-    t["legmin"] = tables.legs.groupby(level=[0, 1, 2]).traslado_min.sum().reindex(t.index)
+    t["legmin"] = legs.groupby(level=[0, 1, 2]).traslado_min.sum().reindex(t.index)
     g = t.groupby(level=P)
     t["pos"] = g.cumcount() + 1
     t["n"] = g.pos.transform("max")
@@ -96,8 +104,10 @@ def with_helpers(tables):
     return t
 
 
-R = with_helpers(raw)
-C = with_helpers(clean)
+R = with_helpers(raw.trips, raw.viv, raw.legs)                        # as shipped
+is_non_trip = non_trips(clean.trips)
+C = with_helpers(clean.trips[~is_non_trip], clean.viv, clean.legs)     # the chain the build sees
+n_non_trips = int(is_non_trip.sum())
 persons_R = R.index.droplevel("folio_viaje")
 persons_C = C.index.droplevel("folio_viaje")
 
@@ -107,20 +117,12 @@ def hhmm(h, m):
 
 
 def person_table(key, source=R):
-    """One person's trips as shipped, with what load_eod did to each row."""
+    """One person's trips as shipped, with what load_eod did to each row and what it left."""
     t = source.loc[key]
     home = raw.viv.ageb.astype(str).loc[key[0]]
-    excluded = key in set(clean_dropped_persons)
     after = []
     for fv, row in t.iterrows():
-        if excluded:
-            after.append("person excluded")
-            continue
-        full = (key[0], key[1], fv)
-        if full not in clean.trips.index:
-            after.append("dropped")
-            continue
-        c = clean.trips.loc[full]
+        c = clean.trips.loc[(key[0], key[1], fv)]
         notes = []
         if hhmm(c.hora_inicio_h, c.hora_inicio_m) != hhmm(row.hora_inicio_h, row.hora_inicio_m):
             notes.append(f"start → {hhmm(c.hora_inicio_h, c.hora_inicio_m)}")
@@ -128,6 +130,10 @@ def person_table(key, source=R):
             notes.append(f"motive → {c.motivo_viaje}")
         if str(c.origen) != str(row.origen):
             notes.append("origin → home" if str(c.origen) == home else f"origin → {c.origen}")
+        if c[FIX_FLAG]:
+            notes.append(f"[{c[FIX_FLAG]}]")
+        if c[ISSUE_FLAG]:
+            notes.append(f"left: {c[ISSUE_FLAG]}")
         after.append("; ".join(notes) or "kept")
     zone = lambda z: "home" if z == home else z
     return pd.DataFrame({
@@ -186,13 +192,14 @@ type_once = int(R.groupby(level=P).tipo_lugar_origen.nunique().max())
 assert type_once == 1
 assert pure_share > 0.9
 
-# the same figures after load_eod's fixes
+# the same figures after load_eod's fixes: nothing leaves, so the person rows are identical
 hab_c = clean.hab
 n_hab_c, n_trips_c, n_legs_c = len(clean.hab), len(clean.trips), len(clean.legs)
+assert (n_hab_c, n_trips_c, n_legs_c) == (n_hab, n_trips, n_legs)
 said_no_c = int((hab_c.salio_casa_ayer == "No").sum())
 rows_c = clean.trips.groupby(level=P).size().reindex(hab_c.index).fillna(0).astype(int)
 assert (rows_c == hab_c.viajes_contados).all()
-travellers_c = int((rows_c > 0).sum())
+travellers_c = int((C.groupby(level=P).size().reindex(hab_c.index).fillna(0) > 0).sum())
 said_yes_no_trips_c = int(((hab_c.salio_casa_ayer == "Sí") & (rows_c == 0)).sum())
 seq_c = C.groupby(level=P).motivo_viaje.apply(
     lambda s: "".join("H" if m == RETURN else ("?" if pd.isna(m) else "A") for m in s))
@@ -241,12 +248,21 @@ inv_after_work = float((R.prev_motivo[earlier] == "Trabajar").mean())
 #| label: fixes
 #| include: false
 
-cleaned_trips, clean_dropped_persons, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs)
-assert counts == {"incomplete_persons": 281, "incomplete_trips": 1_142, "recoded_returns": 84,
-                  "home_to_home": 468, "origins_repaired": 120, "start_times_edited": 2_029,
-                  "chains_repaired": 1_549}
-assert len(clean.trips) == len(cleaned_trips) == 153_052
-assert len(clean.hab) == n_hab - counts["incomplete_persons"]
+cleaned_trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)
+assert counts == {"untimed_trips": 325, "untimed_persons": 281,
+                  "times_from_duplicate": 37, "times_from_neighbours": 288,
+                  "motives_from_duplicate": 38, "motives_from_neighbours": 294,
+                  "recoded_returns": 84, "home_to_home": 491, "duplicate_returns": 38,
+                  "origins_repaired": 124, "start_times_edited": 2_032, "chains_repaired": 1_552,
+                  "left_hora_invertida": 885, "left_origen_discontinuo": 32,
+                  "left_regreso_sin_llegar": 163, "left_tipo_destino_dudoso": 16}
+assert len(clean.trips) == len(cleaned_trips) == n_trips
+assert len(clean.hab) == n_hab
+assert n_non_trips == counts["home_to_home"] + counts["duplicate_returns"]
+fix_counts = clean.trips[FIX_FLAG].str.split(";").explode().loc[lambda x: x != ""].value_counts()
+issue_counts = clean.trips[ISSUE_FLAG].str.split(";").explode().loc[lambda x: x != ""].value_counts()
+n_rows_fixed = int((clean.trips[FIX_FLAG] != "").sum())
+n_rows_left = int((clean.trips[ISSUE_FLAG] != "").sum())
 
 # --- untimed trips
 un = R.start.isna()
@@ -284,63 +300,77 @@ ex_single = seq[seq == "AH?H"].index[0]
 ex_multi = (889, 1)
 assert seq[ex_multi] == "AH??H"
 
-excluded_mask = persons_R.isin(clean_dropped_persons)
-excl_trips = int(excluded_mask.sum())
-excl_w_share = float(R.ponderador[excluded_mask].sum() / R.ponderador.sum())
-excl_p_share = counts["incomplete_persons"] / n_hab
-excl_trips_per_person = excl_trips / counts["incomplete_persons"]
+untimed_persons = persons_R[un].unique()
+untimed_w_share = float(R.ponderador[persons_R.isin(untimed_persons)].sum() / R.ponderador.sum())
+untimed_trips_per_person = int(persons_R.isin(untimed_persons).sum()) / len(untimed_persons)
 all_trips_per_person = n_trips / travellers
 notravel_now = float((hab.viajes_contados == 0).mean())
-notravel_if_zero = ((hab.viajes_contados == 0).sum() + counts["incomplete_persons"]) / n_hab
-mode_now = R.modo_principal.value_counts(normalize=True)
-mode_without = R.modo_principal[~excluded_mask].value_counts(normalize=True)
-mode_shift = float((mode_now - mode_without).abs().max())
-assert mode_shift < 0.002
+notravel_if_excluded = ((hab.viajes_contados == 0).sum() + len(untimed_persons)) / n_hab
+n_timed_no_motive = int((R.motivo_viaje.isna() & R.start.notna()).sum())
+assert n_timed_no_motive == 7
 
-# --- imputation prototype (rejected): recomputed here for the record
-tp = R.copy()
-merge = blk[(blk.k >= 2) & blk["ends at home"] & blk["next goes home→home"]]
-after_i = pd.MultiIndex.from_tuples([(a, b, c + 1) for (a, b), c in zip(merge.index, merge.last_pos)], names=tp.index.names)
-last_i = pd.MultiIndex.from_tuples([(a, b, c) for (a, b), c in zip(merge.index, merge.last_pos)], names=tp.index.names)
-for col in ["hora_inicio_h", "hora_inicio_m", "motivo_viaje"]:
-    tp.loc[last_i, col] = tp.loc[after_i, col].to_numpy()
-tp = tp.drop(after_i)
-tp["start"] = (tp.hora_inicio_h * 60 + tp.hora_inicio_m).astype("float")
-still = tp.start.isna()
-known = tp[~still & tp.motivo_viaje.notna() & (tp.motivo_viaje != RETURN)]
-known_map = known.groupby([known.index.get_level_values(0), known.index.get_level_values(1),
-                           "destino"]).motivo_viaje.agg(lambda s: s.mode().iloc[0])
-uu = tp[still]
-lk = pd.MultiIndex.from_arrays([uu.index.get_level_values(0), uu.index.get_level_values(1), uu.destino])
-inferred = pd.Series(known_map.reindex(lk).to_numpy(), index=uu.index)
-n_merged, n_still = len(merge), int(still.sum())
-n_inferred = int(inferred.notna().sum())
-n_otros = n_still - n_inferred
-prev_s = tp.start.groupby(level=P).ffill().groupby(level=P).shift(1)
-next_s = tp.start.groupby(level=P).bfill().groupby(level=P).shift(-1)
-window = ((next_s - tp.legmin) - (prev_s + tp.groupby(level=P).legmin.shift(1).fillna(0)))[still]
-window_median = float(window.median())
-no_earlier = int(prev_s[still].isna().sum())
-pm = tp.index.droplevel("folio_viaje").isin(clean_dropped_persons)
-o_family = ["Visitar a alguien", "Al médico o atención de salud", "Pagar algún servicio o al banco",
-            "Hacer un trámite", "Otros (especifique)"]
-imputed_days_o = (n_otros + int(tp.motivo_viaje[pm].isin(o_family).sum())) / (excl_trips - n_merged)
+# --- the imputation: what it wrote, and how the matcher scores on trips whose answers are known
+imp_time = has_code(clean.trips[FIX_FLAG], "hora:vecinos")
+imp_dup = has_code(clean.trips[FIX_FLAG], "hora:duplicado")
+imp_mot = has_code(clean.trips[FIX_FLAG], "motivo:vecinos")
+assert int(imp_time.sum()) == counts["times_from_neighbours"] and int(imp_mot.sum()) == counts["motives_from_neighbours"]
+imputed_motives = clean.trips.motivo_viaje[imp_mot].value_counts().loc[lambda x: x > 0]
+imputed_types = clean.trips.tipo_lugar_destino[imp_mot].value_counts().loc[lambda x: x > 0]
+imputed_hours = clean.trips.hora_inicio_h[imp_time].astype(int)
+imputed_evening = float(imputed_hours.between(17, 19).mean())
+imp_w_share = float(clean.trips.ponderador[imp_time | imp_dup].sum() / clean.trips.ponderador.sum())
+imputed_left = int((clean.trips[ISSUE_FLAG][imp_time] != "").sum())
+home_R = raw.viv.ageb.astype(str).reindex(R.index.get_level_values(0)).to_numpy()
+feat = _trip_features(raw.trips.sort_index(), home_R, raw.hab, raw.legs)
+donors = feat[feat.activity & feat.start.notna() & feat.next_start.notna()]
+like = donors[donors.desde_casa & donors.siguiente_regreso & ~donors.primero
+              & donors.modo.isin(["A PIE", "AUTOMÓVIL PARTICULAR", "CAMIÓN O AUTOBÚS"])
+              & donors.hora_siguiente.between(17, 22)]
+samp = like.sample(1_500, random_state=0)
+donor_persons = donors.index.droplevel("folio_viaje")
+vote = pd.concat([_nearest_donors(g, donors[donor_persons != key]) for key, g in samp.groupby(level=P)]).reindex(samp.index)
+score_motive = float((vote.motivo == samp.motivo).mean())
+own_visit = samp.motivo_propio != "none"
+score_own = float((vote.motivo[own_visit] == samp.motivo[own_visit]).mean())
+score_rest = float((vote.motivo[~own_visit] == samp.motivo[~own_visit]).mean())
+score_type = float((vote.tipo == samp.tipo).mean())
+base_motive, score_base = like.motivo.value_counts().index[0], float(like.motivo.value_counts(normalize=True).iloc[0])
+latest = samp.next_start.to_numpy() - samp.legmin.to_numpy()
+start_hat = np.fmin(np.fmax(latest - vote.duration.to_numpy(), samp.prev_arrival.to_numpy()), latest)
+err = np.abs(start_hat - samp.start.to_numpy())
+midpoint = np.where(np.isnan(samp.prev_arrival.to_numpy()), latest - 60, (samp.prev_arrival.to_numpy() + latest) / 2)
+err_mid = np.abs(midpoint - samp.start.to_numpy())
+err_median, err_mean, mid_median, mid_mean = float(np.median(err)), float(err.mean()), float(np.median(err_mid)), float(err_mid.mean())
+assert score_motive > 0.5 and score_own > 0.8 and err_median < mid_median
+pred_share = vote.motivo.value_counts(normalize=True)
+true_share = samp.motivo.value_counts(normalize=True)
+score_tbl = pd.DataFrame({
+    "measure": ["motive named correctly", "…where the person had visited the zone earlier", "…elsewhere",
+                f"always '{base_motive}' (the most common motive)", "destination type named correctly",
+                "start time: median error (minutes)", "start time: mean error (minutes)",
+                "midpoint of the window between the neighbouring trips: median error", "…mean error"],
+    "value": [pct(score_motive, 0), f"{pct(score_own, 0)} ({int(own_visit.sum())} trips)", pct(score_rest, 0),
+              pct(score_base, 0), pct(score_type, 0), fmt(err_median), fmt(err_mean), fmt(mid_median), fmt(mid_mean)],
+})
 
-# --- home-to-home returns
-t1, _ = _drop_incomplete_days(R)
+# --- home-to-home returns, on the table with the lost blocks filled
+t1_filled, imp_masks = _impute_untimed_trips(raw.trips.sort_index(), home_R, raw.hab, raw.legs)
+t1 = with_helpers(t1_filled, raw.viv, raw.legs)
+assert t1.start.notna().all()
 first_return_from_home = int(((R.pos == 1) & R.is_return & (R.tipo_lugar_origen == HOME)).sum())
 consecutive_returns = int((R.is_return & (R.prev_motivo == RETURN)).sum())
-hh_no_recode = len(t1) - len(_drop_home_to_home_returns(t1))
-t1_home = raw.viv.ageb.astype(str).reindex(t1.index.get_level_values(0)).to_numpy()
-t1r, n_rec = _recode_returns_by_destination(t1, t1_home)
-t2 = _drop_home_to_home_returns(t1r)
-gone = t1r.index.difference(t2.index)
-hh_rows = t1r.loc[gone]
+hh_no_recode = int(_home_to_home_returns(t1, skip=imp_masks["duplicate"]).sum())
+t1r, rec_mask = _recode_returns_by_destination(t1, t1.home.to_numpy())
+n_rec = int(rec_mask.sum())
+hh_mask = _home_to_home_returns(t1r, skip=imp_masks["duplicate"])
+t2 = t1r[~(hh_mask | imp_masks["duplicate"])]        # the chain without its non-trips
+hh_rows = t1r[hh_mask]
 hh_first = int((hh_rows.pos == 1).sum())
 hh_same_zone = int((hh_rows.origen == hh_rows.destino).sum())
 hh_home_zone = int(((hh_rows.origen == hh_rows.home) & (hh_rows.destino == hh_rows.home)).sum())
 hh_last = int((hh_rows.pos == hh_rows.n).sum())
-assert len(gone) == counts["home_to_home"] and n_rec == counts["recoded_returns"]
+assert int(hh_mask.sum()) == counts["home_to_home"] and n_rec == counts["recoded_returns"]
+assert len(t2) == len(C)
 t2_prev = t2.groupby(level=P).destino.shift(1)
 breaks_t2 = int((t2_prev.notna() & (t2.origen != t2_prev)).sum())
 c_has_prev = C.prev_dest.notna()
@@ -389,7 +419,7 @@ recode_tbl = (pd.DataFrame({"destination type": R.tipo_lugar_destino.reindex(com
 rescued = hh_no_recode - counts["home_to_home"]
 
 # --- start-time repair: the typo search that replaced the strict 12-hour rule
-from eodgdl.eod import START_TIME_FLAG, _START_TIME_EDITS, _START_TIME_MAX_COST, _START_TIME_TOLERANCE
+from eodgdl.eod import _START_TIME_EDITS, _START_TIME_MAX_COST, _START_TIME_TOLERANCE
 
 
 def strict_twelve_hour(t):
@@ -411,7 +441,8 @@ def strict_twelve_hour(t):
 
 strict_moved = strict_twelve_hour(t2)
 n_strict = int(strict_moved.sum())
-flag_t2 = clean.trips[START_TIME_FLAG].reindex(t2.index).to_numpy()
+hour_edit = clean.trips[FIX_FLAG].str.extract(r"hora:([+-][^;]*)")[0].fillna("")    # the typo edit on each row, "" if none
+flag_t2 = hour_edit.reindex(t2.index).to_numpy()
 h_search = C.hora_inicio_h.reindex(t2.index).to_numpy(int)
 h_strict = t2.hora_inicio_h.to_numpy(int) + 12 * strict_moved
 strict_same = int((strict_moved & (h_search == h_strict)).sum())
@@ -420,24 +451,24 @@ strict_unmoved = int((strict_moved & (flag_t2 == "")).sum())
 
 menu = pd.DataFrame([(n, c, f"{lo:02d}–{hi:02d}", f"{d:+d} h") for n, c, lo, hi, d in _START_TIME_EDITS],
                     columns=["edit", "cost", "applies to hours", "change"])
-edits_tbl = clean.trips[START_TIME_FLAG].value_counts().drop("").rename("rows").reset_index()
+edits_tbl = hour_edit.value_counts().drop("").rename("rows").reset_index()
 edits_tbl.columns = ["edit", "rows"]
 t2_start = t2.hora_inicio_h.astype(int) * 60 + t2.hora_inicio_m.astype(int)
 t2_prev = t2_start.groupby(level=P).shift(1)
 t2_prev_arrival = (t2_start + t2.legmin).groupby(level=P).shift(1)
 infeasible = ((t2_prev_arrival - t2_start) > _START_TIME_TOLERANCE) & ~((t2_prev >= 18 * 60) & (t2_start <= 6 * 60))
 needs_repair = int(infeasible.groupby(level=P).any().sum())
-moved_mask = C.hora_inicio_h.reindex(common) != R.hora_inicio_h.reindex(common)
+moved_mask = hour_edit.reindex(common) != ""
 assert int(moved_mask.sum()) == counts["start_times_edited"]
 moved_after_evening = int((moved_mask & (R.prev_start.reindex(common) >= 17 * 60)).sum())
-edited_hours = C.hora_inicio_h[C[START_TIME_FLAG] != ""].astype(int)
+edited_hours = C.hora_inicio_h[hour_edit.reindex(C.index) != ""].astype(int)
 assert (edited_hours >= 5).all()
 c_inv = (C.start < C.prev_start).fillna(False)
 c_early = (C.start < C.prev_start + C.prev_leg).fillna(False)
 c_beyond = ((C.prev_start + C.prev_leg - C.start) > _START_TIME_TOLERANCE).fillna(False) & ~((C.prev_start >= 18 * 60) & (C.start <= 6 * 60)).fillna(False)
 repair_tbl = pd.DataFrame({
     "measure": ["chains with a trip starting before the previous arrival, beyond the tolerance",
-                "chains given a unique cheapest reading", "rows edited",
+                "chains given a unique cheapest reading", "rows edited (imputed start times are never edited)",
                 "edited rows that follow a trip starting at or after 17:00",
                 "inversions left (trips / people)",
                 "trips still starting before the previous arrival (trips / people)",
@@ -563,7 +594,7 @@ ties_c = (C.start == C.prev_start).fillna(False)
 hidden_c = (~inv_c) & C.prev_start.notna() & C.hora_inicio_h.between(1, 6) & C.is_return
 left_early_c = ((gap >= 0) & (gap < C.prev_leg)).fillna(False)
 inv_people = int(persons_C[inv_c].nunique())
-assert int(inv_c.sum()) == 838
+assert int(inv_c.sum()) == 839
 
 flags = pd.DataFrame({
     "start before the previous trip": inv_c,
@@ -637,8 +668,8 @@ has_guard = (C.motivo_viaje == "Guardería").groupby(level=P).any().reindex(hab_
 has_est = (C.motivo_viaje == "Estudiar").groupby(level=P).any().reindex(hab_c.index).fillna(False)
 declared_student = (hab_c.ocupacion == "Estudiante") | (hab_c.trabajo_semana_pasada == "Es estudiante")
 adult_students_by_guarderia = int((has_guard & ~has_est & ~declared_student & (hab_c.edad >= 18)).sum())
-zero_recoded = clean.hab.index[(clean.hab.viajes_contados == 0)
-                               & (raw.hab.viajes_contados.reindex(clean.hab.index) > 0)]
+all_non_trips = is_non_trip.groupby(level=P).all()
+zero_recoded = all_non_trips.index[all_non_trips]        # every row the person reported is a marked non-trip
 n_zero_recoded = len(zero_recoded)
 same_zone_share = float((C.origen == C.destino).mean())
 band = pd.cut(C.legmin, [-1, 5, 10, 15, 30, 45, 60, 90, 120, 10_000],
@@ -689,8 +720,8 @@ def error_masks(T, home_to_home):
 
 
 treatments = {
-    "no start time (and no motive)": "the person's day is excluded (@sec-untimed)",
-    "return home made while already at home": "row dropped (@sec-home)",
+    "no start time (and no motive)": "start time, motive and type imputed, marked in `ajustes` (@sec-untimed)",
+    "return home made while already at home": "kept, marked `regreso_en_casa` in `problemas`; the build leaves it out (@sec-home)",
     "return home whose destination type is not a home":
         "recoded from the type where the zone agrees (@sec-mislabel); the rest are corroborated by the zone and kept",
     "return home not reaching the home zone": "recoded where the type says otherwise (@sec-mislabel); the rest left",
@@ -704,10 +735,10 @@ treatments = {
     "last trip not a return to the home zone": "left",
     "activity motive with destination type 'Su casa'": "left (@sec-lingering-purpose)",
     "Guardería motive, mapped to school": "left (@sec-lingering-purpose)",
-    "no motive on a timed trip": "left; falls to the purpose O",
+    "no motive on a timed trip": "motive and type imputed, marked in `ajustes` (@sec-untimed)",
 }
 assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
-masks_R = error_masks(R, pd.Series(~R.index.isin(_drop_home_to_home_returns(R).index), index=R.index))
+masks_R = error_masks(R, pd.Series(_home_to_home_returns(R), index=R.index))
 masks_C = error_masks(C, pd.Series(False, index=C.index))
 counts_R = {k: int(v.sum()) for k, v in masks_R.items()}
 counts_C = {k: int(v.sum()) for k, v in masks_C.items()}
@@ -727,11 +758,15 @@ def md_table(rows, header):
     return "\n".join(out) + "\n"
 
 
-error_rows = [(k, fmt(counts_R[k]), pct(counts_R[k] / n_trips, 2), fmt(counts_C[k]), pct(counts_C[k] / len(clean.trips), 2), treatments[k])
+error_rows = [(k, fmt(counts_R[k]), pct(counts_R[k] / n_trips, 2), fmt(counts_C[k]), pct(counts_C[k] / len(C), 2), treatments[k])
               for k in masks_R]
 error_rows.append(("**trips with at least one of the above**", f"**{fmt(any_R)}**", f"**{pct(any_R / n_trips, 2)}**",
-                   f"**{fmt(any_C)}**", f"**{pct(any_C / len(clean.trips), 2)}**",
+                   f"**{fmt(any_C)}**", f"**{pct(any_C / len(C), 2)}**",
                    "the union: one trip can carry several errors, so the column does not sum"))
+flag_vocab = pd.DataFrame(
+    [("`ajustes`", f"`{k}`", fmt(fix_counts.get(k, 0)), v) for k, v in FIX_CODES.items()]
+    + [("`problemas`", f"`{k}`", fmt(issue_counts.get(k, 0)), v) for k, v in ISSUE_CODES.items()],
+    columns=["column", "code", "trips", "meaning"])
 ```
 
 # Summary {.unnumbered}
@@ -746,14 +781,21 @@ block was lost, and the row after them is either the trip's own return or a dupl
 it. And the survey's own answers contradict each other in a few hundred rows in ways the
 tables let us arbitrate.
 
-`eodgdl.load_eod()` now applies five rules before returning the trip table
-(@sec-fixes): it excludes the `{python} counts["incomplete_persons"]` persons whose day has
-an untimed trip, recodes `{python} counts["recoded_returns"]` "return home" trips that did
-not reach the home zone, drops `{python} counts["home_to_home"]` returns home made while
-already at home, makes `{python} counts["origins_repaired"]` trips that follow a return home
-start at home, and repairs `{python} fmt(counts["start_times_edited"])` mistyped start hours in
-`{python} fmt(counts["chains_repaired"])` chains, marking every edited row as uncertain. The model contract now states chain order, the validator enforces what a builder
-can guarantee, and `tasha.chain_report` counts what it cannot.
+`eodgdl.load_eod()` applies five rules before returning the trip table (@sec-fixes) and
+drops nothing: it imputes the `{python} fmt(n_untimed)` untimed trips — `{python} counts["times_from_duplicate"]`
+from the home-to-home row that duplicates them, `{python} counts["times_from_neighbours"]`
+from their nearest timed trips — recodes `{python} counts["recoded_returns"]` "return home"
+trips that did not reach the home zone, keeps the `{python} counts["home_to_home"]` returns
+home made while already at home and the `{python} counts["duplicate_returns"]` duplicates
+but marks them as non-trips, makes `{python} counts["origins_repaired"]` trips that follow a
+return home start at home, and repairs `{python} fmt(counts["start_times_edited"])` mistyped
+start hours in `{python} fmt(counts["chains_repaired"])` chains. Every change is written to
+the row in a new `ajustes` column and every defect left in a `problemas` column
+(@tbl-flags), so a consumer can keep, filter or weight the
+`{python} fmt(n_rows_fixed)` rows that were changed and the `{python} fmt(n_rows_left)`
+that still carry a defect. The model contract states chain order, the validator enforces what
+a builder can guarantee, the builder leaves out the `{python} n_non_trips` marked non-trips,
+and `tasha.chain_report` counts what remains.
 
 What remains (@sec-lingering) is small and concentrated: `{python} pct(buildable_share)` of
 person-days are monotone, continuous and home-to-home as they stand, and the defects in the
@@ -765,8 +807,9 @@ start times only, ages 6+ — bounds what the scheduler can learn far more than 
 ::: {.callout-note title="How to read the examples"}
 Every example table shows a person's trips **as shipped**, with origin and destination
 zones replaced by *home* when they equal the household's AGEB, and a final column
-saying what `load_eod()` did to that row: `kept`, `dropped`, `person excluded`, or the new
-start time or motive. All counts are recomputed when this document renders and the
+saying what `load_eod()` did to that row: `kept`, or the new start time, motive or origin
+with the row's `ajustes` codes in brackets, and `left:` with the row's `problemas` codes
+where a defect remains. All counts are recomputed when this document renders and the
 structural claims are asserted, so a rendering failure is a real finding.
 :::
 
@@ -782,15 +825,16 @@ once, for the first trip, and repeated on every row.
 |---|---|---|
 | dwellings / persons / trips / legs | `{python} fmt(n_viv)` / `{python} fmt(n_hab)` / `{python} fmt(n_trips)` / `{python} fmt(n_legs)` | `{python} fmt(n_viv)` / `{python} fmt(n_hab_c)` / `{python} fmt(n_trips_c)` / `{python} fmt(n_legs_c)` |
 | persons who left home the day before | `{python} fmt(n_hab - said_no)` (`{python} pct((n_hab - said_no) / n_hab)`) | `{python} fmt(n_hab_c - said_no_c)` (`{python} pct((n_hab_c - said_no_c) / n_hab_c)`) |
-| persons with at least one trip row | `{python} fmt(travellers)` | `{python} fmt(travellers_c)` |
+| persons with at least one trip row that is a trip | `{python} fmt(travellers)` | `{python} fmt(travellers_c)` |
 | said they left home but have no trip and no reason | `{python} fmt(said_yes_no_trips)` | `{python} fmt(said_yes_no_trips_c)` |
-| `viajes_contados` equals the person's trip rows | always | always (recounted) |
+| `viajes_contados` equals the person's trip rows | always | always (left as shipped) |
+| rows kept but marked as non-trips (`problemas`) | — | `{python} fmt(n_non_trips)` |
 | first trips that leave from *Su casa* | `{python} pct(first_from_home)` | `{python} pct(first_from_home_c)` |
 | last trips that are *Regresar a Casa* | `{python} pct(last_is_return)` | `{python} pct(last_is_return_c)` |
 | people whose day is a pure sequence of out-and-back pairs | `{python} pct(pure_share)` | `{python} pct(pure_share_c)` |
 | maximum trips per person | `{python} max_trips` | `{python} max_trips_c` |
 
-: The survey's trip section in numbers, before and after `load_eod`'s chain cleaning (@sec-fixes). The 281 excluded persons and the `{python} n_zero_recoded` people whose only trips were returns made from home account for the differences in the person rows. {#tbl-design}
+: The survey's trip section in numbers, before and after `load_eod`'s chain cleaning (@sec-fixes). Nothing leaves the tables; the `{python} n_zero_recoded` people whose only rows are returns made from home keep them, marked, and count as travellers no longer. The "after" pattern and anchor figures are over the chain without the marked non-trips. {#tbl-design}
 
 ```{python}
 #| label: tbl-trips-per-person
@@ -855,7 +899,7 @@ turns into a return before a night shift). It was not adopted.
 | tour re-sequencing: inversions removed | `{python} reseq_removed` of `{python} fmt(inv_total)` |
 | tour re-sequencing: people affected, within-zone days, overnight-looking days | `{python} n_reseq`, `{python} reseq_within`, `{python} reseq_overnight` |
 
-: What a permutation search over each person's trips finds, on the table after the exclusion of @sec-untimed. {#tbl-perm}
+: What a permutation search over each person's trips finds, on the table with the untimed trips of @sec-untimed imputed. {#tbl-perm}
 
 | | row order (`folio_viaje`) | start-time order |
 |---|---|---|
@@ -884,11 +928,22 @@ show(person_table((8, 3)))
 # Problems found and fixed {#sec-fixes}
 
 `load_eod()` applies the rules below, in this order, and `load_eod(clean_chains=False)`
-returns the survey as shipped. Each rule's evidence is also the docstring of its function in
-`eodgdl.eod`. @tbl-errors lists every kind of error this note found, how many trips carried
-it as shipped, and how many still do after the rules; the shares are of the
-`{python} fmt(n_trips)` trips as shipped and of the `{python} fmt(len(clean.trips))` that
-`load_eod()` returns.
+returns the survey as shipped. Nothing is dropped: the trip table keeps its
+`{python} fmt(n_trips)` rows, and two columns record what happened to each. `ajustes` names
+every change the rules made to the row and `problemas` every defect they left, as
+semicolon-joined codes (@tbl-flags); `eodgdl.eod.has_code` filters on one, and
+`eodgdl.eod.non_trips` picks out the rows marked as not being trips, which the model build
+leaves out. Each rule's evidence is also the docstring of its function in `eodgdl.eod`.
+@tbl-errors lists every kind of error this note found, how many trips carried it as
+shipped, and how many still do after the rules; the shares are of the
+`{python} fmt(n_trips)` trips as shipped and of the `{python} fmt(len(C))` in the chain
+`load_eod()` returns once the `{python} n_non_trips` non-trips are set aside.
+
+```{python}
+#| label: tbl-flags
+#| tbl-cap: "The vocabulary of the two columns load_eod adds to the trip table, with the number of trips carrying each code. A row can carry several, joined by ';'."
+show(flag_vocab)
+```
 
 ```{python}
 #| label: tbl-errors
@@ -898,7 +953,7 @@ print(md_table(error_rows,
                ["error", "trips as shipped", "share", "trips after `load_eod()`", "share", "treatment"]))
 ```
 
-## Untimed trips are lost questionnaires, and their persons are excluded {#sec-untimed}
+## Untimed trips are lost questionnaires, and are imputed {#sec-untimed}
 
 ```{python}
 #| label: tbl-nulls
@@ -935,39 +990,91 @@ The person in @tbl-ex-single is `{python} label(ex_single)`.
 
 ```{python}
 #| label: tbl-ex-single
-#| tbl-cap: "A single untimed trip: trip 3 lost its questionnaire block, trip 4 is its return. The whole person is excluded."
+#| tbl-cap: "A single untimed trip: trip 3 lost its questionnaire block, trip 4 is its return. Trip 3 takes the motive its nearest timed trips vote for and a start counted back from trip 4."
 show(person_table(ex_single))
 ```
 
 ```{python}
 #| label: tbl-ex-multi
-#| tbl-cap: "A multi-trip block (household 889, person 1): trips 3–4 are an out-and-back by bus with no answers, and trip 5 repeats trip 4 from home to home with a time and a motive attached. The whole person is excluded."
+#| tbl-cap: "A multi-trip block (household 889, person 1): trips 3–4 are an out-and-back by bus with no answers, and trip 5 repeats trip 4 from home to home with a time and a motive attached. Trip 4 takes trip 5's answers, trip 5 is marked as the duplicate, and trip 3 is imputed from its neighbours."
 show(person_table(ex_multi))
 ```
 
-**The fix.** The previous rule dropped only the untimed rows, which kept the duplicates
-and stitched chains across the hole. `load_eod()` now excludes the whole person from `hab`
-and `trips`: a day with an unobservable trip cannot support activity scheduling. The
-alternative — keeping the person with zero trips — would recode
-`{python} counts["incomplete_persons"]` travellers as non-travellers and lift the no-travel
-share from `{python} pct(notravel_now, 2)` to `{python} pct(notravel_if_zero, 2)`.
+**The fix.** Until 2026-09-03 `load_eod()` excluded the whole person from `hab` and
+`trips`, on the grounds that a day with an unobservable trip cannot support activity
+scheduling; an earlier rule had dropped only the untimed rows, which kept the duplicates and
+stitched chains across the hole. Both threw away real trips: the
+`{python} len(untimed_persons)` persons are `{python} pct(len(untimed_persons) / n_hab, 2)`
+of the sample and `{python} pct(untimed_w_share, 2)` of weighted trips, they average
+`{python} f"{untimed_trips_per_person:.1f}"` trips against
+`{python} f"{all_trips_per_person:.1f}"` overall, so the exclusion leaned on complex days,
+and keeping them with zero trips would have lifted the no-travel share from
+`{python} pct(notravel_now, 2)` to `{python} pct(notravel_if_excluded, 2)`. `load_eod()`
+now drops nothing and fills the lost block in two steps.
 
-**Effect.** `{python} counts["incomplete_persons"]` persons (`{python} pct(excl_p_share, 2)`)
-and `{python} fmt(excl_trips)` trips (`{python} pct(excl_w_share, 2)` of weighted trips)
-leave the tables. No mode share moves by more than `{python} pct(mode_shift, 2)`. The
-excluded average `{python} f"{excl_trips_per_person:.1f}"` trips against
-`{python} f"{all_trips_per_person:.1f}"` overall, so the exclusion leans on complex days.
+*The duplicates first.* A motive-less row that comes from elsewhere into the home zone is a
+return home, and when the row after it is a timed *Regresar a Casa* from home to home, that
+row is the return's own questionnaire block attached to a duplicate. The return takes its
+motive and, where it had none, its time (`motivo:duplicado`, `hora:duplicado`), and the
+duplicate is marked `regreso_duplicado`: `{python} counts["duplicate_returns"]` pairs, the
+last row of every multi-trip block that ends at home (@tbl-ex-multi) plus one timed trip
+with no motive.
 
-**Imputation was tried and rejected.** A prototype merged the `{python} n_merged`
-duplicate returns onto their block, then imputed the remaining `{python} n_still` trips: a
-purpose from the person's own visits to the same zone where one existed
-(`{python} n_inferred`) or *Otros* (`{python} n_otros`), and a start time at the midpoint of
-the window between the neighbouring timed trips (median width
-`{python} fmt(window_median)` minutes; `{python} no_earlier` had no earlier timed trip). It
-recovers half a percent of persons at the price of `{python} n_still` trips with an
-invented purpose and time; those people's days come out roughly
-`{python} pct(imputed_days_o, 0)` "other" against 5% overall. For a scheduler that is a
-worse error than the exclusion.
+*The rest by their nearest neighbours.* Every other row without a motive —
+`{python} counts["motives_from_neighbours"]`, of which `{python} counts["times_from_neighbours"]`
+also lack a time and `{python} n_timed_no_motive` are timed — takes the vote of its 30
+nearest timed activity trips. Distance is a weighted count of mismatches over the main
+mode, the sex and occupation of the traveller, the person's own earlier motive at the same
+destination zone, whether the trip stays in one zone, leaves from home, is followed by a
+return home, is the first of the day, or follows a work or school trip, plus the scaled
+differences in leg minutes, the next trip's start hour and age
+(`eodgdl.eod._IMPUTE_WEIGHTS`). The most common motive among the thirty is written, with the
+most common destination type among the donors that voted for it (`motivo:vecinos`). The
+start time is then counted back from the next trip: its start, less this trip's leg minutes,
+less the median activity duration of those donors, kept between the previous trip's arrival
+and the next trip's start (`hora:vecinos`). Blocks are filled back to front, so every row
+has a timed successor when its turn comes. Returns home never come out of the vote, since
+the donors are activity trips; every untimed row is an activity or a duplicated return, so
+none needs one.
+
+**How well it works.** The matcher can be scored on trips whose answers are known.
+@tbl-score takes `{python} fmt(len(samp))` timed trips of the same shape as the untimed ones
+— from home, followed by a return, not the first of the day, on foot, by car or by bus,
+with the return between 17:00 and 22:00 — hides each person's own trips from the donor
+pool, and compares the vote with the answer. The motive is right about twice as often as
+the most common motive would be, and almost always where the person had already visited
+the zone that day; the start lands a median of `{python} fmt(err_median)` minutes from the
+true one, where the midpoint of the window between the neighbouring trips — what the
+rejected 2026-09-01 prototype used — lands `{python} fmt(mid_median)` away. The vote
+over-produces the most common answer: `{python} pct(pred_share.iloc[0], 0)` of its answers
+are *`{python} pred_share.index[0]`* against `{python} pct(true_share.get(pred_share.index[0], 0), 0)`
+in truth, so the imputed motives are plausible one by one and skewed as a set.
+
+```{python}
+#| label: tbl-score
+#| tbl-cap: "The matcher scored on timed trips of the untimed trips' shape, with the person's own trips withheld from the donor pool."
+show(score_tbl)
+```
+
+**Effect.** `{python} fmt(n_untimed)` trips gain a start time and
+`{python} counts["motives_from_duplicate"] + counts["motives_from_neighbours"]` a motive and
+a destination type; they are `{python} pct(imp_w_share, 2)` of weighted trips. Of the
+`{python} counts["motives_from_neighbours"]` motives the neighbours supplied,
+`{python} int(imputed_motives.iloc[0])` are *`{python} imputed_motives.index[0]`* and
+`{python} int(imputed_motives.iloc[1])` *`{python} imputed_motives.index[1]`* (@tbl-imputed);
+`{python} pct(imputed_evening, 0)` of the imputed start times fall between 17:00 and 19:59,
+just before the evening returns that follow them. The neighbouring times are read as
+shipped, so a mistyped neighbour gives a mistyped imputation, which the search of
+@sec-clock never edits: `{python} imputed_left` imputed rows end up marked
+`hora_invertida`. Every imputed row carries its codes in `ajustes`, so an estimation that
+wants only observed answers can drop them.
+
+```{python}
+#| label: tbl-imputed
+#| tbl-cap: "The motives the nearest-neighbour vote wrote on the rows that had none."
+im = imputed_motives.rename("trips").reset_index(); im.columns = ["motive", "trips"]
+show(im)
+```
 
 ## A return home made while already at home is not a trip {#sec-home}
 
@@ -975,10 +1082,10 @@ In the shipped table, `{python} first_return_from_home` first trips are *Regresa
 leaving from *Su casa*, and `{python} consecutive_returns` trips are a *Regresar a Casa*
 immediately after another. Walking each chain with an at-home flag — set from the first
 trip's origin type, then from each kept trip's motive — flags
-`{python} counts["home_to_home"]` rows after the exclusion and the recode of @sec-mislabel
-(`{python} hh_first` first trips, `{python} len(gone) - hh_first` later ones).
-`{python} hh_home_zone` of them start and end in the home zone and `{python} hh_last` are
-the person's last trip. Their leg minutes usually differ from the return they follow, so
+`{python} counts["home_to_home"]` rows after the imputation of @sec-untimed and the recode
+of @sec-mislabel (`{python} hh_first` first trips, `{python} len(hh_rows) - hh_first` later
+ones). `{python} hh_home_zone` of them start and end in the home zone and `{python} hh_last`
+are the person's last trip. Their leg minutes usually differ from the return they follow, so
 they are not literal duplicates: a within-zone errand coded as "return home" is the
 likeliest reading, and in the model such a row is unschedulable either way.
 
@@ -990,14 +1097,17 @@ show(person_table((5, 1)))
 
 ```{python}
 #| label: tbl-ex-hh2
-#| tbl-cap: "A day made only of returns (household 306, person 6): both rows leave from Su casa for the home zone. After the drop this person has no trips and counts as a non-traveller (@sec-zero)."
+#| tbl-cap: "A day made only of returns (household 306, person 6): both rows leave from Su casa for the home zone. Both are kept and marked; the build sees no trips for this person, who counts as a non-traveller (@sec-zero)."
 show(person_table((306, 6)))
 ```
 
-**Effect.** `{python} counts["home_to_home"]` rows are dropped. No trip in the built table
-goes from H to H (the contract now forbids it, and `validate` checks), and the survey's
-`{python} breaks_raw` zone-continuity breaks fall to `{python} breaks_t2` because
-`{python} breaks_raw - breaks_t2` of the dropped rows were themselves the break.
+**Effect.** `{python} counts["home_to_home"]` rows are kept and marked `regreso_en_casa`;
+with the `{python} counts["duplicate_returns"]` duplicates of @sec-untimed they are the
+`{python} n_non_trips` rows `eodgdl.eod.non_trips` picks out and the builder leaves out. No
+trip in the built table goes from H to H (the contract forbids it, and `validate` checks),
+and the survey's `{python} breaks_raw` zone-continuity breaks fall to `{python} breaks_t2`
+on the chain without them, because `{python} breaks_raw - breaks_t2` of the marked rows were
+themselves the break.
 
 ## A "return home" that did not reach the home zone takes its destination type {#sec-mislabel}
 
@@ -1058,10 +1168,12 @@ before dawn. A chain with no such reading is left as it is.
 show(menu)
 ```
 
-Every edited row is marked in a column `load_eod` adds to the trip table,
-`hora_inicio_ajuste`, with the edit applied, so a consumer can treat those start times as
+Every edited row is marked in the `ajustes` column with the edit applied (`hora:+12h`,
+`hora:-10h`, `hora:+10h`, `hora:-10h+12h`), so a consumer can treat those start times as
 uncertain — which they are: each is the most economical reading of a contradiction, not an
-observation. The search replaced an earlier rule that added 12 hours to a single trip when
+observation. An imputed start time (@sec-untimed) cannot carry a typo and is never edited.
+A chain with no unique reading is left as it is, and the trips in it that still start before
+the previous arrival are marked `hora_invertida` in `problemas`. The search replaced an earlier rule that added 12 hours to a single trip when
 that alone restored the order. It moves `{python} strict_same` of that rule's
 `{python} n_strict` rows identically, reads `{python} strict_contradicted` differently because
 the arrival constraint rules out the 12-hour reading there, and leaves
@@ -1160,8 +1272,10 @@ print("```")
 
 # What remains {#sec-lingering}
 
-Everything below is counted on the cleaned table (`{python} fmt(len(clean.trips))` trips,
-`{python} fmt(n_days)` travellers). None of it has a repair that does not invent data.
+Everything below is counted on the chain `load_eod()` returns once the `{python} n_non_trips`
+marked non-trips are set aside (`{python} fmt(len(C))` trips, `{python} fmt(n_days)`
+travellers). None of it has a repair that does not invent data; what a row carries is in
+its `problemas` column.
 
 ```{python}
 #| label: tbl-lingering
@@ -1257,8 +1371,9 @@ show(person_table(ex_guarderia))
 
 ## People with no trips {#sec-zero}
 
-`{python} n_zero_recoded` people had trips as shipped and have none now, because every
-trip they reported was a return home made from home (@tbl-ex-hh2). They join the
+`{python} n_zero_recoded` people have trip rows, every one of them a return home made from
+home and marked as a non-trip (@tbl-ex-hh2). Nothing is dropped and `viajes_contados` still
+counts those rows, but the build sees no trips for them: they join the
 `{python} fmt(said_yes_no_trips)` who said they left home and reported nothing, and all of
 them look like non-travellers to a model.
 
@@ -1302,8 +1417,9 @@ complex days a little.
   durations must be dropped or floored at the episode level, which loses about
   `{python} pct(neg_ep)` of episodes, biased toward evening returns from work. The
   `{python} fmt(counts["start_times_edited"])` repaired hours are the most economical
-  reading of a contradiction, not observations; `hora_inicio_ajuste` marks them, and an
-  estimation that wants only observed times can drop those rows. The survey reports
+  reading of a contradiction, not observations, and the `{python} fmt(n_untimed)` imputed
+  start times are a neighbour's; `ajustes` marks both, and an estimation that wants only
+  observed times can drop those rows. The survey reports
   `{python} pct(minute_zero, 0)` of minutes as :00, so these distributions are coarse
   regardless.
 - *Home-based tour structure* is what the scheduler assumes. The
@@ -1335,15 +1451,16 @@ weakens any segmentation the scheduler needs.
 | problem | status | recommendation | where |
 |---|---|---|---|
 | chain order vs start-time order | fixed | keep the row order as the sequence: `folio_viaje` is a generated number, but zones and times pin the same order; never re-sort by time or re-sequence tours | done in the contract |
-| untimed trips and their duplicates | fixed | exclude the person-day; do not impute | `load_eod` |
-| returns home made from home | fixed | drop the row | `load_eod` |
+| untimed trips and their duplicates | fixed | impute: the duplicate's answers where one follows, else the nearest timed trips' vote and a start counted back from the next trip; nothing dropped, rows marked `hora:…`, `motivo:…` | `load_eod` |
+| returns home made from home | fixed | keep the row, mark it `regreso_en_casa`; the build leaves it out | `load_eod` |
 | "return home" that did not reach home | fixed | recode from the destination type, zone-guarded | `load_eod` |
-| mistyped start hours | fixed | fewest-edits typo search, unique readings only, edited rows flagged in `hora_inicio_ajuste`; accept the residual | `load_eod` |
+| mistyped start hours | fixed | fewest-edits typo search, unique readings only, edited rows marked `hora:+12h` and so on; the residual marked `hora_invertida` | `load_eod` |
+| knowing what was changed and what is left | fixed | every change on the row in `ajustes`, every defect left in `problemas`; filter with `has_code`, drop non-trips with `non_trips` | `load_eod` |
 | a trip after a return home starting elsewhere | fixed | set the origin to the home zone; the `{python} breaks_clean` breaks left are ambiguous | `load_eod` |
 | residual non-monotone times | open | drop or floor at the episode level in estimation; keep the days for everything else | estimation |
 | days not home-based | open | drop from scheduler estimation; keep for mode choice; decide night shifts explicitly | estimation |
 | Guardería coded as school | open | map to F (escort); stop it setting `StudentStatus` | `mappings.yaml`, one line |
-| zero-trip recodes | open | drop the `{python} n_zero_recoded` people rather than count them as non-travellers | `load_eod` |
+| people whose every row is a marked non-trip | open | drop the `{python} n_zero_recoded` people from estimation rather than count them as non-travellers | estimation |
 | activities typed *Su casa* | open | leave; or treat *Trabajar* at home as work-from-home explicitly | decision |
 | unjoined locality zones | open | attach attributes or map them to the nearest AGEB | zone system |
 | instrument design (tours, one weekday, no durations, ages 6+, income) | inherent | state as limitations of the estimated scheduler; consider a supplementary diary | documentation |
@@ -1356,15 +1473,17 @@ weakens any segmentation the scheduler needs.
 from eodgdl import load_eod, clean_trip_chains, tasha
 
 raw = load_eod(clean_chains=False)          # the survey as shipped
-clean = load_eod()                           # the five rules applied; trips gains hora_inicio_ajuste
-trips, dropped, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs)   # the rules on their own
-od = tasha.build(clean)                      # the model tables
+clean = load_eod()                           # the five rules applied; trips gains ajustes and problemas
+trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)   # the rules on their own
+od = tasha.build(clean)                      # the model tables, without the marked non-trips
 tasha.validate_all(*od)                      # [] — the contract holds
 tasha.chain_report(od.trips)                 # what remains, as counts
 ```
 
-The rules and their evidence are the docstrings of `_drop_incomplete_days`,
-`_recode_returns_by_destination`, `_drop_home_to_home_returns`,
-`_start_from_home_after_return` and `_repair_start_times` in `src/eodgdl/eod.py`; the recode table is
-`_MOTIVO_POR_TIPO_LUGAR_DESTINO` and the edit menu `_START_TIME_EDITS` in the same file. The survey's design is described in
+The rules and their evidence are the docstrings of `_impute_untimed_trips` (with
+`_duplicate_returns` and `_nearest_donors`), `_recode_returns_by_destination`,
+`_home_to_home_returns`, `_start_from_home_after_return` and `_repair_start_times` in
+`src/eodgdl/eod.py`; the recode table is `_MOTIVO_POR_TIPO_LUGAR_DESTINO`, the matcher's
+features `_IMPUTE_WEIGHTS`, the edit menu `_START_TIME_EDITS`, and the flag vocabulary
+`FIX_CODES` and `ISSUE_CODES` in the same file. The survey's design is described in
 `data/Informe_Tecnico_Final_EOD_2023.pdf`, pp. 17–25 and 35–37.

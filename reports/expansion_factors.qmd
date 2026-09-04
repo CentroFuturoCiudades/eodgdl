@@ -63,8 +63,8 @@ def fmt(n) -> str:
 #| label: load
 #| include: false
 
-# The survey as shipped: the weights reconcile to the published totals only before
-# load_eod's chain cleaning, which excludes 281 persons and drops 468 trips.
+# The survey as shipped. load_eod's chain cleaning drops nothing, so the weights reconcile
+# either way; the shipped table is still the reference, since the cleaning imputes and recodes.
 viv, hab, trips, legs = load_eod(clean_chains=False)
 v, h, t = viv.reset_index(), hab.reset_index(), trips.reset_index()
 

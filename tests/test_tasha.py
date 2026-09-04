@@ -202,9 +202,9 @@ def test_build_conforms():
 
     assert tasha.validate_all(*od) == []
     assert len(od.households) == 17_901
-    # load_eod excluded the 281 people whose day has an untimed trip.
-    assert len(od.people) == 58_061 - 281
-    assert len(od.trips) == 153_052
+    # load_eod drops nothing; the build leaves out the 529 rows it marks as non-trips.
+    assert len(od.people) == 58_061
+    assert len(od.trips) == 154_662 - 529
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
@@ -215,7 +215,7 @@ def test_build_conforms():
     # What load_eod's cleaning does not repair is reported, at these levels.
     report = " | ".join(tasha.chain_report(od.trips))
     assert "32 trips (32 people) do not start in the zone" in report
-    assert "838 trips (765 people) start earlier" in report
+    assert "839 trips (766 people) start earlier" in report
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")

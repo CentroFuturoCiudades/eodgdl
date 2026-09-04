@@ -696,9 +696,9 @@ show(blank_tbl)
 The model build reads `{python} len(blank_used)` of these columns. A blank there becomes a
 default code (`EmploymentStatus`, `Occupation`, `PurposeDestination`), a false condition
 (`StudentStatus`; the passenger override on `Mode` treats a missing vehicle role as the
-driver), or never reaches the build (the untimed trips leave with their persons under the
-chain rules before `StartTime` is made). Each mapping's `note` in `mappings.yaml` says
-which.
+driver), or is filled before the build (the untimed trips take a start time and a motive
+from the chain rules before `StartTime` is made; `reports/trip_chains.qmd`). Each
+mapping's `note` in `mappings.yaml` says which.
 
 Three blanks a consumer should know about are not skip logic. `tiene_discapacidad` is
 blank for `{python} pct(hab.tiene_discapacidad.isna().mean(), 0)` of persons of every
