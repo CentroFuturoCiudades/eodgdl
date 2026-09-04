@@ -254,8 +254,11 @@ assert counts == {"untimed_trips": 325, "untimed_persons": 281,
                   "motives_from_duplicate": 38, "motives_from_neighbours": 294,
                   "recoded_returns": 84, "home_to_home": 491, "duplicate_returns": 38,
                   "origins_repaired": 124, "start_times_edited": 2_032, "chains_repaired": 1_552,
-                  "left_hora_invertida": 885, "left_origen_discontinuo": 32,
-                  "left_regreso_sin_llegar": 163, "left_tipo_destino_dudoso": 16}
+                  "left_hora_invertida": 885, "left_hora_nocturna": 93, "left_hora_anterior": 25,
+                  "left_hora_repetida": 101, "left_hora_traslapada": 569, "left_origen_discontinuo": 32,
+                  "left_regreso_sin_llegar": 163, "left_tipo_destino_dudoso": 16,
+                  "left_inicio_fuera_de_casa": 906, "left_inicio_zona_ajena": 639, "left_fin_fuera_de_casa": 514,
+                  "left_actividad_en_casa": 787, "left_motivo_guarderia": 217}
 assert len(clean.trips) == len(cleaned_trips) == n_trips
 assert len(clean.hab) == n_hab
 assert n_non_trips == counts["home_to_home"] + counts["duplicate_returns"]
@@ -609,6 +612,28 @@ flags = pd.DataFrame({
     "Guardería trip": C.motivo_viaje == "Guardería",
     "no motive": C.motivo_viaje.isna(),
 })
+codes_of = {
+    "start before the previous trip": "hora_invertida, hora_nocturna, hora_anterior",
+    "same minute as the previous trip": "hora_repetida; hora_invertida beyond the tolerance",
+    "left before the previous trip could have arrived": "hora_traslapada within the tolerance, hora_invertida beyond it; hora_repetida at the same minute",
+    "in-order return home at 01:00–06:59 (hidden 12-hour entry?)": "none: a suspicion, not a defect",
+    "does not start where the previous trip ended": "origen_discontinuo",
+    "first trip not from 'Su casa'": "inicio_fuera_de_casa",
+    "first trip from 'Su casa' but not from the home zone": "inicio_zona_ajena",
+    "last trip not a return to the home zone": "fin_fuera_de_casa",
+    "activity motive with destination type 'Su casa'": "actividad_en_casa",
+    "Guardería trip": "motivo_guarderia",
+    "no motive": "none left: imputed",
+}
+n_code = {c: int(has_code(C[ISSUE_FLAG], c).sum()) for c in ISSUE_CODES}
+n_anterior, n_repetida, n_traslapada = n_code["hora_anterior"], n_code["hora_repetida"], n_code["hora_traslapada"]
+assert int(night_c.sum()) == n_code["hora_nocturna"]
+assert int(inv_c.sum()) == int((inv_c & c_beyond).sum()) + n_code["hora_nocturna"] + n_anterior
+assert int(ties_c.sum()) == n_repetida + int((ties_c & c_beyond).sum())
+assert int(left_early_c.sum()) == n_traslapada + int(ties_c.sum()) + int((left_early_c & (gap > 0) & c_beyond).sum())
+overlap_c = (C.prev_start + C.prev_leg - C.start).where(has_code(C[ISSUE_FLAG], "hora_traslapada"))
+traslapada_5_10_15 = float(overlap_c.isin([5, 10, 15]).sum() / n_traslapada)
+traslapada_long_leg = int((C.prev_leg[overlap_c.notna()] > 60).sum())
 per_trip = flags.sum()
 per_day = flags.groupby(level=P).any()
 w = clean.hab.ponderador.reindex(per_day.index).astype(float)
@@ -625,6 +650,7 @@ flag_tbl = pd.DataFrame({
     "person-days": per_day.sum().to_numpy(),
     "share of days": (per_day.mean()).to_numpy(),
     "weighted share": [float(w[per_day[c]].sum() / w.sum()) for c in flags.columns],
+    "`problemas` code": [codes_of[c] for c in flags.columns],
 })
 group_share = {g: float(per_day[cols].any(axis=1).mean()) for g, cols in groups.items()}
 buildable = ~per_day[["start before the previous trip", "same minute as the previous trip",
@@ -636,6 +662,8 @@ n_first_not_home = int(per_trip["first trip not from 'Su casa'"])
 n_first_zone_mismatch = int(per_trip["first trip from 'Su casa' but not from the home zone"])
 n_last_not_home = int(per_trip["last trip not a return to the home zone"])
 n_zone_breaks = int(per_trip["does not start where the previous trip ended"])
+assert (n_first_not_home, n_first_zone_mismatch, n_last_not_home, n_zone_breaks) == (
+    n_code["inicio_fuera_de_casa"], n_code["inicio_zona_ajena"], n_code["fin_fuera_de_casa"], n_code["origen_discontinuo"])
 any_share = float(per_day.any(axis=1).mean())
 assert buildable_share > 0.9
 
@@ -708,6 +736,9 @@ def error_masks(T, home_to_home):
         "starts before the previous trip": _b(T.start < T.prev_start),
         "starts before the previous trip could have arrived, beyond the tolerance and not overnight":
             _b((T.prev_start + T.prev_leg - T.start) > tol) & ~wrap,
+        "starts after the previous trip but before it could have arrived, within the tolerance":
+            _b(T.start > T.prev_start) & _b((T.prev_start + T.prev_leg - T.start) > 0)
+            & _b((T.prev_start + T.prev_leg - T.start) <= tol),
         "starts at the same minute as the previous trip": _b(T.start == T.prev_start),
         "first trip from 'Su casa' but not from the home zone":
             (T.pos == 1) & (T.tipo_lugar_origen == HOME) & (T.origen != T.home),
@@ -723,25 +754,59 @@ treatments = {
     "no start time (and no motive)": "start time, motive and type imputed, marked in `ajustes` (@sec-untimed)",
     "return home made while already at home": "kept, marked `regreso_en_casa` in `problemas`; the build leaves it out (@sec-home)",
     "return home whose destination type is not a home":
-        "recoded from the type where the zone agrees (@sec-mislabel); the rest are corroborated by the zone and kept",
-    "return home not reaching the home zone": "recoded where the type says otherwise (@sec-mislabel); the rest left",
-    "does not start where the previous trip ended": "origin set to home after a return home (@sec-origin); the rest left",
-    "starts before the previous trip": "hour repaired where a unique reading exists (@sec-clock); the rest left",
+        "recoded from the type where the zone agrees (@sec-mislabel); the rest are corroborated by the zone, kept and marked `tipo_destino_dudoso`",
+    "return home not reaching the home zone": "recoded where the type says otherwise (@sec-mislabel); the rest marked `regreso_sin_llegar`",
+    "does not start where the previous trip ended": "origin set to home after a return home (@sec-origin); the rest marked `origen_discontinuo`",
+    "starts before the previous trip":
+        "hour repaired where a unique reading exists (@sec-clock); the rest marked `hora_invertida`, or `hora_nocturna` when overnight, or `hora_anterior` when within the tolerance",
     "starts before the previous trip could have arrived, beyond the tolerance and not overnight":
-        "hour repaired where a unique reading exists (@sec-clock); the rest left",
-    "starts at the same minute as the previous trip": "left",
-    "first trip from 'Su casa' but not from the home zone": "left",
-    "first trip not from 'Su casa'": "left",
-    "last trip not a return to the home zone": "left",
-    "activity motive with destination type 'Su casa'": "left (@sec-lingering-purpose)",
-    "Guardería motive, mapped to school": "left (@sec-lingering-purpose)",
+        "hour repaired where a unique reading exists (@sec-clock); the rest marked `hora_invertida`",
+    "starts after the previous trip but before it could have arrived, within the tolerance":
+        "left, marked `hora_traslapada`: the reported leg minutes are rounded and overrun the next start",
+    "starts at the same minute as the previous trip":
+        "left, marked `hora_repetida`, or `hora_invertida` when the previous trip's legs exceed the tolerance",
+    "first trip from 'Su casa' but not from the home zone": "left, marked `inicio_zona_ajena` (@sec-lingering-geo)",
+    "first trip not from 'Su casa'": "left, marked `inicio_fuera_de_casa` (@sec-lingering-geo)",
+    "last trip not a return to the home zone": "left, marked `fin_fuera_de_casa` (@sec-lingering-geo)",
+    "activity motive with destination type 'Su casa'": "left, marked `actividad_en_casa` (@sec-lingering-purpose)",
+    "Guardería motive, mapped to school": "left, marked `motivo_guarderia` (@sec-lingering-purpose)",
     "no motive on a timed trip": "motive and type imputed, marked in `ajustes` (@sec-untimed)",
+}
+# the problemas codes that mark each kind of error left after the rules
+codes_for = {
+    "return home whose destination type is not a home": ["tipo_destino_dudoso"],
+    "return home not reaching the home zone": ["regreso_sin_llegar"],
+    "does not start where the previous trip ended": ["origen_discontinuo"],
+    "starts before the previous trip": ["hora_invertida", "hora_nocturna", "hora_anterior"],
+    "starts before the previous trip could have arrived, beyond the tolerance and not overnight": ["hora_invertida"],
+    "starts after the previous trip but before it could have arrived, within the tolerance": ["hora_traslapada"],
+    "starts at the same minute as the previous trip": ["hora_repetida", "hora_invertida"],
+    "first trip from 'Su casa' but not from the home zone": ["inicio_zona_ajena"],
+    "first trip not from 'Su casa'": ["inicio_fuera_de_casa"],
+    "last trip not a return to the home zone": ["fin_fuera_de_casa"],
+    "activity motive with destination type 'Su casa'": ["actividad_en_casa"],
+    "Guardería motive, mapped to school": ["motivo_guarderia"],
 }
 assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
 masks_R = error_masks(R, pd.Series(_home_to_home_returns(R), index=R.index))
 masks_C = error_masks(C, pd.Series(False, index=C.index))
 counts_R = {k: int(v.sum()) for k, v in masks_R.items()}
 counts_C = {k: int(v.sum()) for k, v in masks_C.items()}
+# after the rules every error left is a code on its row: each kind is covered by the codes named for
+# it (exactly, where one code is its own), the kinds with no code no longer occur, and the trips
+# carrying at least one error are exactly the chain trips with a non-empty problemas
+coded = {c: has_code(C[ISSUE_FLAG], c).to_numpy() for c in ISSUE_CODES}
+for k, codes in codes_for.items():
+    covered = np.logical_or.reduce([coded[c] for c in codes])
+    assert not (masks_C[k].to_numpy() & ~covered).any(), k
+    if len(codes) == 1:
+        assert (masks_C[k].to_numpy() == covered).all(), k
+for k in set(masks_C) - set(codes_for):
+    assert counts_C[k] == 0, k
+flagged_C = (C[ISSUE_FLAG] != "").to_numpy()
+assert (np.logical_or.reduce([v.to_numpy() for v in masks_C.values()]) == flagged_C).all()
+hora_codes = ("hora_invertida", "hora_nocturna", "hora_anterior", "hora_repetida", "hora_traslapada")
+assert (sum(coded[c].astype(int) for c in hora_codes) <= 1).all()      # one time code per row at most
 assert counts_R["no start time (and no motive)"] == n_untimed and counts_C["no start time (and no motive)"] == 0
 assert counts_R["return home whose destination type is not a home"] == n_mis
 assert counts_R["does not start where the previous trip ended"] == breaks_raw
@@ -760,9 +825,11 @@ def md_table(rows, header):
 
 error_rows = [(k, fmt(counts_R[k]), pct(counts_R[k] / n_trips, 2), fmt(counts_C[k]), pct(counts_C[k] / len(C), 2), treatments[k])
               for k in masks_R]
+assert any_C == int(flagged_C.sum())
 error_rows.append(("**trips with at least one of the above**", f"**{fmt(any_R)}**", f"**{pct(any_R / n_trips, 2)}**",
                    f"**{fmt(any_C)}**", f"**{pct(any_C / len(C), 2)}**",
-                   "the union: one trip can carry several errors, so the column does not sum"))
+                   "the union: one trip can carry several errors, so the column does not sum; after the rules, "
+                   "exactly the chain trips with a non-empty `problemas`"))
 flag_vocab = pd.DataFrame(
     [("`ajustes`", f"`{k}`", fmt(fix_counts.get(k, 0)), v) for k, v in FIX_CODES.items()]
     + [("`problemas`", f"`{k}`", fmt(issue_counts.get(k, 0)), v) for k, v in ISSUE_CODES.items()],
@@ -791,7 +858,7 @@ but marks them as non-trips, makes `{python} counts["origins_repaired"]` trips t
 return home start at home, and repairs `{python} fmt(counts["start_times_edited"])` mistyped
 start hours in `{python} fmt(counts["chains_repaired"])` chains. Every change is written to
 the row in a new `ajustes` column and every defect left in a `problemas` column
-(@tbl-flags), so a consumer can keep, filter or weight the
+(@tbl-flags), the residual defects of @sec-lingering included, so a consumer can keep, filter or weight the
 `{python} fmt(n_rows_fixed)` rows that were changed and the `{python} fmt(n_rows_left)`
 that still carry a defect. The model contract states chain order, the validator enforces what
 a builder can guarantee, the builder leaves out the `{python} n_non_trips` marked non-trips,
@@ -937,7 +1004,13 @@ leaves out. Each rule's evidence is also the docstring of its function in `eodgd
 @tbl-errors lists every kind of error this note found, how many trips carried it as
 shipped, and how many still do after the rules; the shares are of the
 `{python} fmt(n_trips)` trips as shipped and of the `{python} fmt(len(C))` in the chain
-`load_eod()` returns once the `{python} n_non_trips` non-trips are set aside.
+`load_eod()` returns once the `{python} n_non_trips` non-trips are set aside. Every error
+left is a code on its row: the last row of @tbl-errors, the trips carrying at least one
+error, is the number of chain trips with a non-empty `problemas`
+(`{python} fmt(any_C)`), and the `{python} fmt(n_rows_left)` rows with one in the full
+table add the `{python} n_non_trips` marked non-trips. A row carries at most one of the
+five `hora_` codes: `hora_invertida` is the contradiction beyond the tolerance, the other
+four are what it does not cover.
 
 ```{python}
 #| label: tbl-flags
@@ -947,7 +1020,7 @@ show(flag_vocab)
 
 ```{python}
 #| label: tbl-errors
-#| tbl-cap: "Every kind of trip error found, before and after the rules. The first seven are what the rules act on; the rest are left for the consumer, and @tbl-lingering gives them as person-days. Errors overlap, so the last row counts trips carrying at least one of them rather than the sum of the column."
+#| tbl-cap: "Every kind of trip error found, before and after the rules; the after column is over the chain without the marked non-trips. The first seven are what the rules act on; the rest are left for the consumer, each under a `problemas` code named in the treatment column, and @tbl-lingering gives them as person-days. Errors overlap, so the last row counts trips carrying at least one of them rather than the sum of the column; after the rules it equals the chain trips with a non-empty `problemas`."
 #| output: asis
 print(md_table(error_rows,
                ["error", "trips as shipped", "share", "trips after `load_eod()`", "share", "treatment"]))
@@ -1274,12 +1347,13 @@ print("```")
 
 Everything below is counted on the chain `load_eod()` returns once the `{python} n_non_trips`
 marked non-trips are set aside (`{python} fmt(len(C))` trips, `{python} fmt(n_days)`
-travellers). None of it has a repair that does not invent data; what a row carries is in
-its `problemas` column.
+travellers). None of it has a repair that does not invent data, and each defect is a code
+in the row's `problemas` column (@tbl-flags), except the early-morning returns of
+@tbl-lingering, a suspicion rather than a defect.
 
 ```{python}
 #| label: tbl-lingering
-#| tbl-cap: "Residual defects, as trips and as the person-days they touch. Weighted share uses the person expansion factor."
+#| tbl-cap: "Residual defects, as trips and as the person-days they touch, with the `problemas` code that marks each. Weighted share uses the person expansion factor."
 ft = flag_tbl.copy()
 ft["share of days"] = ft["share of days"].map(pct); ft["weighted share"] = ft["weighted share"].map(pct)
 show(ft)
@@ -1289,14 +1363,22 @@ show(ft)
 
 `{python} fmt(int(inv_c.sum()))` trips in `{python} fmt(inv_people)` people still start
 before the trip before them: `{python} int(night_c.sum())` look like night shifts (previous
-trip at or after 18:00, this one by 06:00), `{python} int(small_c.sum())` are within 15
-minutes, and the rest have no pattern. `{python} int(ties_c.sum())` trips share a minute
-with their predecessor, and `{python} int(left_early_c.sum())` leave an activity before the
-person could have arrived there. `{python} int(hidden_c.sum())` in-order returns home
-between 01:00 and 06:59 may be 12-hour entries the search cannot see, since they are in
-order. `{python} fmt(c_beyond.sum())` trips still start before the previous trip could have
-arrived by more than the tolerance and are not overnight: chains for which no reading within
-the edit menu and the cost cap exists, or several equally cheap ones.
+trip at or after 18:00, this one by 06:00) and are marked `hora_nocturna`,
+`{python} n_anterior` are within the tolerance of the previous arrival and are marked
+`hora_anterior`, and the rest are among the `{python} fmt(c_beyond.sum())` marked
+`hora_invertida`: trips that still start before the previous trip could have arrived by
+more than the tolerance and are not overnight, chains for which no reading within the edit
+menu and the cost cap exists, or several equally cheap ones. `{python} int(ties_c.sum())`
+trips share a minute with their predecessor, `{python} n_repetida` of them marked
+`hora_repetida` (the rest are `hora_invertida`, since the previous trip's legs exceed the
+tolerance), and `{python} int(left_early_c.sum())` leave an activity before the person
+could have arrived there, which beyond the tolerance is `hora_invertida` again and within it
+is marked `hora_traslapada`: `{python} n_traslapada` trips whose overlap with the previous
+leg sits at exactly 5, 10 or 15 minutes `{python} pct(traslapada_5_10_15, 0)` of the time,
+the rounding of the reported leg minutes, `{python} traslapada_long_leg` of them after a leg
+of more than an hour. `{python} int(hidden_c.sum())` in-order returns home between 01:00 and
+06:59 may be 12-hour entries the search cannot see, since they are in order; they carry no
+code.
 
 ```{python}
 #| label: tbl-ex-lt1
@@ -1318,10 +1400,11 @@ show(person_table((43, 2)))
 
 ## Anchors and geography {#sec-lingering-geo}
 
-`{python} n_first_not_home` days start from somewhere other than *Su casa*, and
-`{python} n_first_zone_mismatch` say *Su casa* but leave from a zone that is not the
-household's. `{python} n_last_not_home` days do not end with a return to the home
-zone. `{python} n_zone_breaks` trips do not start where the previous one ended.
+`{python} n_first_not_home` days start from somewhere other than *Su casa*
+(`inicio_fuera_de_casa`), and `{python} n_first_zone_mismatch` say *Su casa* but leave from
+a zone that is not the household's (`inicio_zona_ajena`). `{python} n_last_not_home` days
+do not end with a return to the home zone (`fin_fuera_de_casa`). `{python} n_zone_breaks`
+trips do not start where the previous one ended (`origen_discontinuo`).
 Second homes, nights spent elsewhere and geocoding slips all look alike here; the
 household zone and the trip zones disagree and nothing says which is right.
 `{python} pct(same_zone_share, 0)` of trips start and end in the same AGEB, which is
@@ -1336,9 +1419,9 @@ show(person_table((85, 2)))
 ## Purposes {#sec-lingering-purpose}
 
 `{python} fmt(len(su_casa_act))` trips carry an activity motive but a destination type of
-*Su casa*, `{python} fmt(su_casa_home)` of them landing in the home zone: work from home,
-or a return mislabelled the other way round. This is the mirror image of @sec-mislabel and
-is not handled.
+*Su casa* (`actividad_en_casa`), `{python} fmt(su_casa_home)` of them landing in the home
+zone: work from home, or a return mislabelled the other way round. This is the mirror image
+of @sec-mislabel and is marked, not handled.
 
 ```{python}
 #| label: tbl-su-casa
@@ -1355,7 +1438,7 @@ The person in @tbl-ex-sucasa is `{python} label(ex_su_casa_work)`.
 show(person_table(ex_su_casa_work))
 ```
 
-`{python} len(guard)` *Guardería* trips map to the school purpose. Only
+`{python} len(guard)` *Guardería* trips (`motivo_guarderia`) map to the school purpose. Only
 `{python} guard_children` of the people making them are under 12; `{python} guard_adults`
 are adults, most likely escorting a child. In the built tables such an adult gains a school
 episode and, through the "made a school trip" rule, a `StudentStatus` of S:
@@ -1457,11 +1540,11 @@ weakens any segmentation the scheduler needs.
 | mistyped start hours | fixed | fewest-edits typo search, unique readings only, edited rows marked `hora:+12h` and so on; the residual marked `hora_invertida` | `load_eod` |
 | knowing what was changed and what is left | fixed | every change on the row in `ajustes`, every defect left in `problemas`; filter with `has_code`, drop non-trips with `non_trips` | `load_eod` |
 | a trip after a return home starting elsewhere | fixed | set the origin to the home zone; the `{python} breaks_clean` breaks left are ambiguous | `load_eod` |
-| residual non-monotone times | open | drop or floor at the episode level in estimation; keep the days for everything else | estimation |
-| days not home-based | open | drop from scheduler estimation; keep for mode choice; decide night shifts explicitly | estimation |
-| Guardería coded as school | open | map to F (escort); stop it setting `StudentStatus` | `mappings.yaml`, one line |
+| residual non-monotone times | open | drop or floor at the episode level in estimation; keep the days for everything else; the rows are marked `hora_invertida`, `hora_nocturna`, `hora_anterior`, `hora_repetida` or `hora_traslapada` | estimation |
+| days not home-based | open | drop from scheduler estimation; keep for mode choice; decide night shifts explicitly; the days are marked `inicio_fuera_de_casa`, `inicio_zona_ajena` or `fin_fuera_de_casa`, the night shifts `hora_nocturna` | estimation |
+| Guardería coded as school | open | map to F (escort); stop it setting `StudentStatus`; the trips are marked `motivo_guarderia` | `mappings.yaml`, one line |
 | people whose every row is a marked non-trip | open | drop the `{python} n_zero_recoded` people from estimation rather than count them as non-travellers | estimation |
-| activities typed *Su casa* | open | leave; or treat *Trabajar* at home as work-from-home explicitly | decision |
+| activities typed *Su casa* | open | marked `actividad_en_casa`; leave, or treat *Trabajar* at home as work-from-home explicitly | decision |
 | unjoined locality zones | open | attach attributes or map them to the nearest AGEB | zone system |
 | instrument design (tours, one weekday, no durations, ages 6+, income) | inherent | state as limitations of the estimated scheduler; consider a supplementary diary | documentation |
 

@@ -168,13 +168,13 @@ def test_start_hours_are_repaired_by_the_fewest_typo_edits():
     issues = cleaned.problemas.groupby(level="folio_habitante").apply(list)
     assert hours[1] == [8, 17] and fixes[1] == ["", "hora:+12h"]
     assert hours[2] == [8, 17, 18, 21]
-    assert hours[3] == [19, 1] and fixes[3] == ["", ""] and issues[3] == ["", ""]
-    assert hours[4] == [8, 7, 13, 14] and issues[4] == ["", "hora_invertida", "", ""]   # left, and said so
+    assert hours[3] == [19, 1] and fixes[3] == ["", ""] and issues[3] == ["", "hora_nocturna"]   # left, and said so
+    assert hours[4] == [8, 7, 13, 14] and issues[4] == ["", "hora_invertida", "", ""]
     assert hours[5] == [7, 7, 9, 16] and fixes[5] == ["", "", "hora:-10h", ""]
-    assert hours[6] == [14, 13] and issues[6] == ["", ""]
+    assert hours[6] == [14, 13] and issues[6] == ["", "hora_anterior"]
     assert hours[7] == [11, 18, 18, 18] and fixes[7] == ["", "hora:+10h", "", ""]
     assert counts["start_times_edited"] == 6 and counts["chains_repaired"] == 4
-    assert counts["left_hora_invertida"] == 1
+    assert counts["left_hora_invertida"] == 1 and counts["left_hora_nocturna"] == 1 and counts["left_hora_anterior"] == 1
 
 
 def test_a_trip_cannot_start_before_the_previous_one_arrived():
@@ -204,6 +204,36 @@ def test_start_hour_search_declines_ambiguous_and_manufactured_readings():
     assert (cleaned.hora_inicio_h >= 5).all()
 
 
+def test_every_residual_defect_is_a_code():
+    trips = _trips([
+        (1, 8, 0, "Trabajar"), (1, 17, 0, "Regresar a Casa"),                                   # clean
+        (2, 8, 0, "Trabajar"), (2, 17, 0, "Regresar a Casa"),                                   # the day starts at a shop
+        (3, 8, 0, "Trabajar"), (3, 17, 0, "Regresar a Casa"),                                   # ...or at 'Su casa' in another zone
+        (4, 8, 0, "Trabajar"), (4, 12, 0, "Regresar a Casa"), (4, 13, 0, "Compras (comida)"),   # ...or ends away from home
+        (5, 8, 0, "Trabajar", "Su casa", AGEB), (5, 17, 0, "Compras (comida)"), (5, 18, 0, "Regresar a Casa"),   # work at home
+        (6, 8, 0, "Guardería"), (6, 8, 0, "Regresar a Casa"),                                   # an escort, back the same minute
+        (7, 8, 0, "Trabajar", None, None, 30), (7, 8, 0, "Regresar a Casa", None, None, 30),    # the same minute after a 30-minute leg...
+        (7, 13, 0, "Compras (comida)"), (7, 14, 0, "Regresar a Casa"),                          # ...with no reading within the cost cap
+        (8, 8, 0, "Trabajar", None, None, 30), (8, 8, 20, "Regresar a Casa", None, None, 30),   # back ten minutes before the leg ends
+    ])
+    trips.loc[trips.index.get_level_values("folio_habitante") == 2, "tipo_lugar_origen"] = SHOP
+    trips.loc[(1, 3, 1), "origen"] = ELSEWHERE
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    issues = cleaned.problemas.groupby(level="folio_habitante").apply(list)
+    assert issues[1] == ["", ""]
+    assert issues[2] == ["inicio_fuera_de_casa", ""]
+    assert issues[3] == ["inicio_zona_ajena", ""]
+    assert issues[4] == ["", "", "fin_fuera_de_casa"]
+    assert issues[5] == ["actividad_en_casa", "", ""]
+    assert issues[6] == ["motivo_guarderia", "hora_repetida"]
+    assert issues[7] == ["", "hora_invertida", "", ""]          # one time code per row: the severe one
+    assert issues[8] == ["", "hora_traslapada"]                 # within the tolerance: rounding, not repaired
+    assert (cleaned.ajustes == "").all() and not non_trips(cleaned).any()
+    assert {k: v for k, v in counts.items() if k.startswith("left_") and v} == {
+        "left_hora_invertida": 1, "left_hora_repetida": 1, "left_hora_traslapada": 1, "left_inicio_fuera_de_casa": 1,
+        "left_inicio_zona_ajena": 1, "left_fin_fuera_de_casa": 1, "left_actividad_en_casa": 1, "left_motivo_guarderia": 1}
+
+
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_load_eod_cleans_the_chains_and_drops_nothing():
     viv, hab, trips, legs = load_eod(DATA_DIR)
@@ -216,6 +246,15 @@ def test_load_eod_cleans_the_chains_and_drops_nothing():
     assert has_code(trips.ajustes, "hora:duplicado").sum() == 37 and has_code(trips.ajustes, "hora:vecinos").sum() == 288
     assert has_code(trips.ajustes, "motivo:vecinos").sum() == 294 and has_code(trips.ajustes, "motivo:duplicado").sum() == 38
     assert non_trips(trips).sum() == 529
+    # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
+    assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
+        "regreso_en_casa": 491, "regreso_duplicado": 38, "hora_invertida": 885, "hora_nocturna": 93,
+        "hora_anterior": 25, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
+        "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 639,
+        "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217}
+    hora = sum(has_code(trips.problemas, c)
+               for c in ("hora_invertida", "hora_nocturna", "hora_anterior", "hora_repetida", "hora_traslapada"))
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_660 + 529
     # hab and trips stay in step: nothing left, so the shipped count holds and the legs follow the trips
     counted = trips.groupby(level=PERSON).size()
     assert (hab.viajes_contados == counted.reindex(hab.index).fillna(0)).all()

@@ -217,7 +217,11 @@ rather than about one column's coding, so nothing surfaces them automatically.
   (`tasha.chain_report`): 839 trips in 766 people still start before the
   trip before them, 885 start before the previous trip could have arrived by
   more than the 15-minute tolerance, and 32 trips do not start where the
-  previous one ended; `trips.problemas` marks each. Two follow-ups were
+  previous one ended; `trips.problemas` marks each, and since 2026-09-04
+  every other residual defect too — overnight wraps, same-minute starts,
+  days that start or end away from home, activities typed `Su casa`,
+  `Guardería` (`eodgdl.eod.ISSUE_CODES`) — so the trips with a defect are
+  exactly the rows with a non-empty `problemas`. Two follow-ups were
   tried the same day: recoding the `Regresar a Casa` trips whose
   `tipo_lugar_destino` says the place was not a home is now a survey-level
   recode in `load_eod`, guarded by the zone (84 trips); and the untimed

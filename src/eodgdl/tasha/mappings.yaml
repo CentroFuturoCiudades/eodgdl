@@ -343,8 +343,12 @@ trips:
       consumer that wants to treat them as uncertain has the flag, though
       this column does not carry it. 885 trips still start before the
       previous trip could have arrived by more than the tolerance and are
-      marked hora_invertida in trips.problemas; they are kept and
-      tasha.chain_report counts them on every build. The rules, their
+      marked hora_invertida in trips.problemas; 93 overnight wraps
+      (hora_nocturna), 25 inversions within the tolerance (hora_anterior),
+      101 same-minute starts (hora_repetida) and 569 starts inside the
+      previous trip's rounded leg minutes (hora_traslapada) are marked too,
+      one time code per row at most; they are all kept and tasha.chain_report
+      counts them on every build. The rules, their
       evidence and the rejected alternatives — dropping those people,
       re-sequencing tours — are documented in eodgdl.eod. The builder refuses
       a trip table with untimed rows rather than guess.
@@ -451,7 +455,10 @@ trips:
       becomes C.
     note: >-
       LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
-      all collapse into O. Guardería (217) is placed with school. 7 trips have
+      all collapse into O. Guardería (217) is placed with school, and load_eod
+      marks those trips motivo_guarderia in trips.problemas since most are an
+      adult escorting a child; the 787 activity trips typed 'Su casa' carry
+      actividad_en_casa there. 7 trips have
       no motivo_viaje and fall to the default O. Two of load_eod's chain rules
       shape this column upstream (eodgdl.eod): 84 'Regresar a Casa' trips
       whose destination zone is not the household's already carry the motive

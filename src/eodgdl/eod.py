@@ -187,8 +187,24 @@ ISSUE_CODES = {
                           "destination type gives nothing to recode from",
     "tipo_destino_dudoso": "a 'Regresar a Casa' that reached the home zone but reports a destination type "
                            "that is not a home; the motive is kept",
+    "hora_nocturna": "starts by 06:00 after a trip that started at or after 18:00: read as overnight and "
+                     "left alone; a night shift or a mistyped hour, nothing says which",
+    "hora_anterior": "starts before the previous trip's start but within the tolerance of its arrival, so "
+                     "not repaired: minute noise",
+    "hora_repetida": "starts at the same minute as the previous trip, whose legs fit within the tolerance "
+                     "(beyond it the row is hora_invertida instead)",
+    "hora_traslapada": "starts after the previous trip's start but before its reported arrival, by no more "
+                       "than the tolerance: the leg minutes overrun the next start; rounding, not an hour error",
+    "inicio_fuera_de_casa": "the day's first trip does not leave from 'Su casa'",
+    "inicio_zona_ajena": "the day's first trip leaves from 'Su casa' but not from the household's zone; "
+                         "the two disagree and nothing says which is right",
+    "fin_fuera_de_casa": "the day's last trip is not a 'Regresar a Casa' that reaches the household's zone",
+    "actividad_en_casa": "an activity motive with destination type 'Su casa': work from home, or a return "
+                         "home mislabelled the other way round",
+    "motivo_guarderia": "a 'Guardería' motive, which the model maps to school; most are adults escorting a child",
 }
 NON_TRIP_ISSUES = ("regreso_en_casa", "regreso_duplicado")   # rows kept in trips that are not trips
+# The five hora_* codes are mutually exclusive: a row carries at most one of them.
 
 # Nearest-neighbour imputation of the lost questionnaire block (motive,
 # destination type, start time). A target's distance to a donor is the sum of
@@ -685,8 +701,35 @@ def _repair_start_times(
 
 
 def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame | None) -> dict[str, np.ndarray]:
-    """What is still wrong with each trip of a chain after the rules, one mask per ``ISSUE_CODES`` entry it can produce."""
+    """What is still wrong with each trip of a chain after the rules, one mask per ``ISSUE_CODES`` entry it can produce.
+
+    Runs over the chain without its non-trips, so "first", "last" and
+    "previous" are read over the trips the model build sees. Every kind of
+    error the chain diagnosis (``reports/trip_chains.qmd``) found and the
+    rules do not repair is a code here, so the trips carrying at least one
+    error are exactly the trips with a non-empty ``problemas``; nothing is
+    repaired, since none of these has a repair that does not invent data. On
+    the shipped survey, after the rules: 885 ``hora_invertida``, 93
+    ``hora_nocturna``, 25 ``hora_anterior``, 101 ``hora_repetida`` and 569
+    ``hora_traslapada`` (one time code per row at most: the mild codes are
+    what ``hora_invertida`` does not cover; the overlaps within the tolerance
+    spike at 5, 10 and 15 minutes, the rounding of the reported leg minutes,
+    and 221 of them follow a leg of more than an hour), 32
+    ``origen_discontinuo``, 163 ``regreso_sin_llegar``,
+    16 ``tipo_destino_dudoso``; 906 days start from somewhere other than 'Su
+    casa' (``inicio_fuera_de_casa``), 639 from 'Su casa' in a zone that is
+    not the household's (``inicio_zona_ajena``) and 514 do not end with a
+    return to the home zone (``fin_fuera_de_casa``) — second homes, nights
+    spent elsewhere and geocoding slips all look alike here; 787 activity
+    trips end at 'Su casa' (``actividad_en_casa``), 705 of them in the home
+    zone, the mirror image of the returns ``_recode_returns_by_destination``
+    recodes; and 217 trips carry the 'Guardería' motive
+    (``motivo_guarderia``), most made by adults escorting a child, which the
+    model reads as a school trip.
+    """
     pid = _person_ids(trips)
+    first = np.r_[True, pid[1:] != pid[:-1]]
+    last = np.r_[pid[1:] != pid[:-1], True]
     start = _start_minutes(trips)
     travel = _leg_minutes(trips, legs)
     prev_start = _shift(start, pid, 1).astype(float)
@@ -696,14 +739,28 @@ def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame 
     has_prev = pd.notna(prev_dest)
     is_return = (trips.motivo_viaje == HOME_MOTIVE).to_numpy()
     kind = trips.tipo_lugar_destino
+    origin_kind = trips.tipo_lugar_origen.astype(str).to_numpy()
+    from_home = origin_kind == HOME_PLACE
     with np.errstate(invalid="ignore"):
-        wrap = (prev_start >= 18 * 60) & (start <= 6 * 60)
+        wrap = has_prev & (prev_start >= 18 * 60) & (start <= 6 * 60)
         inverted = has_prev & (start < prev_arrival - _START_TIME_TOLERANCE) & ~wrap
+        earlier = has_prev & (start < prev_start) & ~inverted & ~wrap
+        same_minute = has_prev & (start == prev_start) & ~inverted
+        overlapped = has_prev & (start > prev_start) & (start < prev_arrival) & ~inverted
     return {
         "hora_invertida": inverted,
+        "hora_nocturna": wrap,
+        "hora_anterior": earlier,
+        "hora_repetida": same_minute,
+        "hora_traslapada": overlapped,
         "origen_discontinuo": has_prev & (origin != prev_dest.astype(str)),
         "regreso_sin_llegar": is_return & (dest != home),
         "tipo_destino_dudoso": is_return & (dest == home) & kind.notna().to_numpy() & (kind != HOME_PLACE).to_numpy(),
+        "inicio_fuera_de_casa": first & ~from_home,
+        "inicio_zona_ajena": first & from_home & (origin != home),
+        "fin_fuera_de_casa": last & ~(is_return & (dest == home)),
+        "actividad_en_casa": ~is_return & (kind == HOME_PLACE).to_numpy(),
+        "motivo_guarderia": (trips.motivo_viaje == "Guardería").to_numpy(),
     }
 
 
@@ -722,12 +779,14 @@ def clean_trip_chains(
     follows or from the nearest timed trips; recode the 'Regresar a Casa'
     trips that did not reach the household's zone from their destination
     type; mark the returns home made while already at home as non-trips; make
-    a trip that follows a return home start in the home zone; repair mistyped
+    trip that follows a return home start in the home zone; repair mistyped
     start hours with the fewest edits that let every trip start after the
-    previous one arrived. The order matters: the recode reads the imputed
-    motives, the at-home walk reads the recoded ones, and the last two rules
-    run over the chain without its non-trips. Each rule's evidence is in its
-    docstring. ``viv`` supplies the household zone (``ageb``); ``hab`` the
+    previous one arrived; then mark every defect left — start times, anchors,
+    zones and purposes (``_remaining_issues``) — so that the trips carrying
+    an error are exactly the trips with a non-empty ``problemas``. The order
+    matters: the recode reads the imputed motives, the at-home walk reads the
+    recoded ones, and the last two rules and the marking run over the chain
+    without its non-trips. Each rule's evidence is in its docstring. ``viv`` supplies the household zone (``ageb``); ``hab`` the
     person features of the imputation (age, sex, occupation; skipped when
     None); ``legs`` the travel minutes when the table no longer carries the
     traslado columns.
