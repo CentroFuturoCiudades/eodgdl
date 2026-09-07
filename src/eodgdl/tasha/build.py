@@ -7,10 +7,10 @@ work/school zone lookups — is implemented below, and the prose is its spec.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.eod.clean_trip_chains`` (untimed trips imputed, mislabelled returns
-recoded, mistyped start hours repaired, and nothing dropped). The rows that
-cleaning marks as not being trips — returns home made while already at home,
-and the home-to-home rows that duplicate an untimed return — stay in
-``trips`` under ``problemas`` and the builder leaves them out, since the
+recoded, mistyped start hours repaired, the 38 home-to-home rows that
+duplicate an untimed return dropped). The rows that cleaning marks as not
+being trips — returns home made while already at home — stay in ``trips``
+under ``problemas`` and the builder leaves them out, since the
 contract forbids a trip from H to H. The builder refuses a trip table with
 untimed rows rather than guess at them.
 

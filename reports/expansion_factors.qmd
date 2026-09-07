@@ -63,8 +63,8 @@ def fmt(n) -> str:
 #| label: load
 #| include: false
 
-# The survey as shipped. load_eod's chain cleaning drops nothing, so the weights reconcile
-# either way; the shipped table is still the reference, since the cleaning imputes and recodes.
+# The survey as shipped: the reference for the weights. load_eod's chain cleaning imputes,
+# recodes and drops the 38 duplicate returns, so the cleaned table is short their weight.
 viv, hab, trips, legs = load_eod(clean_chains=False)
 v, h, t = viv.reset_index(), hab.reset_index(), trips.reset_index()
 

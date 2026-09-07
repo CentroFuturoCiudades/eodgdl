@@ -44,13 +44,13 @@ eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
-`eodgdl.eod.clean_trip_chains` with nothing dropped — the 325 untimed trips
+`eodgdl.eod.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
 imputed, 84 mislabelled returns recoded, 124 trips after a return home made
 to start at home, 2,032 mistyped start hours repaired — and refuses a trip
 table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
-non-trips there (491 returns home made while already at home and 38
-duplicates of an untimed return, `eodgdl.eod.non_trips`), since the contract
+non-trips there (491 returns home made while already at home,
+`eodgdl.eod.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
 another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: a
@@ -227,7 +227,8 @@ rather than about one column's coding, so nothing surfaces them automatically.
   recode in `load_eod`, guarded by the zone (84 trips); and the untimed
   trips, whose person-days were excluded until 2026-09-03, are now imputed
   from the duplicate return that follows them or from their nearest timed
-  trips, so nothing is dropped — the held-out scores are in
+  trips, and only the duplicate row that carried a return's answers is
+  dropped — the held-out scores are in
   `eodgdl.eod._impute_untimed_trips`.
 
 - **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s

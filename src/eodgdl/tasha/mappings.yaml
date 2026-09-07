@@ -310,8 +310,9 @@ trips:
     derivation: >-
       Position in the chain, in folio_viaje order, renumbered 1..n over the
       rows the builder leaves out: those load_eod marks as non-trips in
-      trips.problemas (a return home made while already at home, and the
-      home-to-home row that duplicates an untimed return).
+      trips.problemas (a return home made while already at home; the
+      home-to-home row that duplicates an untimed return is dropped by
+      load_eod itself).
     note: >-
       The row order is the chain. folio_viaje itself is a generated sequence
       number with no information of its own, but the zones and the times pin

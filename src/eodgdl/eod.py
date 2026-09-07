@@ -152,7 +152,8 @@ def clean_eod(df: pd.DataFrame, level: str) -> pd.DataFrame:
 # of the inversions and misreads night shifts, so the row order is kept and the
 # times are repaired instead, where a unique cheapest reading exists. The rules
 # below impute what the questionnaire lost, repair what the chain itself
-# implies, and drop nothing: every change is written to the row's FIX_FLAG
+# implies, and drop only the 38 home-to-home rows that duplicate an imputed
+# return: every change is written to the row's FIX_FLAG
 # column and everything left wrong to its ISSUE_FLAG column, so a consumer can
 # keep, filter or weight the rows as it sees fit (eodgdl.tasha.build leaves out
 # the rows marked as not being trips; tasha.chain_report counts the rest).
@@ -164,10 +165,12 @@ ISSUE_FLAG = "problemas"   # column load_eod adds to trips: what is still wrong 
 # where the value came from (fixes) or the defect left (issues); the docstring
 # of the rule that writes it is the evidence.
 FIX_CODES = {
-    "hora:duplicado": "start time taken from the home-to-home return that repeats this untimed return",
+    "hora:duplicado": "start time taken from the home-to-home return that repeats this untimed return; "
+                      "that duplicate row is dropped",
     "hora:vecinos": "start time imputed from the nearest timed trips: the next trip's start less this "
                     "trip's leg minutes and the donors' median activity duration",
-    "motivo:duplicado": "motive and destination type taken from the home-to-home return that repeats this row",
+    "motivo:duplicado": "motive and destination type taken from the home-to-home return that repeats this row; "
+                        "that duplicate row is dropped",
     "motivo:vecinos": "motive and destination type imputed from the nearest timed trips",
     "motivo:tipo_destino": "a 'Regresar a Casa' that did not reach the home zone, recoded from its destination type",
     "origen:casa": "origin set to the home zone: the previous trip was a return home that reached it",
@@ -178,8 +181,6 @@ FIX_CODES = {
 }
 ISSUE_CODES = {
     "regreso_en_casa": "a 'Regresar a Casa' made while already at home: not a trip; the model build leaves it out",
-    "regreso_duplicado": "a home-to-home 'Regresar a Casa' repeating the untimed return before it, whose "
-                         "time and motive it carried: not a trip; the model build leaves it out",
     "hora_invertida": "starts before the previous trip could have arrived, beyond the tolerance and not "
                       "overnight, and no unique repair exists",
     "origen_discontinuo": "does not start in the zone the previous trip ended in; either side could be wrong",
@@ -203,7 +204,7 @@ ISSUE_CODES = {
                          "home mislabelled the other way round",
     "motivo_guarderia": "a 'Guardería' motive, which the model maps to school; most are adults escorting a child",
 }
-NON_TRIP_ISSUES = ("regreso_en_casa", "regreso_duplicado")   # rows kept in trips that are not trips
+NON_TRIP_ISSUES = ("regreso_en_casa",)   # rows kept in trips that are not trips
 # The five hora_* codes are mutually exclusive: a row carries at most one of them.
 
 # Nearest-neighbour imputation of the lost questionnaire block (motive,
@@ -345,6 +346,29 @@ def _trip_features(trips: pd.DataFrame, home: np.ndarray, hab: pd.DataFrame | No
     return f
 
 
+def _donor_mask(f: pd.DataFrame) -> np.ndarray:
+    """The rows of a ``_trip_features`` table that may donate: timed activity trips whose times hold up.
+
+    A donor needs a timed successor, since its activity duration — the next
+    start less its own start and leg minutes — is what the vote's median
+    places an imputed start with. It must also be consistent on the face of
+    the shipped times: a duration of at least zero, and a start no earlier
+    than the previous trip's arrival less ``_START_TIME_TOLERANCE``. The
+    imputation runs before the typo search, so a mistyped hour on the donor
+    or on the trip after it would otherwise enter the vote as shipped: on
+    the survey 2,407 of the 78,658 candidate activity trips have a negative
+    duration (median 164 minutes, the 12-hour-clock and leading-1 typos the
+    search later repairs on 1,210 of them and marks on the rest), and the
+    filter leaves them out along with the trips that start before their
+    predecessor could have arrived.
+    """
+    start, next_start, prev_arrival = f.start.to_numpy(), f.next_start.to_numpy(), f.prev_arrival.to_numpy()
+    with np.errstate(invalid="ignore"):
+        duration_ok = (next_start - start - f.legmin.to_numpy()) >= 0
+        start_ok = np.isnan(prev_arrival) | (start >= prev_arrival - _START_TIME_TOLERANCE)
+    return f.activity.to_numpy() & ~np.isnan(start) & ~np.isnan(next_start) & duration_ok & start_ok
+
+
 def _nearest_donors(targets: pd.DataFrame, donors: pd.DataFrame, k: int = _IMPUTE_NEIGHBOURS) -> pd.DataFrame:
     """The k nearest donors' vote for every target row: motive, type, activity duration, start.
 
@@ -392,19 +416,22 @@ def _impute_untimed_trips(
     are real trips whose questionnaire block was not captured (71% in April
     2023, the last month of fieldwork). None is a person's last trip, and 281
     persons hold them in 284 blocks. Seven more trips are timed but have no
-    motive. Nothing is dropped; the lost answers are imputed in two steps and
-    every imputed row is marked in the ``ajustes`` column.
+    motive. The lost answers are imputed in two steps and every imputed row
+    is marked in the ``ajustes`` column; the 38 duplicate rows of the first
+    step are the only rows ``clean_trip_chains`` drops.
 
     First, the 38 motive-less returns home — a row from elsewhere into the
     home zone, 37 of them untimed — whose next row is a timed 'Regresar a
     Casa' from home to home take that row's motive and, where missing, its
     time (``motivo:duplicado``, ``hora:duplicado``): it is the return's own
-    questionnaire block attached to a duplicate, and the duplicate is marked
-    ``regreso_duplicado`` (see ``_duplicate_returns``).
+    questionnaire block attached to a duplicate, and once every rule has run
+    the duplicate is dropped (see ``_duplicate_returns``): its answers now
+    sit on the return, and the person was already home.
 
     Second, every remaining row without a motive takes the vote of its 30
-    nearest timed activity trips (``_nearest_donors``, features in
-    ``_IMPUTE_WEIGHTS``): the most common motive and, among those donors, the
+    nearest timed activity trips whose own times hold up (``_donor_mask``,
+    ``_nearest_donors``, features in ``_IMPUTE_WEIGHTS``): the most common
+    motive and, among those donors, the
     most common destination type (``motivo:vecinos``). A row without a start
     time is then placed back from the next trip: its start is the next trip's
     start less its own leg minutes less the donors' median activity duration,
@@ -462,7 +489,7 @@ def _impute_untimed_trips(
         ready = pending & ~next_untimed
         if not ready.any():
             ready = pending
-        donors = f[f.activity & ~np.isnan(f.start.to_numpy()) & ~np.isnan(f.next_start.to_numpy())]
+        donors = f[_donor_mask(f)]
         if donors.empty:
             raise ValueError("no timed activity trips to impute from")
         vote = _nearest_donors(f[ready], donors)
@@ -772,7 +799,7 @@ def _home_zone(trips: pd.DataFrame, viv: pd.DataFrame) -> np.ndarray:
 def clean_trip_chains(
     trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None, hab: pd.DataFrame | None = None
 ) -> tuple[pd.DataFrame, dict]:
-    """Apply the chain rules to a trip table in row (folio_viaje) order; drop nothing, flag everything.
+    """Apply the chain rules to a trip table in row (folio_viaje) order; flag everything, drop only the duplicate returns.
 
     In order: impute the start time, motive and destination type of the trips
     that lost their questionnaire block, from the duplicate return that
@@ -791,14 +818,15 @@ def clean_trip_chains(
     None); ``legs`` the travel minutes when the table no longer carries the
     traslado columns.
 
-    Returns the trips — every row kept, ``folio_viaje`` untouched — with two
-    columns added: ``ajustes`` names what changed on the row and ``problemas``
+    Returns the trips — every row kept except the home-to-home returns that
+    duplicate an imputed return, ``folio_viaje`` untouched, so it has a gap
+    where a duplicate sat — with two columns added: ``ajustes`` names what changed on the row and ``problemas``
     what is still wrong with it, ';'-joined codes from ``FIX_CODES`` and
     ``ISSUE_CODES``, "" where nothing — and a dict of counts: ``untimed_trips``,
     ``untimed_persons``, ``times_from_duplicate``, ``times_from_neighbours``,
     ``motives_from_duplicate``, ``motives_from_neighbours``,
-    ``recoded_returns``, ``home_to_home``, ``duplicate_returns``,
-    ``origins_repaired``, ``start_times_edited``, ``chains_repaired``, and
+    ``recoded_returns``, ``home_to_home``, ``duplicate_returns`` (the rows
+    dropped), ``origins_repaired``, ``start_times_edited``, ``chains_repaired``, and
     one ``left_<code>`` entry per issue left.
     """
     trips = trips.sort_index()
@@ -812,7 +840,6 @@ def clean_trip_chains(
     for key, code in (("time_from_duplicate", "hora:duplicado"), ("motive_from_duplicate", "motivo:duplicado"),
                       ("time_from_neighbours", "hora:vecinos"), ("motive_from_neighbours", "motivo:vecinos")):
         _add_code(fixes, imputed[key], code)
-    _add_code(issues, imputed["duplicate"], "regreso_duplicado")
 
     trips, recoded = _recode_returns_by_destination(trips, home)
     _add_code(fixes, recoded, "motivo:tipo_destino")
@@ -834,12 +861,15 @@ def clean_trip_chains(
     left = _remaining_issues(chain, home[is_trip], legs)
     for code, mask in left.items():
         _add_code(issues, _expand(mask, where, n), code)
-    trips[FIX_FLAG] = fixes
-    trips[ISSUE_FLAG] = issues
+    untimed_persons = int(trips.index[untimed].droplevel("folio_viaje").nunique())
+    keep = ~imputed["duplicate"]            # the duplicates' answers now sit on the returns they repeat
+    trips = trips[keep].copy()
+    trips[FIX_FLAG] = fixes[keep]
+    trips[ISSUE_FLAG] = issues[keep]
 
     counts = {
         "untimed_trips": int(untimed.sum()),
-        "untimed_persons": int(trips.index[untimed].droplevel("folio_viaje").nunique()),
+        "untimed_persons": untimed_persons,
         "times_from_duplicate": int(imputed["time_from_duplicate"].sum()),
         "times_from_neighbours": int(imputed["time_from_neighbours"].sum()),
         "motives_from_duplicate": int(imputed["motive_from_duplicate"].sum()),
@@ -974,21 +1004,24 @@ def load_eod(
     With no argument the three master CSVs are fetched from the data mirror (and cached);
     pass ``eod_path`` (or set ``$EODGDL_DATA_DIR``) to read them from a local directory.
 
-    By default the trip chains are cleaned (:func:`clean_trip_chains`) and
-    nothing is dropped: the 325 trips with no start time (and no motive) are
-    imputed — 37 from the home-to-home return that duplicates them, the rest
-    from their nearest timed trips — as are the 7 timed trips with no motive;
-    84 mislabelled 'Regresar a Casa' trips take their destination type's
-    motive; 491 returns home made from home and the 38 duplicates are kept
-    and marked as non-trips; 124 trips that follow a return home start in the
-    home zone; and 2,032 mistyped start hours in 1,552 chains are repaired.
-    ``trips`` gains two columns: ``ajustes`` names
-    what changed on each row and ``problemas`` what is still wrong with it
-    (';'-joined codes, see ``FIX_CODES`` and ``ISSUE_CODES``; ``non_trips()``
-    picks out the rows the model build leaves out). ``folio_viaje`` and
-    ``hab.viajes_contados`` are left as shipped. Pass ``clean_chains=False``
-    for the survey as shipped — the expansion factors reconcile to the
-    published totals on either, since no row leaves.
+    By default the trip chains are cleaned (:func:`clean_trip_chains`): the
+    325 trips with no start time (and no motive) are imputed — 37 from the
+    home-to-home return that duplicates them, the rest from their nearest
+    timed trips — as are the 7 timed trips with no motive; 84 mislabelled
+    'Regresar a Casa' trips take their destination type's motive; 491
+    returns home made from home are kept and marked as non-trips; 124 trips
+    that follow a return home start in the home zone; and 2,032 mistyped
+    start hours in 1,552 chains are repaired. One kind of row is dropped: the
+    38 home-to-home returns that duplicate an imputed return, whose time and
+    motive now sit on the return they repeat; ``hab.viajes_contados`` is
+    reduced by one for those persons so it still counts the person's trip
+    rows, and ``folio_viaje`` keeps its shipped numbering with a gap there.
+    ``trips`` gains two columns: ``ajustes`` names what changed on each row
+    and ``problemas`` what is still wrong with it (';'-joined codes, see
+    ``FIX_CODES`` and ``ISSUE_CODES``; ``non_trips()`` picks out the rows the
+    model build leaves out). Pass ``clean_chains=False`` for the survey as
+    shipped, on which the expansion factors reconcile to the published
+    totals; the cleaned table is short the 38 duplicates' weight.
 
     Either way ``hab`` carries a boolean ``diario_repetido`` column
     (:func:`flag_repeated_diaries`): True for the persons whose whole diary is
@@ -1064,7 +1097,11 @@ def load_eod(
     log.info("repeated diaries flagged: %d persons", int(df_hab[DIARY_FLAG].sum()))
 
     if clean_chains:
+        shipped = df_trips.index
         df_trips, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab)
+        # the dropped duplicates leave viajes_contados one too high for their persons
+        lost = shipped.difference(df_trips.index).droplevel("folio_viaje").value_counts()
+        df_hab.loc[lost.index, "viajes_contados"] -= lost.to_numpy()
         log.info("trip chains cleaned: %s", counts)
         if verbose:
             print("Trip chains cleaned:", counts)

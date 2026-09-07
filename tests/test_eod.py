@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from eodgdl import clean_trip_chains, flag_repeated_diaries, load_eod
-from eodgdl.eod import FIX_CODES, ISSUE_CODES, has_code, non_trips
+from eodgdl.eod import FIX_CODES, ISSUE_CODES, _donor_mask, _trip_features, has_code, non_trips
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
@@ -48,6 +48,11 @@ def _trips(rows):
     return df.set_index(["folio_vivienda", "folio_habitante", "folio_viaje"]).drop(columns="person")
 
 
+def viv_home(trips):
+    """The household zone on every row of a fixture, as clean_trip_chains reads it from VIV."""
+    return VIV.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
+
+
 def _tour(person, out, back, minutes=5, mode="A PIE", motive="Compras (comida)", kind=None):
     """A person's out-and-back pair at the given (hour, minute) starts, as fixture rows."""
     return [(person, *out, motive, kind, None, minutes, mode), (person, *back, "Regresar a Casa", None, None, minutes, mode)]
@@ -77,6 +82,21 @@ def test_an_untimed_trip_is_imputed_from_its_nearest_timed_trips():
     assert not non_trips(cleaned).any()
 
 
+def test_donors_are_timed_activity_trips_whose_times_hold_up():
+    trips = _trips([
+        (1, 8, 0, "Trabajar", None, None, 30), (1, 17, 0, "Regresar a Casa", None, None, 30),     # a nine-hour day: donates
+        (2, 19, 0, "Trabajar", None, None, 30), (2, 17, 0, "Regresar a Casa", None, None, 30),    # 19:00 for 9:00: a negative duration
+        (3, 8, 0, "Trabajar", None, None, 30), (3, 8, 10, "Compras (comida)", None, None, 5),     # the errand starts inside the leg: the work
+        (3, 12, 0, "Regresar a Casa", None, None, 5),                                              # trip's duration is negative, the errand too early
+        (4, 8, 0, "Trabajar", None, None, 30), (4, 8, 20, "Compras (comida)", None, None, 5),     # ten minutes short: the errand is within the
+        (4, 12, 0, "Regresar a Casa", None, None, 5),                                              # tolerance and donates; the work trip still not
+        (5, None, None, None, None, None, 5), (5, 18, 0, "Regresar a Casa", None, None, 5),       # untimed: never a donor
+    ])
+    f = _trip_features(trips, viv_home(trips), None, None)
+    donors = f.index[_donor_mask(f)].tolist()
+    assert donors == [(1, 1, 1), (1, 4, 2)]
+
+
 def test_an_untimed_return_takes_the_duplicate_that_follows_it():
     trips = _trips([
         (1, 8, 0, "Trabajar", "Oficina", None, 30, CAR),
@@ -88,9 +108,8 @@ def test_an_untimed_return_takes_the_duplicate_that_follows_it():
     ret = cleaned.loc[(1, 1, 2)]
     assert (ret.hora_inicio_h, ret.hora_inicio_m, ret.motivo_viaje, ret.tipo_lugar_destino) == (18, 0, "Regresar a Casa", "Su casa")
     assert ret.ajustes == "hora:duplicado;motivo:duplicado" and ret.problemas == ""
-    dup = cleaned.loc[(1, 1, 3)]
-    assert dup.problemas == "regreso_duplicado" and dup.ajustes == ""
-    assert non_trips(cleaned).tolist() == [False, False, True]
+    assert (1, 1, 3) not in cleaned.index and len(cleaned) == 2     # the duplicate is dropped: its answers sit on the return
+    assert non_trips(cleaned).tolist() == [False, False]
     assert counts["times_from_duplicate"] == 1 and counts["duplicate_returns"] == 1 and counts["home_to_home"] == 0
 
 
@@ -235,9 +254,9 @@ def test_every_residual_defect_is_a_code():
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_load_eod_cleans_the_chains_and_drops_nothing():
+def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns():
     viv, hab, trips, legs = load_eod(DATA_DIR)
-    assert (len(hab), len(trips), len(legs)) == (58_061, 154_662, 170_509)
+    assert (len(hab), len(trips), len(legs)) == (58_061, 154_662 - 38, 170_509 - 38)
     assert not trips.hora_inicio_h.isna().any() and not trips.motivo_viaje.isna().any()
     # every change and every defect left is on the row, in the documented vocabulary
     fixes = set(trips.ajustes.str.split(";").explode()) - {""}
@@ -245,19 +264,20 @@ def test_load_eod_cleans_the_chains_and_drops_nothing():
     assert fixes <= set(FIX_CODES) and issues <= set(ISSUE_CODES)
     assert has_code(trips.ajustes, "hora:duplicado").sum() == 37 and has_code(trips.ajustes, "hora:vecinos").sum() == 288
     assert has_code(trips.ajustes, "motivo:vecinos").sum() == 294 and has_code(trips.ajustes, "motivo:duplicado").sum() == 38
-    assert non_trips(trips).sum() == 529
+    assert non_trips(trips).sum() == 491
     # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
     assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
-        "regreso_en_casa": 491, "regreso_duplicado": 38, "hora_invertida": 885, "hora_nocturna": 93,
+        "regreso_en_casa": 491, "hora_invertida": 885, "hora_nocturna": 93,
         "hora_anterior": 25, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 639,
         "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217}
     hora = sum(has_code(trips.problemas, c)
                for c in ("hora_invertida", "hora_nocturna", "hora_anterior", "hora_repetida", "hora_traslapada"))
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_660 + 529
-    # hab and trips stay in step: nothing left, so the shipped count holds and the legs follow the trips
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_660 + 491
+    # hab and trips stay in step: viajes_contados follows the 38 dropped duplicates and the legs follow the trips
     counted = trips.groupby(level=PERSON).size()
     assert (hab.viajes_contados == counted.reindex(hab.index).fillna(0)).all()
+    assert hab.viajes_contados.sum() == load_eod(DATA_DIR, clean_chains=False).hab.viajes_contados.sum() - 38
     assert legs.index.droplevel("folio_traslado").isin(trips.index).all()
     # the categoricals survive the imputation, with the imputed values inside their levels
     assert str(trips.motivo_viaje.dtype) == "category" and str(trips.tipo_lugar_destino.dtype) == "category"
