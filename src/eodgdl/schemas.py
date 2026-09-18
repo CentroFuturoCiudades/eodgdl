@@ -100,12 +100,12 @@ cent_col = pa.Column(
 si_no_col = pa.Column(pd.CategoricalDtype(["Sí", "No"]))
 si_no_null_col = pa.Column(
     pd.CategoricalDtype(["Sí", "No"]),
-    checks=pa.Check(lambda s: set(s.dropna().unique()) == set(["Sí", "No"])),
+    checks=pa.Check(lambda s: set(s.dropna().unique()) == {"Sí", "No"}),
     nullable=True,
 )
 si_no_null_col_reg = pa.Column(
     pd.CategoricalDtype(["Sí", "No"]),
-    checks=pa.Check(lambda s: set(s.dropna().unique()) == set(["Sí", "No"])),
+    checks=pa.Check(lambda s: set(s.dropna().unique()) == {"Sí", "No"}),
     nullable=True,
     regex=True,
 )
