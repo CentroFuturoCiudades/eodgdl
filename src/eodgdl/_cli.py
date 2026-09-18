@@ -38,6 +38,21 @@ def main() -> None:
         "--suffix", default="", help="Filename suffix, e.g. _v2 for od_trips_v2.csv"
     )
 
+    review_p = sub.add_parser("review", help="Review sheets: the trip chains pending a fix, to edit by hand")
+    review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
+    exp_p = review_sub.add_parser("export", help="Write the chains pending a fix as a review sheet (CSV)")
+    exp_p.add_argument("--out", default="chain_review.csv", help="Where to write (default: chain_review.csv)")
+    exp_p.add_argument(
+        "--codes", default=None,
+        help="Comma-separated problemas codes; a person is exported if a row carries one (default: any code)",
+    )
+    exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    ver_p = review_sub.add_parser("verify", help="Read an edited sheet: recover the edits, apply them, recompute problemas")
+    ver_p.add_argument("sheet", help="The edited review sheet")
+    ver_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    ver_p.add_argument("--edits", default=None, help="Write the recovered edits to this CSV")
+    ver_p.add_argument("--out", default=None, help="Write the edited persons' sheet, after the edits, to this CSV")
+
     args = parser.parse_args()
 
     if args.cmd == "fetch":
@@ -61,6 +76,9 @@ def main() -> None:
 
     elif args.cmd == "tasha":
         raise SystemExit(_tasha(args))
+
+    elif args.cmd == "review":
+        raise SystemExit(_review(args))
 
 
 def _report(problems: list[str], ok_message: str) -> int:
@@ -134,6 +152,59 @@ def _tasha(args) -> int:
     if "trips" in frames:
         _chain_notes(frames["trips"])
     return _report(tasha.validate_all(**frames), "conforms to model_schema.yaml")
+
+
+def _review(args) -> int:
+    import pandas as pd
+
+    from eodgdl import load_eod, review
+    from eodgdl.eod import ISSUE_CODES, PERSON, has_code
+
+    shipped = load_eod(args.data, clean_chains=False)
+    cleaned = load_eod(args.data)
+
+    if args.review_cmd == "export":
+        rows = review.chain_rows(cleaned, shipped)
+        codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
+        persons = review.pending_persons(rows, codes)
+        sheet = review.chain_sheet(rows, cleaned.hab, persons)
+        path = review.write_sheet(sheet, args.out)
+        print(f"wrote {path}  ({len(persons):,} persons, {len(sheet):,} rows)")
+        print()
+        selected = rows[rows.index.droplevel("folio_viaje").isin(persons)]
+        counts = pd.DataFrame({
+            "rows": {c: int(has_code(selected.problemas, c).sum()) for c in ISSUE_CODES},
+            "persons": {c: int(has_code(selected.problemas, c).groupby(level=PERSON).any().sum()) for c in ISSUE_CODES},
+        }).rename_axis("problemas")
+        print(counts.loc[counts["rows"] > 0].to_string())
+        return 0
+
+    edited = review.read_sheet(args.sheet)
+    try:
+        edits = review.sheet_edits(edited)
+    except ValueError as err:
+        print(err)
+        return 1
+    print(f"read {args.sheet}  ({len(edited):,} rows, {len(edits):,} edits)")
+    if args.edits:
+        edits.to_csv(args.edits, index=False, encoding="utf-8-sig")
+        print(f"wrote {args.edits}")
+    if edits.empty:
+        return 0
+    try:
+        verified = review.verify_edits(cleaned, shipped, edits)
+    except ValueError as err:
+        print(err)
+        return 1
+    print()
+    print(verified.persons.to_string(index=False))
+    print()
+    for key, value in verified.summary.items():
+        print(f"  {key:<26} {value:>7,}")
+    if args.out:
+        review.write_sheet(verified.sheet, args.out)
+        print(f"\nwrote {args.out}  ({len(verified.sheet):,} rows)")
+    return 0
 
 
 if __name__ == "__main__":

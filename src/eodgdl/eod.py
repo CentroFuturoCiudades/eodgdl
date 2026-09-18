@@ -178,6 +178,15 @@ FIX_CODES = {
     "hora:-10h": "start hour read with an extra leading 1: 10 hours removed",
     "hora:+10h": "start hour read with a missing leading 1: 10 hours added",
     "hora:-10h+12h": "start hour read with an extra leading 1 on a 12-hour-clock entry: 2 hours added",
+    # set by hand on a review sheet (eodgdl.review): the sheet's note column is the evidence
+    "hora:revision": "start time set by hand on a review sheet",
+    "motivo:revision": "motive set by hand on a review sheet",
+    "tipo_destino:revision": "destination type set by hand on a review sheet",
+    "tipo_origen:revision": "origin type set by hand on a review sheet",
+    "origen:revision": "origin zone set by hand on a review sheet",
+    "destino:revision": "destination zone set by hand on a review sheet",
+    "modo:revision": "main mode set by hand on a review sheet",
+    "fila:revision": "a row load_eod dropped, restored by hand on a review sheet",
 }
 ISSUE_CODES = {
     "regreso_en_casa": "a 'Regresar a Casa' made while already at home: not a trip; the model build leaves it out",
@@ -794,6 +803,27 @@ def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame 
 def _home_zone(trips: pd.DataFrame, viv: pd.DataFrame) -> np.ndarray:
     """The household's zone id on every trip row."""
     return viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
+
+
+def mark_issues(trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None) -> pd.Series:
+    """The ``problemas`` column of a trip table in chain order, recomputed from its current values.
+
+    The marking stage of :func:`clean_trip_chains` on its own: the returns
+    home made from home (``_home_to_home_returns``) and, over the chain
+    without them, every defect ``_remaining_issues`` knows. On the table
+    ``load_eod`` returns it reproduces the ``problemas`` column exactly; on
+    that table with hand edits applied (:mod:`eodgdl.review`) it says what
+    the edits left. ``trips`` must be sorted by its index, the chain order.
+    """
+    n = len(trips)
+    issues = np.full(n, "", dtype=object)
+    home = _home_zone(trips, viv)
+    at_home = _home_to_home_returns(trips)
+    _add_code(issues, at_home, "regreso_en_casa")
+    where = np.flatnonzero(~at_home)
+    for code, mask in _remaining_issues(trips[~at_home], home[~at_home], legs).items():
+        _add_code(issues, _expand(mask, where, n), code)
+    return pd.Series(issues, index=trips.index, name=ISSUE_FLAG, dtype=str)
 
 
 def clean_trip_chains(

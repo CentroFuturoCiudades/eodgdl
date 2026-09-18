@@ -67,6 +67,24 @@ output joins straight to the census tables; read them back with `dtype=str`.
 See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
 mapping-entry format, and the open items.
 
+## Trip-chain review
+
+The chains `load_eod` leaves with a `problemas` code can be fixed by hand through a
+review sheet: a CSV in the chain browser's table format (`notebooks/chain_browser.ipynb`),
+one row per shipped trip, `shipped → cleaned` where the rules changed a value.
+
+```bash
+eodgdl review export --data data/ --out notebooks/chain_review.csv   # the pending chains, to edit by hand
+eodgdl review verify notebooks/chain_review.csv --data data/         # recover the edits, apply, recompute problemas
+```
+
+Next to every column that may take a change stands an empty `new …` column: write the
+value that should hold there (`dropped` under `new status` takes a row out, `restored`
+brings back a row `load_eod` dropped) and say why under `note`. `verify` (and the
+browser's *load sheet* box) reads the filled cells as the edits, applies them with
+`<field>:revision` codes in `ajustes`, and reports per person which defects were cleared,
+left or made. See `eodgdl.review` for the functions behind both.
+
 ## Installation
 
 ```bash
