@@ -1,0 +1,447 @@
+---
+title: "Encuesta Origen-Destino 2023 — Guadalajara"
+subtitle: "Survey study area and headline mobility results"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import os
+from pathlib import Path
+
+
+def _find_data_dir() -> Path:
+    """Walk up from the working dir to locate the repo's data/ folder."""
+    marker = "IMEPLAN_Base_Viviendas_Master.csv"
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        cand = base / "data"
+        if (cand / marker).exists():
+            return cand.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl data/ directory.")
+
+
+# Point every eodgdl loader at the committed local copy of the data.
+os.environ.setdefault("EODGDL_DATA_DIR", str(_find_data_dir()))
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+import mxcensus
+from eodgdl import load_eod, load_imeplan_agebs, load_taz, load_zm_muns
+
+plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
+
+MUNS = load_zm_muns()  # INEGI municipality code -> name (9 AMG municipalities)
+
+
+def fmt(n) -> str:
+    """Thousands-separated integer string."""
+    return f"{round(float(n)):,}"
+```
+
+```{python}
+#| label: load-study-area
+#| include: false
+
+# --- Survey study area: AGEB geometries from the IMEPLAN zone system ---
+taz = load_taz(drop_ap=True)
+agebs = load_imeplan_agebs(taz, drop_ap=True)
+
+# Keep rows that carry a full INEGI AGEB code so they can be matched to the census.
+a = agebs.copy()
+for c in ["CVE_ENT", "CVE_MUN", "CVE_LOC"]:
+    a[c + "_i"] = pd.to_numeric(a[c], errors="coerce")
+a["AGEBk"] = a["CVE_AGEB"].astype("string").str.zfill(4)
+a = a[
+    a["CVE_AGEB"].notna()
+    & a["CVE_ENT_i"].notna()
+    & a["CVE_MUN_i"].notna()
+    & a["CVE_LOC_i"].notna()
+].copy()
+a["ENTIDAD"] = a["CVE_ENT_i"].astype(int)
+a["MUN"] = a["CVE_MUN_i"].astype(int)
+a["LOC"] = a["CVE_LOC_i"].astype(int)
+
+# --- Census households & population per AGEB, from mxcensus (INEGI 2020) ---
+_, df_mun, _, df_ageb = mxcensus.load_census(state=14)  # state 14 = Jalisco
+a["_key"] = list(zip(a.ENTIDAD, a.MUN, a.LOC, a.AGEBk.astype(str)))
+a["households"] = a["_key"].map(df_ageb["TVIVHAB"].to_dict())
+a["population"] = a["_key"].map(df_ageb["POBTOT"].to_dict())
+
+# Per-municipality summary of the study area.
+mun_tbl = (
+    a.groupby("MUN")
+    .agg(
+        AGEBs=("CVEGEO", "nunique"),
+        Households=("households", "sum"),
+        Population=("population", "sum"),
+    )
+    .reset_index()
+)
+mun_tbl["Municipality"] = mun_tbl["MUN"].map(MUNS)
+mun_tbl = mun_tbl.sort_values("Households", ascending=False)
+
+n_muns = mun_tbl.shape[0]
+n_agebs = int(a["CVEGEO"].nunique())
+tot_hh = float(a["households"].sum())
+tot_pop = float(a["population"].sum())
+n_unmatched = int(a["households"].isna().sum())
+```
+
+```{python}
+#| label: load-conapo
+#| include: false
+
+# --- CONAPO municipal population projections (horizon 2040) ---
+# Subset of CONAPO's "Proyecciones de la Población de los Municipios de México"
+# restricted to the 9 AMG municipalities (committed alongside the survey data).
+# Unlike the study-area (urban-AGEB) census columns above, these are
+# WHOLE-MUNICIPALITY figures.
+conapo = pd.read_csv(Path(os.environ["EODGDL_DATA_DIR"]) / "CONAPO_proyecciones_AMG.csv")
+conapo["MUN"] = conapo["CLAVE"].astype(int) - 14000  # INEGI municipality code
+proj_2040 = conapo[conapo["ANO"] == 2040].groupby("MUN")["POB_TOTAL"].sum()  # both sexes
+
+# Whole-municipality 2020 census population (INEGI, via mxcensus) for the same 9
+# municipalities, to sit beside the study-area (urban-AGEB) census sum and make the
+# coverage gap explicit: the study area covers all of the core but only part of the
+# peripheral municipalities.
+mun_tbl["MuniPop2020"] = mun_tbl["MUN"].map(lambda m: int(df_mun.loc[(14, m), "POBTOT"]))
+mun_tbl["Pop2040"] = mun_tbl["MUN"].map(proj_2040)
+# Growth compares the CONAPO 2040 projection with the full-municipality 2020 census.
+mun_tbl["Growth"] = (mun_tbl["Pop2040"] / mun_tbl["MuniPop2020"] - 1) * 100
+
+# Metro-area totals for the headline callout.
+muni_2020_tot = float(mun_tbl["MuniPop2020"].sum())
+conapo_2040_tot = float(mun_tbl["Pop2040"].sum())
+conapo_growth = (conapo_2040_tot / muni_2020_tot - 1) * 100
+```
+
+```{python}
+#| label: load-survey
+#| include: false
+
+# --- Survey tables, expanded to the population with the survey weights ---
+viv, hab, trips, legs = load_eod()
+
+n_viv, n_hab, n_trips = len(viv), len(hab), len(trips)
+est_trips = float(trips["ponderador"].sum())     # estimated daily trips
+est_pop = float(hab["ponderador"].sum())          # estimated resident population
+est_hh = float(viv["ponderador"].sum())           # estimated households
+trips_per_cap = est_trips / est_pop
+
+# Trip-level modal split, by main mode (modo_principal), weighted by ponderador.
+modal = (
+    trips.groupby("modo_principal")["ponderador"].sum().sort_values(ascending=False)
+)
+modal_pct = (modal / modal.sum() * 100)
+
+# Collapse the 20 detailed modes into broad mobility categories.
+GROUPS = {
+    "A PIE": "Active (walk/bike)",
+    "Bicicleta": "Active (walk/bike)",
+    "Mi Bici": "Active (walk/bike)",
+    "AUTOMÓVIL PARTICULAR": "Private motorized",
+    "MOTOCICLETA": "Private motorized",
+    "CAMIÓN O AUTOBÚS": "Public transport",
+    "MI MACRO": "Public transport",
+    "TREN LIGERO": "Public transport",
+    "Línea 1 Sitren": "Public transport",
+    "Línea 2 Sitren": "Public transport",
+    "Línea 3 Sitren": "Public transport",
+    "Servicio suburbano": "Public transport",
+    "Taxi plataforma (Uber/Didi)": "Taxi / app / paratransit",
+    "Taxi": "Taxi / app / paratransit",
+    "Taxi colectivo": "Taxi / app / paratransit",
+    "Mototaxi": "Taxi / app / paratransit",
+    "Transporte de personal": "Other (school / staff / informal)",
+    "Transporte escolar": "Other (school / staff / informal)",
+    "Transporte escolar particular": "Other (school / staff / informal)",
+    "Transporte informal": "Other (school / staff / informal)",
+}
+GROUP_ORDER = [
+    "Active (walk/bike)",
+    "Private motorized",
+    "Public transport",
+    "Taxi / app / paratransit",
+    "Other (school / staff / informal)",
+]
+grp = (
+    trips.assign(grupo=trips["modo_principal"].map(GROUPS).fillna("Other (school / staff / informal)"))
+    .groupby("grupo")["ponderador"]
+    .sum()
+)
+grp_pct = (grp / grp.sum() * 100).reindex(GROUP_ORDER)
+```
+
+The **Encuesta Origen-Destino (EOD) 2023** is the household travel survey for the
+Guadalajara Metropolitan Area (*Área Metropolitana de Guadalajara*, AMG), conducted by
+**IMEPLAN**. It records, for a sample of households, every trip each resident made on a
+reference weekday — origin and destination, purpose, departure time, and the sequence of
+modes used. Survey weights (`ponderador`) expand the sample to the full resident
+population.
+
+This report summarises **(1)** the geographic area the survey targets and **(2)** the
+headline mobility results. Census figures (households, population) come from the INEGI 2020
+Census via the [`mxcensus`](https://pypi.org/) package; all survey figures are computed
+from the cleaned EOD tables via [`eodgdl`](https://github.com/CentroFuturoCiudades/eodgdl).
+
+# Study area
+
+The survey covers the **`{python} n_muns`** municipalities of the Guadalajara Metropolitan
+Area. The study area is partitioned into **`{python} fmt(n_agebs)`** urban *AGEBs* (INEGI
+*Áreas Geoestadísticas Básicas* — the census basic geostatistical areas that nest inside
+the EOD zone system). Together those AGEBs contain roughly **`{python} fmt(tot_hh)`
+households** and **`{python} fmt(tot_pop)` residents** according to the 2020 Census.
+
+::: {.callout-note}
+## Study area at a glance
+
+| Municipalities | AGEBs | Households | Pop. 2020 (study-area AGEBs) | Municipal pop. 2020 | Projected 2040 |
+|:--:|:--:|:--:|:--:|:--:|:--:|
+| **`{python} n_muns`** | **`{python} fmt(n_agebs)`** | **`{python} fmt(tot_hh)`** | **`{python} fmt(tot_pop)`** | **`{python} fmt(muni_2020_tot)`** | **`{python} fmt(conapo_2040_tot)`** |
+
+Households and the study-area population are INEGI 2020 Census counts for the study-area
+AGEBs (via `mxcensus`); **Municipal pop. 2020** is the full INEGI 2020 count for the 9
+municipalities (the study area covers ~97% of it). **Projected 2040** is CONAPO's
+whole-municipality population projection (`POB_TOTAL`, both sexes) — about
+**`{python} f"{conapo_growth:+.0f}"`%** above the municipal 2020 population.
+:::
+
+## Municipalities
+
+@tbl-muns breaks the study area down by municipality. Zapopan and Guadalajara are the two
+largest, together accounting for over half of the area's households. The table places the
+survey's **study-area population** (the 2020 census count for the urban AGEBs) next to the
+**full municipal population** (2020 census) and CONAPO's **projection to 2040**: the
+study-area AGEBs cover essentially all of the core municipalities but only part of the
+outer ones, so the municipal totals run higher there. CONAPO expects the 9 municipalities
+to reach roughly **`{python} fmt(conapo_2040_tot)` residents** by 2040
+(**`{python} f"{conapo_growth:+.0f}"`%** over their 2020 census population), with the
+fastest growth in the peripheral municipalities — Ixtlahuacán de los Membrillos, Tlajomulco,
+and El Salto — rather than in the already-dense urban core, where Guadalajara is projected
+to lose residents.
+
+```{python}
+#| label: tbl-muns
+#| tbl-cap: "Study-area municipalities: AGEBs, households, and population. *Households* and *Pop. 2020 (study-area AGEBs)* are INEGI 2020 Census counts restricted to the study-area AGEBs; *Municipal pop. 2020* is the INEGI 2020 Census count for the **whole** municipality, so it is larger wherever the survey area covers only part of a municipality (e.g. Ixtlahuacán, Zapotlanejo, Juanacatlán). *Projected 2040* is CONAPO's whole-municipality projection (`POB_TOTAL`, both sexes), and *Growth to 2040* compares it with the municipal 2020 census population."
+
+show = mun_tbl[
+    ["Municipality", "AGEBs", "Households", "Population", "MuniPop2020", "Pop2040", "Growth"]
+].copy()
+total_row = pd.DataFrame(
+    {
+        "Municipality": ["Total"],
+        "AGEBs": [n_agebs],
+        "Households": [show["Households"].sum()],
+        "Population": [show["Population"].sum()],
+        "MuniPop2020": [muni_2020_tot],
+        "Pop2040": [conapo_2040_tot],
+        "Growth": [conapo_growth],
+    }
+)
+show = pd.concat([show, total_row], ignore_index=True)
+for col in ["Households", "Population", "MuniPop2020", "Pop2040"]:
+    show[col] = show[col].map(fmt)
+show["Growth"] = show["Growth"].map(lambda v: f"{v:+.1f}%")
+show["AGEBs"] = show["AGEBs"].map(lambda v: f"{int(v):,}")
+show = show.rename(
+    columns={
+        "Population": "Pop. 2020 (study-area AGEBs)",
+        "MuniPop2020": "Municipal pop. 2020",
+        "Pop2040": "Projected 2040",
+        "Growth": "Growth to 2040",
+    }
+)
+num_cols = [
+    "AGEBs",
+    "Households",
+    "Pop. 2020 (study-area AGEBs)",
+    "Municipal pop. 2020",
+    "Projected 2040",
+    "Growth to 2040",
+]
+show.style.hide(axis="index").set_properties(
+    subset=num_cols, **{"text-align": "right"}
+)
+```
+
+## Households across the study area
+
+@fig-hh-map maps the number of households in each AGEB. The colour scale follows census
+household counts (`TVIVHAB`), classified into sextiles; black lines mark municipal
+boundaries. The pattern traces the metropolitan footprint: a dense, contiguous urban core
+spanning Guadalajara, Zapopan, Tlaquepaque, and Tonalá, thinning into the peripheral
+municipalities of Tlajomulco, El Salto, Ixtlahuacán, Juanacatlán, and Zapotlanejo.
+
+```{python}
+#| label: fig-hh-map
+#| fig-cap: "Households per AGEB across the EOD 2023 study area (INEGI 2020 Census `TVIVHAB`). Grey AGEBs lack a census match."
+#| fig-alt: "Choropleth map of the Guadalajara metropolitan area showing households per AGEB, with the densest values concentrated in the central contiguous urban core and lower values in the outer municipalities."
+
+fig, ax = plt.subplots(figsize=(9, 9))
+a.plot(
+    column="households",
+    scheme="quantiles",
+    k=6,
+    cmap="YlOrRd",
+    linewidth=0.05,
+    edgecolor="0.6",
+    legend=True,
+    missing_kwds={"color": "lightgrey", "label": "No census match"},
+    legend_kwds={"title": "Households (AGEB)", "loc": "lower left", "fontsize": 8, "title_fontsize": 9},
+    ax=ax,
+)
+a.dissolve(by="MUN").boundary.plot(ax=ax, color="black", linewidth=0.6)
+ax.set_axis_off()
+ax.set_title("Households per AGEB — EOD 2023 study area")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: map-note
+#| output: asis
+if n_unmatched:
+    print(
+        f"> Note: {n_unmatched} of {n_agebs:,} study-area AGEBs could not be matched to a "
+        "2020 Census record (new or recoded AGEBs) and appear in grey on the map; they are "
+        "excluded from the household and population totals above."
+    )
+```
+
+# Survey results
+
+The survey collected **`{python} fmt(n_trips)` trips** from **`{python} fmt(n_hab)`
+people** in **`{python} fmt(n_viv)` households**. Applying the survey weights expands the
+sample to the metropolitan population.
+
+::: {.callout-tip}
+## Headline figures (survey-expanded)
+
+| Estimated daily trips | Resident population | Households | Trips per person·day |
+|:--:|:--:|:--:|:--:|
+| **`{python} fmt(est_trips)`** | **`{python} fmt(est_pop)`** | **`{python} fmt(est_hh)`** | **`{python} f"{trips_per_cap:.2f}"`** |
+:::
+
+On a typical weekday, residents of the AMG make an estimated
+**`{python} fmt(est_trips)` trips** — about **`{python} f"{trips_per_cap:.2f}"` trips per
+person**.
+
+## Modal split
+
+@fig-modal-split shows how those trips divide across transport modes, using each trip's
+**main mode** (`modo_principal`) weighted by its expansion factor. Walking dominates at
+**`{python} f"{modal_pct['A PIE']:.1f}"`%**, followed by the **private car**
+(`{python} f"{modal_pct['AUTOMÓVIL PARTICULAR']:.1f}"`%) and the **conventional bus**
+(`{python} f"{modal_pct['CAMIÓN O AUTOBÚS']:.1f}"`%). The structured public-transport
+network — *Mi Macro*, the light rail (*Tren Ligero*), and the *SITREN* lines — adds several
+points more.
+
+```{python}
+#| label: fig-modal-split
+#| fig-cap: "Modal split of estimated daily trips by main mode (`modo_principal`), survey-weighted."
+#| fig-alt: "Horizontal bar chart of the share of daily trips by mode. Walking is the largest share near 43 percent, followed by private car around 25 percent and bus around 16 percent, with all remaining modes below 3 percent each."
+
+order = modal_pct.sort_values()
+fig, ax = plt.subplots(figsize=(8, 6))
+ax.barh(order.index, order.values, color="#2c7fb8")
+for y, v in enumerate(order.values):
+    ax.text(v + 0.3, y, f"{v:.1f}%", va="center", fontsize=8)
+ax.set_xlabel("Share of daily trips (%)")
+ax.set_xlim(0, max(order.values) * 1.12)
+ax.set_title("Modal split — estimated daily trips by main mode")
+ax.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+plt.show()
+```
+
+Grouping the detailed modes into broad categories (@fig-modal-groups) gives the
+sustainable-mobility picture: **active travel** (walking and cycling) and **public
+transport** together carry the majority of trips, while **private motorized** travel
+(car and motorcycle) accounts for roughly a quarter.
+
+```{python}
+#| label: fig-modal-groups
+#| fig-cap: "Daily trips grouped into broad mobility categories (survey-weighted)."
+#| fig-alt: "Donut chart grouping trips into active travel, public transport, private motorized, taxi or app, and other categories."
+
+colors = ["#41ab5d", "#e6550d", "#3182bd", "#756bb1", "#969696"]
+fig, ax = plt.subplots(figsize=(7, 6))
+wedges, _ = ax.pie(
+    grp_pct.values, colors=colors, startangle=90,
+    wedgeprops={"width": 0.42, "edgecolor": "white"},
+)
+ax.legend(
+    wedges,
+    [f"{name} — {val:.1f}%" for name, val in grp_pct.items()],
+    loc="center left", bbox_to_anchor=(0.92, 0.5), frameon=False, fontsize=9,
+)
+ax.set_title("Modal split by mobility category")
+ax.text(0, 0, f"{fmt(est_trips)}\ntrips/day", ha="center", va="center", fontsize=11)
+plt.tight_layout()
+plt.show()
+```
+
+@tbl-modal lists every mode with its share and estimated daily trips.
+
+```{python}
+#| label: tbl-modal
+#| tbl-cap: "Estimated daily trips and share by main mode (survey-weighted)."
+
+mt = pd.DataFrame(
+    {
+        "Mode": modal.index,
+        "Estimated trips/day": modal.values,
+        "Share (%)": modal_pct.values,
+    }
+)
+mt["Estimated trips/day"] = mt["Estimated trips/day"].map(fmt)
+mt["Share (%)"] = mt["Share (%)"].map(lambda v: f"{v:.2f}")
+mt.style.hide(axis="index").set_properties(
+    subset=["Estimated trips/day", "Share (%)"], **{"text-align": "right"}
+)
+```
+
+---
+
+::: {.callout-note collapse="true"}
+## Sources & methods
+
+- **Survey:** Encuesta Origen-Destino 2023, IMEPLAN (AMG). Tables loaded and cleaned with
+  `eodgdl.load_eod()`. Estimated trips, population, and households are sample counts
+  expanded by the survey weight `ponderador`; the modal split weights each trip's main
+  mode (`modo_principal`).
+- **Study area & census:** AGEB geometries from the IMEPLAN EOD zone system
+  (`eodgdl.load_imeplan_agebs`); municipality, AGEB, household (`TVIVHAB`) and population
+  (`POBTOT`) counts from the INEGI 2020 Census via `mxcensus.load_census(state=14)`.
+- **Population projections:** CONAPO, *Proyecciones de la Población de los Municipios de
+  México, 2020–2070*. The committed `data/CONAPO_proyecciones_AMG.csv` is the subset for the
+  9 AMG municipalities; the 2040 figure sums `POB_TOTAL` over both sexes. These are
+  **whole-municipality** projections, not restricted to the study-area AGEBs. To keep the
+  comparison transparent, @tbl-muns shows the projection beside both the study-area
+  (urban-AGEB) and the full-municipality 2020 census counts (the latter from the municipal
+  census table `df_mun` via `mxcensus`); *Growth to 2040* compares the projection with the
+  full-municipality 2020 census.
+- Access-point / external gateway zones are excluded (`drop_ap=True`).
+:::
