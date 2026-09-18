@@ -53,6 +53,14 @@ def main() -> None:
     ver_p.add_argument("--edits", default=None, help="Write the recovered edits to this CSV")
     ver_p.add_argument("--out", default=None, help="Write the edited persons' sheet, after the edits, to this CSV")
 
+    rew_p = sub.add_parser("reweight", help="Inputs for TMG.SurveyReweight: records, zone system, census targets")
+    rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
+    rb_p = rew_sub.add_parser("build", help="Build the record, zone and constraint files from the survey and the census")
+    rb_p.add_argument("--data", default=None, help="Local data directory (else fetch)")
+    rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
+    rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
+    rc_p.add_argument("directory", help="Directory holding the set")
+
     args = parser.parse_args()
 
     if args.cmd == "fetch":
@@ -79,6 +87,9 @@ def main() -> None:
 
     elif args.cmd == "review":
         raise SystemExit(_review(args))
+
+    elif args.cmd == "reweight":
+        raise SystemExit(_reweight(args))
 
 
 def _report(problems: list[str], ok_message: str) -> int:
@@ -205,6 +216,21 @@ def _review(args) -> int:
         review.write_sheet(verified.sheet, args.out)
         print(f"\nwrote {args.out}  ({len(verified.sheet):,} rows)")
     return 0
+
+
+def _reweight(args) -> int:
+    from eodgdl import reweight
+
+    if args.reweight_cmd == "build":
+        from eodgdl import load_eod
+
+        files = reweight.build(load_eod(args.data), data_dir=args.data)
+        for path in reweight.write(files, args.out):
+            print(f"wrote {path}")
+        print()
+        return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
+
+    return _report(reweight.check(args.directory), "the set is loadable and every constraint is feasible")
 
 
 if __name__ == "__main__":

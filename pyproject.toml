@@ -32,6 +32,10 @@ notebook = [
     "colorcet>=3.1",
     "mxcensus>=0.1.0",
 ]
+# Extra for eodgdl.reweight: the census targets come from INEGI through mxcensus.
+reweight = [
+    "mxcensus>=0.1.0",
+]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

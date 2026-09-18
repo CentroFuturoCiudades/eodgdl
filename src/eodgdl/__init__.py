@@ -7,7 +7,7 @@ try:
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
-from eodgdl import data, review, tasha
+from eodgdl import data, review, reweight, tasha
 from eodgdl._resources import imeplan_rename_map
 from eodgdl.chains import clean_trip_chains
 from eodgdl.eod import (
@@ -52,4 +52,6 @@ __all__ = [
     "tasha",
     # Review sheets for the trip chains
     "review",
+    # Inputs for TMG.SurveyReweight
+    "reweight",
 ]

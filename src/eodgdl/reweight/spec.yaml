@@ -1,0 +1,493 @@
+# Inputs for TMG.SurveyReweight: what each record attribute and each constraint target
+# is, and where it comes from.
+#
+# Two halves. `attributes` turns the survey (eodgdl's viv / hab / trips / legs, as
+# `load_eod()` returns them) into the numeric record columns the tool reads; `constraints`
+# turns the 2020 census AGEB table (`load_imeplan_agebs`) into the target totals it matches
+# them against. The tool only ever multiplies a household's weight by the attributes named
+# in a constraint and compares the sum per geography with the target, so a target and the
+# attributes it matches must count the same thing on the same universe.
+#
+# Attribute entries:
+#   source       eodgdl column(s) the value comes from (`legs.` / `trips.` prefix when the
+#                column is on another table than the record's own)
+#   values       {raw answer: number} — a .map()-ready lookup, NaN answers -> `default`
+#   default      value for anything not in `values` (default 0)
+#   constant     the whole column is this value
+#   range        [lo, hi] on a numeric source: 1 inside, 0 outside (hi null = open)
+#   when         extra condition (prose, realised in records.py) before `values` applies
+#   count        legs-level lookup: the attribute is the number of the trip's legs whose
+#                answer maps to 1 (boardings), or `any: true` for a 0/1 flag instead
+#   sum          the attribute is the sum of these attributes
+#   derivation   prose, for what a lookup cannot express
+#   note         caveats and judgement calls
+#   status       ok (default) | assumed | pending
+#
+# Constraint entries (one per target column; the file it lands in is
+# `<Table>ConstraintsBy<Geography>[_<year>].csv`, one row per geography):
+#   geography    zone | municipality | region — the ZoneSystem.csv column the TAZ maps to
+#   attributes   record attributes the tool multiplies (MatchingAttributes); default [name]
+#   census       expression over the census columns, evaluated AFTER summing them by
+#                geography (so ratios are ratios of totals)
+#   constant     {geography id: value} when the target is not from the census frames
+#   provenance   where a constant comes from
+#   universe_share  on a municipality constant that counts the whole municipality: the
+#                census column whose survey-universe share of the municipality scales it
+#   conapo       which CONAPO band group scales the 2020 value to 2023 (see `conapo`);
+#                omitted = the target is not scaled and its file carries no year suffix
+#   sex          F | M when the target is one sex (also selects the CONAPO sex)
+#   note, status as above
+
+meta:
+  survey: IMEPLAN Encuesta Origen-Destino 2023, via eodgdl.load_eod (chains cleaned)
+  census: >-
+    INEGI Censo de Población y Vivienda 2020 through mxcensus.load_census(state=14), the
+    AGEB and locality frames; IMEPLAN's AGEB table (RELACION_AGEBS-ZONA_con_datos_censales)
+    is the crosswalk from those to the survey zones, rows with EOD2023 != 'NA'
+  tool: TMG.SurveyReweight (github.com/TravelModellingGroup/TMG.SurveyReweight)
+
+# ===========================================================================
+zones:
+# ===========================================================================
+  # The survey is stratified by centralidad (64 observed zones) but 22 of them straddle
+  # two or three municipalities, so neither is an aggregate of the other. The TAZ is the
+  # zone x municipality cell; ZoneSystem.csv maps it to each.
+  taz: zone_index * 1000 + cve_mun
+  zone: 1-based position of the centralidad code in the survey's ordered categorical (71 levels)
+  municipality: INEGI CVE_MUN (eodgdl.load_zm_muns)
+  region: 1 for every TAZ (the whole study area)
+  census_zone_column: EOD2023
+  census_municipality_column: CVE_MUN
+
+# ===========================================================================
+attributes:
+# ===========================================================================
+
+  households:
+
+    Dwellings:
+      constant: 1
+      note: One private inhabited dwelling per record; the survey's sampling unit.
+
+    Occupants:
+      source: personas_en_vivienda
+      values:
+        "1": 1
+        "2": 2
+        "3": 3
+        "4": 4
+        "5": 5
+        "6": 6
+        "7": 7
+        "8": 8
+        "9": 9
+        "10 y +": 10
+      note: >-
+        All ages, including the under-6s the survey does not interview, so it matches
+        the census occupant count. Top-coded at 10 (33 dwellings).
+
+    HasCar:
+      source: n_autos_camionetas
+      values: {"0": 0, "1": 1, "2": 1, "3": 1, "4 o más": 1}
+
+    HasMoto:
+      source: n_motos
+      values: {"0": 0, "1": 1, "2": 1, "3": 1, "4 o más": 1}
+
+    HasBike:
+      source: n_bicicletas
+      values: {"0": 0, "1": 1, "2": 1, "3": 1, "4 o más": 1}
+
+    HasInternet:
+      source: tiene_internet
+      values: {"Sí": 1, "No": 0}
+
+    ExpansionFactor:
+      source: ponderador
+      derivation: viv.ponderador verbatim.
+      note: >-
+        Informational. The tool starts every household at 1.0 and ignores this column
+        unless a constraint names it; it is here so the result can be compared with the
+        survey's own stage-1 weight.
+
+  persons:
+
+    Persons:
+      constant: 1
+      note: The survey interviews ages 6 and over only; person targets are built on 6+.
+
+    Male:
+      source: sexo_nacimiento
+      values: {Hombres: 1, Mujeres: 0}
+      note: Sex at birth, the same decision as tasha's Sex.
+
+    Female:
+      source: sexo_nacimiento
+      values: {Hombres: 0, Mujeres: 1}
+
+    Age6_11:
+      source: edad
+      range: [6, 11]
+    Age12_14:
+      source: edad
+      range: [12, 14]
+    Age15_17:
+      source: edad
+      range: [15, 17]
+    Age18_24:
+      source: edad
+      range: [18, 24]
+    Age25_59:
+      source: edad
+      range: [25, 59]
+    Age60p:
+      source: edad
+      range: [60, null]
+
+    Employed:
+      source: trabajo_semana_pasada
+      when: edad >= 12
+      values:
+        Tiempo completo: 1
+        Medio tiempo: 1
+        Tenía trabajo, pero no trabajó: 1
+      note: >-
+        The census counts economic activity from age 12; the same worker rule as
+        eodgdl.giro. 4,370 persons gave no answer and are 0 in Employed, Unemployed and
+        Inactive alike, so the three do not partition Persons.
+
+    Unemployed:
+      source: trabajo_semana_pasada
+      when: edad >= 12
+      values:
+        Busco trabajo: 1
+      note: >-
+        INEGI's PDESOCUP is the same concept (no job, looked for one), but the survey never
+        asks about job search: 122 persons chose this answer while 790 call themselves
+        Desempleado under ocupacion (597 of them answered No trabajo here). At the design
+        weight the two readings give 13,704 and 80,335 against 40,391 in the census, so no
+        constraint uses this attribute; it is kept for anyone who wants to try one.
+
+    Inactive:
+      source: trabajo_semana_pasada
+      when: edad >= 12
+      values:
+        Es estudiante: 1
+        No trabajo: 1
+        Se dedica a los quehaceres del hogar o a cuidar a sus hijos: 1
+        Es jubilado o pensionado: 1
+        Está incapacitado permanentemente para trabajar: 1
+
+    NotEmployed:
+      source: trabajo_semana_pasada
+      when: edad >= 12
+      values:
+        Tiempo completo: 0
+        Medio tiempo: 0
+        Tenía trabajo, pero no trabajó: 0
+      default: 1
+      note: >-
+        Everyone aged 12+ who is not Employed: the unemployed, the inactive and the 4,370
+        with no answer. With Employed it partitions the 12+ population, which is what the
+        census does with POCUPADA against the rest; the model cares about who travels to
+        work, not why the others do not.
+
+    Cyclist:
+      source: [legs.traslado_medio, trips.motivo_viaje]
+      derivation: >-
+        1 if at least one leg of a trip whose motivo_viaje is Trabajar or Estudiar has
+        traslado_medio Bicicleta or Mi Bici; the census question is the mode of travel
+        to work and to school.
+      modes: [Bicicleta, Mi Bici]
+      motives: [Trabajar, Estudiar]
+      note: >-
+        561 persons. 852 made any bicycle trip; IMEPLAN reweighted a narrower set that the
+        shipped columns cannot reproduce (reports/expansion_factors.qmd, "Which cyclists
+        were reweighted"). The census target uses the same commute definition.
+      status: assumed
+
+    ExpansionFactor:
+      source: ponderador
+      derivation: hab.ponderador verbatim.
+      note: Informational, see households.ExpansionFactor. Stage 2 of the survey's weights.
+
+  trips:
+
+    Trips:
+      constant: 1
+      note: >-
+        One per trip row after load_eod's cleaning, without the 491 rows it marks as
+        non-trips (the same filter as tasha.build).
+
+    BusBoardings:
+      source: legs.traslado_medio
+      count: {"CAMIÓN O AUTOBÚS": 1}
+      note: The number of the trip's legs on a bus — unlinked boardings.
+    RailBoardings:
+      source: legs.traslado_medio
+      count: {"TREN LIGERO": 1}
+    BRTBoardings:
+      source: legs.traslado_medio
+      count: {"MI MACRO": 1}
+    SitrenBoardings:
+      source: legs.traslado_medio
+      count: {"Línea 1 Sitren": 1, "Línea 2 Sitren": 1, "Línea 3 Sitren": 1}
+    OtherTransitBoardings:
+      source: legs.traslado_medio
+      count: {"Servicio suburbano": 1, "Taxi colectivo": 1, "Transporte informal": 1}
+      note: The rest of the modes tasha codes as transit (B).
+    TransitBoardings:
+      sum: [BusBoardings, RailBoardings, BRTBoardings, SitrenBoardings, OtherTransitBoardings]
+
+    BicycleTrip:
+      source: legs.traslado_medio
+      count: {"Bicicleta": 1, "Mi Bici": 1}
+      any: true
+      note: 1 if any leg is by bicycle (1,759 trips).
+
+    ExpansionFactor:
+      source: ponderador
+      derivation: trips.ponderador verbatim.
+      note: Informational. Stage 3 of the survey's weights (bus trips scaled to SETRAN).
+
+# ===========================================================================
+conapo:
+# ===========================================================================
+  # CONAPO population projections by municipality, sex, year and 5-year band
+  # (data/CONAPO_proyecciones_AMG.csv). A target's 2023 value is its 2020 value times the
+  # 2023/2020 ratio of the bands below, per municipality (and sex when the target names
+  # one), applied to every AGEB of the municipality before summing. Bands that do not
+  # align with the census cut points are pooled over the 5-year bands they overlap.
+  file: CONAPO_proyecciones_AMG.csv
+  base_year: 2020
+  target_year: 2023
+  bands:
+    total: [POB_00_04, POB_05_09, POB_010_014, POB_015_019, POB_20_24, POB_25_29, POB_30_34,
+            POB_35_39, POB_40_44, POB_45_49, POB_50_54, POB_55_59, POB_60_64, POB_65_69,
+            POB_70_74, POB_75_79, POB_80_84, POB_85_mm]
+    age5p: [POB_05_09, POB_010_014, POB_015_019, POB_20_24, POB_25_29, POB_30_34,
+            POB_35_39, POB_40_44, POB_45_49, POB_50_54, POB_55_59, POB_60_64, POB_65_69,
+            POB_70_74, POB_75_79, POB_80_84, POB_85_mm]
+    age10p: [POB_010_014, POB_015_019, POB_20_24, POB_25_29, POB_30_34, POB_35_39,
+             POB_40_44, POB_45_49, POB_50_54, POB_55_59, POB_60_64, POB_65_69, POB_70_74,
+             POB_75_79, POB_80_84, POB_85_mm]
+    age6_11: [POB_05_09, POB_010_014]
+    age12_14: [POB_010_014]
+    age15_17: [POB_015_019]
+    age18_24: [POB_015_019, POB_20_24]
+    age25_59: [POB_25_29, POB_30_34, POB_35_39, POB_40_44, POB_45_49, POB_50_54, POB_55_59]
+    age60p: [POB_60_64, POB_65_69, POB_70_74, POB_75_79, POB_80_84, POB_85_mm]
+  status: assumed
+
+# ===========================================================================
+constraints:
+# ===========================================================================
+
+  households:
+
+    Dwellings:
+      geography: zone
+      census: TVIVPARHAB
+      conapo: total
+      note: >-
+        Total private inhabited dwellings (1,454,608 in the universe). TVIVHAB adds the
+        collective ones; VIVPAR_HAB is the subset with occupant information that the
+        VPH_* counts refer to.
+    Occupants:
+      geography: zone
+      census: OCUPVIVPAR * TVIVPARHAB / VIVPAR_HAB
+      conapo: total
+      note: >-
+        Occupants of private dwellings, rescaled from the with-information base
+        (VIVPAR_HAB) to all private inhabited dwellings (TVIVPARHAB) per zone.
+    HasCar:
+      geography: zone
+      census: VPH_AUTOM * TVIVPARHAB / VIVPAR_HAB
+      conapo: total
+      note: Dwellings with a car or van, same rescale as Occupants.
+    HasMoto:
+      geography: zone
+      census: VPH_MOTO * TVIVPARHAB / VIVPAR_HAB
+      conapo: total
+    HasBike:
+      geography: zone
+      census: VPH_BICI * TVIVPARHAB / VIVPAR_HAB
+      conapo: total
+    HasInternet:
+      geography: zone
+      census: VPH_INTER * TVIVPARHAB / VIVPAR_HAB
+      conapo: total
+
+  persons:
+
+    Persons:
+      geography: zone
+      census: P_6A11 + P_12A14 + P_15A17 + P_18YMAS
+      conapo: age5p
+      note: >-
+        Population aged 6+ with a stated age, so that the six age bands partition it
+        exactly. POBTOT - P_0A2 - P_3A5 is 1 % larger (age not specified). INEGI
+        suppresses some sex-split cells but not the totals, so Male + Female falls short
+        of this by up to 39 persons in a few zones (427 over the study area); the sex x
+        age crosses fall short of their bands the same way.
+    Male:
+      geography: zone
+      census: P_6A11_M + P_12A14_M + P_15A17_M + P_18YMAS_M
+      conapo: age5p
+      sex: M
+    Female:
+      geography: zone
+      census: P_6A11_F + P_12A14_F + P_15A17_F + P_18YMAS_F
+      conapo: age5p
+      sex: F
+
+    Age6_11:
+      geography: zone
+      census: P_6A11
+      conapo: age6_11
+    Age12_14:
+      geography: zone
+      census: P_12A14
+      conapo: age12_14
+    Age15_17:
+      geography: zone
+      census: P_15A17
+      conapo: age15_17
+    Age18_24:
+      geography: zone
+      census: P_18A24
+      conapo: age18_24
+    Age25_59:
+      geography: zone
+      census: P_18YMAS - P_18A24 - P_60YMAS
+      conapo: age25_59
+    Age60p:
+      geography: zone
+      census: P_60YMAS
+      conapo: age60p
+
+    Male_Age6_11:
+      geography: zone
+      attributes: [Male, Age6_11]
+      census: P_6A11_M
+      conapo: age6_11
+      sex: M
+    Male_Age12_14:
+      geography: zone
+      attributes: [Male, Age12_14]
+      census: P_12A14_M
+      conapo: age12_14
+      sex: M
+    Male_Age15_17:
+      geography: zone
+      attributes: [Male, Age15_17]
+      census: P_15A17_M
+      conapo: age15_17
+      sex: M
+    Male_Age18_24:
+      geography: zone
+      attributes: [Male, Age18_24]
+      census: P_18A24_M
+      conapo: age18_24
+      sex: M
+    Male_Age25_59:
+      geography: zone
+      attributes: [Male, Age25_59]
+      census: P_18YMAS_M - P_18A24_M - P_60YMAS_M
+      conapo: age25_59
+      sex: M
+    Male_Age60p:
+      geography: zone
+      attributes: [Male, Age60p]
+      census: P_60YMAS_M
+      conapo: age60p
+      sex: M
+    Female_Age6_11:
+      geography: zone
+      attributes: [Female, Age6_11]
+      census: P_6A11_F
+      conapo: age6_11
+      sex: F
+    Female_Age12_14:
+      geography: zone
+      attributes: [Female, Age12_14]
+      census: P_12A14_F
+      conapo: age12_14
+      sex: F
+    Female_Age15_17:
+      geography: zone
+      attributes: [Female, Age15_17]
+      census: P_15A17_F
+      conapo: age15_17
+      sex: F
+    Female_Age18_24:
+      geography: zone
+      attributes: [Female, Age18_24]
+      census: P_18A24_F
+      conapo: age18_24
+      sex: F
+    Female_Age25_59:
+      geography: zone
+      attributes: [Female, Age25_59]
+      census: P_18YMAS_F - P_18A24_F - P_60YMAS_F
+      conapo: age25_59
+      sex: F
+    Female_Age60p:
+      geography: zone
+      attributes: [Female, Age60p]
+      census: P_60YMAS_F
+      conapo: age60p
+      sex: F
+
+    Employed:
+      geography: zone
+      census: POCUPADA
+      conapo: age10p
+      note: Occupied population, 12+.
+    NotEmployed:
+      geography: zone
+      census: P_12A14 + P_15A17 + P_18YMAS - POCUPADA
+      conapo: age10p
+      note: >-
+        The 12+ population with a stated age less the occupied: the unemployed, the
+        inactive and those whose activity is not specified. PE_INAC alone is not used as a
+        target because the survey's 4,370 non-respondents would then be forced to match
+        the census's 16,000 with unspecified activity.
+    Cyclist:
+      geography: municipality
+      constant:
+        39: 28326
+        44: 903
+        51: 412
+        70: 5653
+        97: 14921
+        98: 8932
+        101: 7135
+        120: 34086
+        124: 1539
+      universe_share: POBTOT
+      conapo: age5p
+      provenance: >-
+        Census 2020 extended questionnaire (mxcensus.load_extended_personas(state=14)):
+        persons of the nine municipalities with MED_TRASLADO_TRAB_Bicicleta == 1 or
+        MED_TRASLADO_ESC_Bicicleta == 1, weighted by FACTOR. Sums to 101,907, the INEGI
+        cyclist total IMEPLAN calibrated its stage-2 weights to (Informe Técnico Final,
+        p. 16). tests/test_reweight.py recomputes the nine values.
+      note: >-
+        The microdata has no AGEB, so these count whole municipalities, and the survey
+        covers only part of the peripheral ones (Juanacatlán a third). universe_share
+        scales each by the universe's share of the municipality's population, which
+        brings the total to 100,453. The 2023 file then scales them like any other
+        5+ person count.
+
+  trips:
+
+    BusBoardings:
+      geography: region
+      constant:
+        1: 1851750
+      provenance: >-
+        SETRAN's 2023 estimate of daily bus boardings, the control of the survey's stage 3
+        (reports/expansion_factors.qmd, BUS_TARGET). Read as unlinked boardings, hence
+        matched to bus legs rather than bus trips; the report discusses the two readings.
+      note: Already a 2023 figure, so it is not scaled and its file carries no year suffix.

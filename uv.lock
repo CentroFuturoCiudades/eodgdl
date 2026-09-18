@@ -466,6 +466,9 @@ notebook = [
     { name = "mxcensus" },
     { name = "seaborn" },
 ]
+reweight = [
+    { name = "mxcensus" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -477,6 +480,7 @@ requires-dist = [
     { name = "mapclassify", marker = "extra == 'notebook'", specifier = ">=2.10" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
     { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus" },
+    { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=3.0.0" },
     { name = "pandera", specifier = ">=0.29.0" },
@@ -488,7 +492,7 @@ requires-dist = [
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13" },
     { name = "tqdm", specifier = ">=4.67" },
 ]
-provides-extras = ["notebook", "dev"]
+provides-extras = ["notebook", "reweight", "dev"]
 
 [[package]]
 name = "executing"
