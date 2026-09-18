@@ -1,4 +1,5 @@
 """Load and clean the IMEPLAN Guadalajara EOD 2023 origin-destination survey."""
+
 from __future__ import annotations
 
 import logging
@@ -68,13 +69,21 @@ HOME_PLACE = "Su casa"
 # that would otherwise be equally cheap. Decided 2026-09-03 from the diagnosis
 # behind _repair_start_times().
 _START_TIME_EDITS = (
-    ("+12h", 1.0, 0, 11, 12),        # 12-hour clock without AM/PM
-    ("-10h", 1.2, 15, 19, -10),      # an extra leading 1, only where it yields a morning hour
-    ("+10h", 1.5, 0, 9, 10),         # a missing leading 1
-    ("-10h+12h", 2.0, 10, 19, 2),    # an extra leading 1 on a 12-hour-clock entry
+    ("+12h", 1.0, 0, 11, 12),  # 12-hour clock without AM/PM
+    (
+        "-10h",
+        1.2,
+        15,
+        19,
+        -10,
+    ),  # an extra leading 1, only where it yields a morning hour
+    ("+10h", 1.5, 0, 9, 10),  # a missing leading 1
+    ("-10h+12h", 2.0, 10, 19, 2),  # an extra leading 1 on a 12-hour-clock entry
 )
-_START_TIME_TOLERANCE = 15   # minutes: an inversion this small is minute noise, not an hour error
-_START_TIME_MAX_COST = 4.0   # give up rather than rewrite a day
+_START_TIME_TOLERANCE = (
+    15  # minutes: an inversion this small is minute noise, not an hour error
+)
+_START_TIME_MAX_COST = 4.0  # give up rather than rewrite a day
 
 # Repeated diaries. A person's diary — the trips in row order, each read as its
 # origin and destination zone, motive, destination place type and every leg's
@@ -89,8 +98,12 @@ _START_TIME_MAX_COST = 4.0   # give up rather than rewrite a day
 # be told, so both are flagged and neither is dropped — the expansion factors
 # reconcile only on the file as shipped. Decided 2026-09-03 from the diagnosis
 # in reports/duplicate_diaries.qmd.
-DIARY_FLAG = "diario_repetido"          # column load_eod adds to hab: True when the diary repeats
-_DIARY_TWIN_MAX_OFFSET = 10             # minutes: the largest start-time difference a twin may show
+DIARY_FLAG = (
+    "diario_repetido"  # column load_eod adds to hab: True when the diary repeats
+)
+_DIARY_TWIN_MAX_OFFSET = (
+    10  # minutes: the largest start-time difference a twin may show
+)
 
 
 class EODTables(NamedTuple):
@@ -98,7 +111,9 @@ class EODTables(NamedTuple):
 
     viv: pd.DataFrame  # dwellings, indexed by folio_vivienda
     hab: pd.DataFrame  # persons, indexed by (folio_vivienda, folio_habitante)
-    trips: pd.DataFrame  # trips, indexed by (folio_vivienda, folio_habitante, folio_viaje)
+    trips: (
+        pd.DataFrame
+    )  # trips, indexed by (folio_vivienda, folio_habitante, folio_viaje)
     legs: pd.DataFrame  # trip legs, indexed by (..., folio_viaje, folio_traslado)
 
 
@@ -158,19 +173,19 @@ def clean_eod(df: pd.DataFrame, level: str) -> pd.DataFrame:
 # keep, filter or weight the rows as it sees fit (eodgdl.tasha.build leaves out
 # the rows marked as not being trips; tasha.chain_report counts the rest).
 
-FIX_FLAG = "ajustes"       # column load_eod adds to trips: what it changed on the row, ';'-joined, "" if nothing
-ISSUE_FLAG = "problemas"   # column load_eod adds to trips: what is still wrong with the row, ';'-joined, "" if nothing
+FIX_FLAG = "ajustes"  # column load_eod adds to trips: what it changed on the row, ';'-joined, "" if nothing
+ISSUE_FLAG = "problemas"  # column load_eod adds to trips: what is still wrong with the row, ';'-joined, "" if nothing
 
 # The vocabulary of the two columns. Each code names the field it touches and
 # where the value came from (fixes) or the defect left (issues); the docstring
 # of the rule that writes it is the evidence.
 FIX_CODES = {
     "hora:duplicado": "start time taken from the home-to-home return that repeats this untimed return; "
-                      "that duplicate row is dropped",
+    "that duplicate row is dropped",
     "hora:vecinos": "start time imputed from the nearest timed trips: the next trip's start less this "
-                    "trip's leg minutes and the donors' median activity duration",
+    "trip's leg minutes and the donors' median activity duration",
     "motivo:duplicado": "motive and destination type taken from the home-to-home return that repeats this row; "
-                        "that duplicate row is dropped",
+    "that duplicate row is dropped",
     "motivo:vecinos": "motive and destination type imputed from the nearest timed trips",
     "motivo:tipo_destino": "a 'Regresar a Casa' that did not reach the home zone, recoded from its destination type",
     "origen:casa": "origin set to the home zone: the previous trip was a return home that reached it",
@@ -191,29 +206,29 @@ FIX_CODES = {
 ISSUE_CODES = {
     "regreso_en_casa": "a 'Regresar a Casa' made while already at home: not a trip; the model build leaves it out",
     "hora_invertida": "starts before the previous trip could have arrived, beyond the tolerance and not "
-                      "overnight, and no unique repair exists",
+    "overnight, and no unique repair exists",
     "origen_discontinuo": "does not start in the zone the previous trip ended in; either side could be wrong",
     "regreso_sin_llegar": "a 'Regresar a Casa' whose destination zone is not the household's and whose "
-                          "destination type gives nothing to recode from",
+    "destination type gives nothing to recode from",
     "tipo_destino_dudoso": "a 'Regresar a Casa' that reached the home zone but reports a destination type "
-                           "that is not a home; the motive is kept",
+    "that is not a home; the motive is kept",
     "hora_nocturna": "starts by 06:00 after a trip that started at or after 18:00: read as overnight and "
-                     "left alone; a night shift or a mistyped hour, nothing says which",
+    "left alone; a night shift or a mistyped hour, nothing says which",
     "hora_anterior": "starts before the previous trip's start but within the tolerance of its arrival, so "
-                     "not repaired: minute noise",
+    "not repaired: minute noise",
     "hora_repetida": "starts at the same minute as the previous trip, whose legs fit within the tolerance "
-                     "(beyond it the row is hora_invertida instead)",
+    "(beyond it the row is hora_invertida instead)",
     "hora_traslapada": "starts after the previous trip's start but before its reported arrival, by no more "
-                       "than the tolerance: the leg minutes overrun the next start; rounding, not an hour error",
+    "than the tolerance: the leg minutes overrun the next start; rounding, not an hour error",
     "inicio_fuera_de_casa": "the day's first trip does not leave from 'Su casa'",
     "inicio_zona_ajena": "the day's first trip leaves from 'Su casa' but not from the household's zone; "
-                         "the two disagree and nothing says which is right",
+    "the two disagree and nothing says which is right",
     "fin_fuera_de_casa": "the day's last trip is not a 'Regresar a Casa' that reaches the household's zone",
     "actividad_en_casa": "an activity motive with destination type 'Su casa': work from home, or a return "
-                         "home mislabelled the other way round",
+    "home mislabelled the other way round",
     "motivo_guarderia": "a 'Guardería' motive, which the model maps to school; most are adults escorting a child",
 }
-NON_TRIP_ISSUES = ("regreso_en_casa",)   # rows kept in trips that are not trips
+NON_TRIP_ISSUES = ("regreso_en_casa",)  # rows kept in trips that are not trips
 # The five hora_* codes are mutually exclusive: a row carries at most one of them.
 
 # Nearest-neighbour imputation of the lost questionnaire block (motive,
@@ -227,15 +242,30 @@ _IMPUTE_NEIGHBOURS = 30
 _IMPUTE_WEIGHTS = {
     # categorical: main mode; sex; occupation (blank is its own level); the person's
     # own earlier motive at the same destination zone, "none" if never visited
-    "modo": 1.5, "sexo": 0.5, "ocupacion": 1.0, "motivo_propio": 2.0,
+    "modo": 1.5,
+    "sexo": 0.5,
+    "ocupacion": 1.0,
+    "motivo_propio": 2.0,
     # boolean: same origin and destination zone; leaves from the home zone; the next
     # row is a return home; first trip of the day; a work or school trip earlier in the day
-    "intrazonal": 1.0, "desde_casa": 1.0, "siguiente_regreso": 1.0, "primero": 1.0, "trabajo_previo": 1.0,
+    "intrazonal": 1.0,
+    "desde_casa": 1.0,
+    "siguiente_regreso": 1.0,
+    "primero": 1.0,
+    "trabajo_previo": 1.0,
     # numeric: log(1 + leg minutes); the next trip's start in hours; age in decades
-    "log_min": 1.0, "hora_siguiente": 1.0, "edad": 1.0,
+    "log_min": 1.0,
+    "hora_siguiente": 1.0,
+    "edad": 1.0,
 }
 _IMPUTE_CATEGORICAL = ("modo", "sexo", "ocupacion", "motivo_propio")
-_IMPUTE_BOOLEAN = ("intrazonal", "desde_casa", "siguiente_regreso", "primero", "trabajo_previo")
+_IMPUTE_BOOLEAN = (
+    "intrazonal",
+    "desde_casa",
+    "siguiente_regreso",
+    "primero",
+    "trabajo_previo",
+)
 _IMPUTE_NUMERIC = ("log_min", "hora_siguiente", "edad")
 
 
@@ -271,7 +301,9 @@ def non_trips(trips: pd.DataFrame) -> pd.Series:
 
 def _start_minutes(trips: pd.DataFrame) -> np.ndarray:
     """Start time in minutes from midnight per row; NaN where hour or minute is missing."""
-    return (trips.hora_inicio_h.astype(float) * 60 + trips.hora_inicio_m.astype(float)).to_numpy()
+    return (
+        trips.hora_inicio_h.astype(float) * 60 + trips.hora_inicio_m.astype(float)
+    ).to_numpy()
 
 
 def _shift(values: np.ndarray, pid: np.ndarray, by: int):
@@ -280,7 +312,9 @@ def _shift(values: np.ndarray, pid: np.ndarray, by: int):
     return out.to_numpy()
 
 
-def _duplicate_returns(trips: pd.DataFrame, home: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _duplicate_returns(
+    trips: pd.DataFrame, home: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """The motive-less returns home whose next row repeats them from home to home, and those rows.
 
     A trip with no motive that comes from elsewhere into the home zone is a
@@ -295,11 +329,15 @@ def _duplicate_returns(trips: pd.DataFrame, home: np.ndarray) -> tuple[np.ndarra
     """
     pid = _person_ids(trips)
     start = _start_minutes(trips)
-    origin, dest = trips.origen.astype(str).to_numpy(), trips.destino.astype(str).to_numpy()
+    origin, dest = (
+        trips.origen.astype(str).to_numpy(),
+        trips.destino.astype(str).to_numpy(),
+    )
     motive = trips.motivo_viaje.astype(object).to_numpy()
     next_is_home_return = (
         (_shift(motive, pid, -1) == HOME_MOTIVE)
-        & (_shift(origin, pid, -1) == home) & (_shift(dest, pid, -1) == home)
+        & (_shift(origin, pid, -1) == home)
+        & (_shift(dest, pid, -1) == home)
         & ~np.isnan(_shift(start, pid, -1).astype(float))
     )
     target = pd.isna(motive) & (origin != home) & (dest == home) & next_is_home_return
@@ -307,8 +345,12 @@ def _duplicate_returns(trips: pd.DataFrame, home: np.ndarray) -> tuple[np.ndarra
     return target, duplicate
 
 
-def _trip_features(trips: pd.DataFrame, home: np.ndarray, hab: pd.DataFrame | None,
-                   legs: pd.DataFrame | None) -> pd.DataFrame:
+def _trip_features(
+    trips: pd.DataFrame,
+    home: np.ndarray,
+    hab: pd.DataFrame | None,
+    legs: pd.DataFrame | None,
+) -> pd.DataFrame:
     """One row per trip: the features the nearest-neighbour imputation compares, plus its arithmetic.
 
     Carries ``start``, ``next_start``, ``prev_arrival`` and ``legmin`` in minutes,
@@ -319,38 +361,57 @@ def _trip_features(trips: pd.DataFrame, home: np.ndarray, hab: pd.DataFrame | No
     pid = _person_ids(trips)
     start = _start_minutes(trips)
     legmin = _leg_minutes(trips, legs)
-    origin, dest = trips.origen.astype(str).to_numpy(), trips.destino.astype(str).to_numpy()
+    origin, dest = (
+        trips.origen.astype(str).to_numpy(),
+        trips.destino.astype(str).to_numpy(),
+    )
     motive = trips.motivo_viaje.astype(object).to_numpy()
     activity = pd.notna(motive) & (motive != HOME_MOTIVE)
     mandatory = activity & pd.Series(motive).isin(["Trabajar", "Estudiar"]).to_numpy()
-    seen_mandatory = pd.Series(mandatory.astype(int)).groupby(pid).cumsum().to_numpy() - mandatory
+    seen_mandatory = (
+        pd.Series(mandatory.astype(int)).groupby(pid).cumsum().to_numpy() - mandatory
+    )
     person_key = pd.MultiIndex.from_arrays(
-        [trips.index.get_level_values(0), trips.index.get_level_values(1), dest])
+        [trips.index.get_level_values(0), trips.index.get_level_values(1), dest]
+    )
     own = pd.Series(np.where(activity, motive, None), index=person_key, dtype=object)
-    own = own.groupby(level=[0, 1, 2], sort=False).ffill().groupby(level=[0, 1, 2], sort=False).shift(1)
+    own = (
+        own.groupby(level=[0, 1, 2], sort=False)
+        .ffill()
+        .groupby(level=[0, 1, 2], sort=False)
+        .shift(1)
+    )
     next_start = _shift(start, pid, -1).astype(float)
-    f = pd.DataFrame({
-        "modo": trips.modo_principal.astype(str).to_numpy(),
-        "motivo_propio": pd.Series(own.to_numpy(), dtype=object).fillna("none").astype(str).to_numpy(),
-        "intrazonal": origin == dest,
-        "desde_casa": origin == home,
-        "siguiente_regreso": _shift(motive, pid, -1) == HOME_MOTIVE,
-        "primero": np.r_[True, pid[1:] != pid[:-1]],
-        "trabajo_previo": seen_mandatory > 0,
-        "log_min": np.log1p(legmin),
-        "hora_siguiente": next_start / 60,
-        "start": start,
-        "next_start": next_start,
-        "prev_arrival": _shift(start + legmin, pid, 1).astype(float),
-        "legmin": legmin,
-        "activity": activity,
-        "motivo": pd.Series(motive, dtype=object).astype(str).to_numpy(),
-        "tipo": trips.tipo_lugar_destino.astype(object).astype(str).to_numpy(),
-    }, index=trips.index)
+    f = pd.DataFrame(
+        {
+            "modo": trips.modo_principal.astype(str).to_numpy(),
+            "motivo_propio": pd.Series(own.to_numpy(), dtype=object)
+            .fillna("none")
+            .astype(str)
+            .to_numpy(),
+            "intrazonal": origin == dest,
+            "desde_casa": origin == home,
+            "siguiente_regreso": _shift(motive, pid, -1) == HOME_MOTIVE,
+            "primero": np.r_[True, pid[1:] != pid[:-1]],
+            "trabajo_previo": seen_mandatory > 0,
+            "log_min": np.log1p(legmin),
+            "hora_siguiente": next_start / 60,
+            "start": start,
+            "next_start": next_start,
+            "prev_arrival": _shift(start + legmin, pid, 1).astype(float),
+            "legmin": legmin,
+            "activity": activity,
+            "motivo": pd.Series(motive, dtype=object).astype(str).to_numpy(),
+            "tipo": trips.tipo_lugar_destino.astype(object).astype(str).to_numpy(),
+        },
+        index=trips.index,
+    )
     if hab is not None:
         person = hab.reindex(trips.index.droplevel("folio_viaje"))
         f["sexo"] = person.sexo_nacimiento.astype(str).to_numpy()
-        f["ocupacion"] = person.ocupacion.astype(object).fillna("NA").astype(str).to_numpy()
+        f["ocupacion"] = (
+            person.ocupacion.astype(object).fillna("NA").astype(str).to_numpy()
+        )
         f["edad"] = person.edad.to_numpy(dtype=float) / 10
     return f
 
@@ -371,14 +432,28 @@ def _donor_mask(f: pd.DataFrame) -> np.ndarray:
     filter leaves them out along with the trips that start before their
     predecessor could have arrived.
     """
-    start, next_start, prev_arrival = f.start.to_numpy(), f.next_start.to_numpy(), f.prev_arrival.to_numpy()
+    start, next_start, prev_arrival = (
+        f.start.to_numpy(),
+        f.next_start.to_numpy(),
+        f.prev_arrival.to_numpy(),
+    )
     with np.errstate(invalid="ignore"):
         duration_ok = (next_start - start - f.legmin.to_numpy()) >= 0
-        start_ok = np.isnan(prev_arrival) | (start >= prev_arrival - _START_TIME_TOLERANCE)
-    return f.activity.to_numpy() & ~np.isnan(start) & ~np.isnan(next_start) & duration_ok & start_ok
+        start_ok = np.isnan(prev_arrival) | (
+            start >= prev_arrival - _START_TIME_TOLERANCE
+        )
+    return (
+        f.activity.to_numpy()
+        & ~np.isnan(start)
+        & ~np.isnan(next_start)
+        & duration_ok
+        & start_ok
+    )
 
 
-def _nearest_donors(targets: pd.DataFrame, donors: pd.DataFrame, k: int = _IMPUTE_NEIGHBOURS) -> pd.DataFrame:
+def _nearest_donors(
+    targets: pd.DataFrame, donors: pd.DataFrame, k: int = _IMPUTE_NEIGHBOURS
+) -> pd.DataFrame:
     """The k nearest donors' vote for every target row: motive, type, activity duration, start.
 
     Distance is the weighted mismatch count over the categorical and boolean
@@ -388,12 +463,22 @@ def _nearest_donors(targets: pd.DataFrame, donors: pd.DataFrame, k: int = _IMPUT
     closer set; the type is the most common among the donors that voted for
     it, and ``duration`` and ``start`` are their medians, in minutes.
     """
-    categorical = [c for c in _IMPUTE_CATEGORICAL if c in donors.columns and c in targets.columns]
+    categorical = [
+        c for c in _IMPUTE_CATEGORICAL if c in donors.columns and c in targets.columns
+    ]
     boolean = list(_IMPUTE_BOOLEAN)
-    numeric = [c for c in _IMPUTE_NUMERIC if c in donors.columns and c in targets.columns]
+    numeric = [
+        c for c in _IMPUTE_NUMERIC if c in donors.columns and c in targets.columns
+    ]
     col = {c: donors[c].to_numpy() for c in categorical + boolean + numeric}
     d_motive, d_type = donors.motivo.to_numpy(), donors.tipo.to_numpy()
-    d_duration = np.clip(donors.next_start.to_numpy() - donors.start.to_numpy() - donors.legmin.to_numpy(), 0, None)
+    d_duration = np.clip(
+        donors.next_start.to_numpy()
+        - donors.start.to_numpy()
+        - donors.legmin.to_numpy(),
+        0,
+        None,
+    )
     d_start = donors.start.to_numpy()
     k = min(k, len(donors))
     rows = []
@@ -407,16 +492,31 @@ def _nearest_donors(targets: pd.DataFrame, donors: pd.DataFrame, k: int = _IMPUT
             if not np.isnan(t[c]):
                 d += _IMPUTE_WEIGHTS[c] * np.abs(col[c] - t[c])
         near = np.argpartition(d, k - 1)[:k]
-        tally = pd.DataFrame({"m": d_motive[near], "d": d[near]}).groupby("m").d.agg(["size", "sum"])
+        tally = (
+            pd.DataFrame({"m": d_motive[near], "d": d[near]})
+            .groupby("m")
+            .d.agg(["size", "sum"])
+        )
         motive = tally.sort_values(["size", "sum"], ascending=[False, True]).index[0]
         vote = near[d_motive[near] == motive]
-        rows.append((motive, pd.Series(d_type[vote]).mode().iloc[0],
-                     float(np.median(d_duration[vote])), float(np.median(d_start[vote]))))
-    return pd.DataFrame(rows, columns=["motivo", "tipo", "duration", "start"], index=targets.index)
+        rows.append(
+            (
+                motive,
+                pd.Series(d_type[vote]).mode().iloc[0],
+                float(np.median(d_duration[vote])),
+                float(np.median(d_start[vote])),
+            )
+        )
+    return pd.DataFrame(
+        rows, columns=["motivo", "tipo", "duration", "start"], index=targets.index
+    )
 
 
 def _impute_untimed_trips(
-    trips: pd.DataFrame, home: np.ndarray, hab: pd.DataFrame | None, legs: pd.DataFrame | None
+    trips: pd.DataFrame,
+    home: np.ndarray,
+    hab: pd.DataFrame | None,
+    legs: pd.DataFrame | None,
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
     """Fill the start time, motive and destination type of the trips that lost their questionnaire block.
 
@@ -472,29 +572,43 @@ def _impute_untimed_trips(
     """
     trips = trips.copy()
     n = len(trips)
-    masks = {key: np.zeros(n, dtype=bool) for key in (
-        "time_from_duplicate", "motive_from_duplicate", "duplicate", "time_from_neighbours", "motive_from_neighbours")}
+    masks = {
+        key: np.zeros(n, dtype=bool)
+        for key in (
+            "time_from_duplicate",
+            "motive_from_duplicate",
+            "duplicate",
+            "time_from_neighbours",
+            "motive_from_neighbours",
+        )
+    }
     target, duplicate = _duplicate_returns(trips, home)
     if target.any():
         untimed = np.isnan(_start_minutes(trips))
         pos = np.flatnonzero(target)
         for col in ("motivo_viaje", "tipo_lugar_destino"):
-            trips.iloc[pos, trips.columns.get_loc(col)] = trips.iloc[pos + 1][col].to_numpy()
+            trips.iloc[pos, trips.columns.get_loc(col)] = trips.iloc[pos + 1][
+                col
+            ].to_numpy()
         timed_pos = pos[untimed[pos]]
         for col in ("hora_inicio_h", "hora_inicio_m"):
-            trips.iloc[timed_pos, trips.columns.get_loc(col)] = trips.iloc[timed_pos + 1][col].to_numpy()
+            trips.iloc[timed_pos, trips.columns.get_loc(col)] = trips.iloc[
+                timed_pos + 1
+            ][col].to_numpy()
         masks["time_from_duplicate"] |= target & untimed
         masks["motive_from_duplicate"] |= target
         masks["duplicate"] |= duplicate
 
-    for _ in range(20):   # blocks are filled back to front, one row of each per pass
+    for _ in range(20):  # blocks are filled back to front, one row of each per pass
         f = _trip_features(trips, home, hab, legs)
         untimed = np.isnan(f.start.to_numpy())
         no_motive = trips.motivo_viaje.isna().to_numpy()
         pending = untimed | no_motive
         if not pending.any():
             break
-        next_untimed = np.isnan(f.next_start.to_numpy()) & (_shift(untimed, _person_ids(trips), -1) == True)  # noqa: E712
+        next_untimed = np.isnan(f.next_start.to_numpy()) & (
+            _shift(untimed, _person_ids(trips), -1) == True
+        )
         ready = pending & ~next_untimed
         if not ready.any():
             ready = pending
@@ -512,8 +626,12 @@ def _impute_untimed_trips(
             t = f[ready][need_time]
             v = vote[need_time]
             latest = t.next_start.to_numpy() - t.legmin.to_numpy()
-            start = np.where(np.isnan(latest), v.start.to_numpy(), latest - v.duration.to_numpy())
-            start = np.fmax(start, t.prev_arrival.to_numpy())          # no earlier than the previous arrival
+            start = np.where(
+                np.isnan(latest), v.start.to_numpy(), latest - v.duration.to_numpy()
+            )
+            start = np.fmax(
+                start, t.prev_arrival.to_numpy()
+            )  # no earlier than the previous arrival
             start = np.where(np.isnan(latest), start, np.fmin(start, latest))
             start = np.clip(np.round(start), 0, 24 * 60 - 1).astype(int)
             trips.loc[t.index, "hora_inicio_h"] = pd.array(start // 60, dtype="Int64")
@@ -524,7 +642,9 @@ def _impute_untimed_trips(
     return trips, masks
 
 
-def _recode_returns_by_destination(trips: pd.DataFrame, home: np.ndarray) -> tuple[pd.DataFrame, np.ndarray]:
+def _recode_returns_by_destination(
+    trips: pd.DataFrame, home: np.ndarray
+) -> tuple[pd.DataFrame, np.ndarray]:
     """Give a 'Regresar a Casa' that did not reach the home zone its destination type's motive.
 
     See ``_MOTIVO_POR_TIPO_LUGAR_DESTINO``. The zone is the arbiter: where it
@@ -534,8 +654,12 @@ def _recode_returns_by_destination(trips: pd.DataFrame, home: np.ndarray) -> tup
     from home. Returns the trips and the mask of the rows recoded.
     """
     kind = trips.tipo_lugar_destino
-    away = ((trips.motivo_viaje == HOME_MOTIVE) & kind.notna() & (kind != HOME_PLACE)
-            & (trips.destino.astype(str).to_numpy() != home))
+    away = (
+        (trips.motivo_viaje == HOME_MOTIVE)
+        & kind.notna()
+        & (kind != HOME_PLACE)
+        & (trips.destino.astype(str).to_numpy() != home)
+    )
     if away.any():
         trips = trips.copy()
         trips["motivo_viaje"] = trips.motivo_viaje.mask(
@@ -544,7 +668,9 @@ def _recode_returns_by_destination(trips: pd.DataFrame, home: np.ndarray) -> tup
     return trips, away.to_numpy()
 
 
-def _home_to_home_returns(trips: pd.DataFrame, skip: np.ndarray | None = None) -> np.ndarray:
+def _home_to_home_returns(
+    trips: pd.DataFrame, skip: np.ndarray | None = None
+) -> np.ndarray:
     """Mark the 'return home' trips made by a person who is already at home.
 
     Walk each chain with an at-home flag: it starts as whether the first trip
@@ -564,7 +690,11 @@ def _home_to_home_returns(trips: pd.DataFrame, skip: np.ndarray | None = None) -
     """
     to_home = (trips.motivo_viaje == HOME_MOTIVE).to_numpy()
     from_home = (trips.tipo_lugar_origen == HOME_PLACE).to_numpy()
-    skip = np.zeros(len(trips), dtype=bool) if skip is None else np.asarray(skip, dtype=bool)
+    skip = (
+        np.zeros(len(trips), dtype=bool)
+        if skip is None
+        else np.asarray(skip, dtype=bool)
+    )
     pid = _person_ids(trips)
     marked = np.zeros(len(trips), dtype=bool)
     at_home = False
@@ -580,7 +710,9 @@ def _home_to_home_returns(trips: pd.DataFrame, skip: np.ndarray | None = None) -
     return marked
 
 
-def _start_from_home_after_return(trips: pd.DataFrame, home: np.ndarray) -> tuple[pd.DataFrame, np.ndarray]:
+def _start_from_home_after_return(
+    trips: pd.DataFrame, home: np.ndarray
+) -> tuple[pd.DataFrame, np.ndarray]:
     """Make a trip that follows a return home start in the home zone.
 
     A trip whose origin is not where the previous trip ended breaks the chain.
@@ -599,8 +731,11 @@ def _start_from_home_after_return(trips: pd.DataFrame, home: np.ndarray) -> tupl
     """
     prev_return = (trips.motivo_viaje == HOME_MOTIVE).groupby(level=PERSON).shift(1)
     prev_dest = trips.destino.astype(str).groupby(level=PERSON).shift(1)
-    fix = (prev_return.fillna(False).astype(bool).to_numpy()
-           & (prev_dest.to_numpy() == home) & (trips.origen.astype(str).to_numpy() != home))
+    fix = (
+        prev_return.fillna(False).astype(bool).to_numpy()
+        & (prev_dest.to_numpy() == home)
+        & (trips.origen.astype(str).to_numpy() != home)
+    )
     if fix.any():
         trips = trips.copy()
         trips.loc[fix, "origen"] = home[fix]
@@ -610,8 +745,13 @@ def _start_from_home_after_return(trips: pd.DataFrame, home: np.ndarray) -> tupl
 def _leg_minutes(trips: pd.DataFrame, legs: pd.DataFrame | None) -> np.ndarray:
     """Travel minutes per trip, from ``legs`` or from the traslado*_min columns; zeros if neither."""
     if legs is not None:
-        return (legs.groupby(level=[0, 1, 2]).traslado_min.sum()
-                    .reindex(trips.index).fillna(0).to_numpy(dtype=float))
+        return (
+            legs.groupby(level=[0, 1, 2])
+            .traslado_min.sum()
+            .reindex(trips.index)
+            .fillna(0)
+            .to_numpy(dtype=float)
+        )
     cols = [c for c in trips.columns if c.startswith("traslado") and c.endswith("_min")]
     if cols:
         return trips[cols].sum(axis=1, min_count=1).fillna(0).to_numpy(dtype=float)
@@ -625,11 +765,18 @@ def _overnight(prev: float, this: float) -> bool:
 def _chain_needs_repair(start: np.ndarray, travel: np.ndarray) -> bool:
     """Does some trip start before the previous one could have arrived, beyond the tolerance?"""
     tol = _START_TIME_TOLERANCE
-    return any(b < a + tr - tol and not _overnight(a, b)
-               for a, b, tr in zip(start[:-1], start[1:], travel[:-1]))
+    return any(
+        b < a + tr - tol and not _overnight(a, b)
+        for a, b, tr in zip(start[:-1], start[1:], travel[:-1])
+    )
 
 
-def _search_edits(hours: np.ndarray, mins: np.ndarray, travel: np.ndarray, locked: np.ndarray | None = None):
+def _search_edits(
+    hours: np.ndarray,
+    mins: np.ndarray,
+    travel: np.ndarray,
+    locked: np.ndarray | None = None,
+):
     """The unique fewest-cost combination of edits that makes one chain feasible, or None.
 
     Feasible means every trip starts no earlier than the previous trip's
@@ -641,8 +788,19 @@ def _search_edits(hours: np.ndarray, mins: np.ndarray, travel: np.ndarray, locke
     """
     tol, cap = _START_TIME_TOLERANCE, _START_TIME_MAX_COST
     locked = np.zeros(len(hours), dtype=bool) if locked is None else locked
-    options = [[("", 0.0, h)] + ([] if lock else [(name, c, h + d) for name, c, lo, hi, d in _START_TIME_EDITS if lo <= h <= hi])
-               for h, lock in zip(hours, locked)]
+    options = [
+        [("", 0.0, h)]
+        + (
+            []
+            if lock
+            else [
+                (name, c, h + d)
+                for name, c, lo, hi, d in _START_TIME_EDITS
+                if lo <= h <= hi
+            ]
+        )
+        for h, lock in zip(hours, locked)
+    ]
     n = len(hours)
     best = [cap + 1e-9]
     found: list[tuple[str, ...]] = []
@@ -673,7 +831,9 @@ def _search_edits(hours: np.ndarray, mins: np.ndarray, travel: np.ndarray, locke
 
 
 def _repair_start_times(
-    trips: pd.DataFrame, legs: pd.DataFrame | None = None, locked: np.ndarray | None = None
+    trips: pd.DataFrame,
+    legs: pd.DataFrame | None = None,
+    locked: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray, int]:
     """Repair mistyped start hours with the fewest edits that make a chain monotone.
 
@@ -712,7 +872,11 @@ def _repair_start_times(
     hours = trips.hora_inicio_h.to_numpy(dtype=int)
     mins = trips.hora_inicio_m.to_numpy(dtype=int)
     travel = _leg_minutes(trips, legs)
-    locked = np.zeros(len(trips), dtype=bool) if locked is None else np.asarray(locked, dtype=bool)
+    locked = (
+        np.zeros(len(trips), dtype=bool)
+        if locked is None
+        else np.asarray(locked, dtype=bool)
+    )
     pid = _person_ids(trips)
     first = np.flatnonzero(np.r_[True, pid[1:] != pid[:-1]])
     last = np.r_[first[1:], len(trips)]
@@ -736,7 +900,9 @@ def _repair_start_times(
     return trips, flag, chains
 
 
-def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame | None) -> dict[str, np.ndarray]:
+def _remaining_issues(
+    trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame | None
+) -> dict[str, np.ndarray]:
     """What is still wrong with each trip of a chain after the rules, one mask per ``ISSUE_CODES`` entry it can produce.
 
     Runs over the chain without its non-trips, so "first", "last" and
@@ -770,7 +936,10 @@ def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame 
     travel = _leg_minutes(trips, legs)
     prev_start = _shift(start, pid, 1).astype(float)
     prev_arrival = _shift(start + travel, pid, 1).astype(float)
-    origin, dest = trips.origen.astype(str).to_numpy(), trips.destino.astype(str).to_numpy()
+    origin, dest = (
+        trips.origen.astype(str).to_numpy(),
+        trips.destino.astype(str).to_numpy(),
+    )
     prev_dest = _shift(dest, pid, 1)
     has_prev = pd.notna(prev_dest)
     is_return = (trips.motivo_viaje == HOME_MOTIVE).to_numpy()
@@ -782,7 +951,9 @@ def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame 
         inverted = has_prev & (start < prev_arrival - _START_TIME_TOLERANCE) & ~wrap
         earlier = has_prev & (start < prev_start) & ~inverted & ~wrap
         same_minute = has_prev & (start == prev_start) & ~inverted
-        overlapped = has_prev & (start > prev_start) & (start < prev_arrival) & ~inverted
+        overlapped = (
+            has_prev & (start > prev_start) & (start < prev_arrival) & ~inverted
+        )
     return {
         "hora_invertida": inverted,
         "hora_nocturna": wrap,
@@ -791,7 +962,10 @@ def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame 
         "hora_traslapada": overlapped,
         "origen_discontinuo": has_prev & (origin != prev_dest.astype(str)),
         "regreso_sin_llegar": is_return & (dest != home),
-        "tipo_destino_dudoso": is_return & (dest == home) & kind.notna().to_numpy() & (kind != HOME_PLACE).to_numpy(),
+        "tipo_destino_dudoso": is_return
+        & (dest == home)
+        & kind.notna().to_numpy()
+        & (kind != HOME_PLACE).to_numpy(),
         "inicio_fuera_de_casa": first & ~from_home,
         "inicio_zona_ajena": first & from_home & (origin != home),
         "fin_fuera_de_casa": last & ~(is_return & (dest == home)),
@@ -802,10 +976,16 @@ def _remaining_issues(trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame 
 
 def _home_zone(trips: pd.DataFrame, viv: pd.DataFrame) -> np.ndarray:
     """The household's zone id on every trip row."""
-    return viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
+    return (
+        viv.ageb.astype(str)
+        .reindex(trips.index.get_level_values("folio_vivienda"))
+        .to_numpy()
+    )
 
 
-def mark_issues(trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None) -> pd.Series:
+def mark_issues(
+    trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None
+) -> pd.Series:
     """The ``problemas`` column of a trip table in chain order, recomputed from its current values.
 
     The marking stage of :func:`clean_trip_chains` on its own: the returns
@@ -827,7 +1007,10 @@ def mark_issues(trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | Non
 
 
 def clean_trip_chains(
-    trips: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None, hab: pd.DataFrame | None = None
+    trips: pd.DataFrame,
+    viv: pd.DataFrame,
+    legs: pd.DataFrame | None = None,
+    hab: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Apply the chain rules to a trip table in row (folio_viaje) order; flag everything, drop only the duplicate returns.
 
@@ -867,8 +1050,12 @@ def clean_trip_chains(
     untimed = (trips.hora_inicio_h.isna() | trips.hora_inicio_m.isna()).to_numpy()
 
     trips, imputed = _impute_untimed_trips(trips, home, hab, legs)
-    for key, code in (("time_from_duplicate", "hora:duplicado"), ("motive_from_duplicate", "motivo:duplicado"),
-                      ("time_from_neighbours", "hora:vecinos"), ("motive_from_neighbours", "motivo:vecinos")):
+    for key, code in (
+        ("time_from_duplicate", "hora:duplicado"),
+        ("motive_from_duplicate", "motivo:duplicado"),
+        ("time_from_neighbours", "hora:vecinos"),
+        ("motive_from_neighbours", "motivo:vecinos"),
+    ):
         _add_code(fixes, imputed[key], code)
 
     trips, recoded = _recode_returns_by_destination(trips, home)
@@ -892,7 +1079,9 @@ def clean_trip_chains(
     for code, mask in left.items():
         _add_code(issues, _expand(mask, where, n), code)
     untimed_persons = int(trips.index[untimed].droplevel("folio_viaje").nunique())
-    keep = ~imputed["duplicate"]            # the duplicates' answers now sit on the returns they repeat
+    keep = ~imputed[
+        "duplicate"
+    ]  # the duplicates' answers now sit on the returns they repeat
     trips = trips[keep].copy()
     trips[FIX_FLAG] = fixes[keep]
     trips[ISSUE_FLAG] = issues[keep]
@@ -927,7 +1116,9 @@ def _expand(mask: np.ndarray, where: np.ndarray, n: int) -> np.ndarray:
 
 def _as_text(df: pd.DataFrame) -> pd.Series:
     """The rows of ``df`` joined with '|', missing values as empty strings, categoricals as their labels."""
-    cols = [df[c].astype(object).where(df[c].notna(), "").astype(str) for c in df.columns]
+    cols = [
+        df[c].astype(object).where(df[c].notna(), "").astype(str) for c in df.columns
+    ]
     out = cols[0]
     for c in cols[1:]:
         out = out + "|" + c
@@ -936,13 +1127,21 @@ def _as_text(df: pd.DataFrame) -> pd.Series:
 
 def _diary_signatures(trips: pd.DataFrame, legs: pd.DataFrame | None) -> pd.DataFrame:
     """One row per trip: its exact signature, whether a leg is not on foot, and its start minute."""
-    sig = _as_text(trips[["origen", "destino", "motivo_viaje", "tipo_lugar_destino", "n_traslados"]])
+    sig = _as_text(
+        trips[
+            ["origen", "destino", "motivo_viaje", "tipo_lugar_destino", "n_traslados"]
+        ]
+    )
     mode_cols = [f"traslado{i}_medio" for i in range(1, 6)]
     if "traslado1_medio" in trips.columns:
-        leg_cols = [f"traslado{i}_{k}" for i in range(1, 6) for k in ("medio", "min", "pago")]
+        leg_cols = [
+            f"traslado{i}_{k}" for i in range(1, 6) for k in ("medio", "min", "pago")
+        ]
         sig = sig + "|" + _as_text(trips[leg_cols])
         modes = trips[mode_cols]
-        moving = ((modes.astype(object) != "A PIE") & modes.notna()).any(axis=1).to_numpy()
+        moving = (
+            ((modes.astype(object) != "A PIE") & modes.notna()).any(axis=1).to_numpy()
+        )
     else:
         if legs is None:
             raise ValueError("trips has no traslado columns; pass legs")
@@ -951,15 +1150,23 @@ def _diary_signatures(trips: pd.DataFrame, legs: pd.DataFrame | None) -> pd.Data
         sig = sig + "|" + by_trip.reindex(trips.index).fillna("")
         moving = (
             (legs.traslado_medio.astype(object) != "A PIE")
-            .groupby(level=trips.index.names, sort=False).any()
-            .reindex(trips.index).fillna(False).to_numpy()
+            .groupby(level=trips.index.names, sort=False)
+            .any()
+            .reindex(trips.index)
+            .fillna(False)
+            .to_numpy()
         )
     start = trips.hora_inicio_h.astype(float) * 60 + trips.hora_inicio_m.astype(float)
-    return pd.DataFrame({"sig": sig, "moving": moving, "start": start.to_numpy()}, index=trips.index)
+    return pd.DataFrame(
+        {"sig": sig, "moving": moving, "start": start.to_numpy()}, index=trips.index
+    )
 
 
 def flag_repeated_diaries(
-    trips: pd.DataFrame, hab: pd.DataFrame, viv: pd.DataFrame, legs: pd.DataFrame | None = None
+    trips: pd.DataFrame,
+    hab: pd.DataFrame,
+    viv: pd.DataFrame,
+    legs: pd.DataFrame | None = None,
 ) -> pd.Series:
     """True for every person whose diary repeats in another household of the same block.
 
@@ -989,13 +1196,17 @@ def flag_repeated_diaries(
     """
     d = _diary_signatures(trips.sort_index(), legs)
     person = d.groupby(level=PERSON, sort=False)
-    diary = pd.DataFrame({
-        "sig": person.sig.agg(" ## ".join),
-        "n": person.size(),
-        "moving": person.moving.any(),
-        "starts": person.start.agg(list),
-    })
-    diary["ageb"] = viv.ageb.reindex(diary.index.get_level_values("folio_vivienda")).to_numpy()
+    diary = pd.DataFrame(
+        {
+            "sig": person.sig.agg(" ## ".join),
+            "n": person.size(),
+            "moving": person.moving.any(),
+            "starts": person.start.agg(list),
+        }
+    )
+    diary["ageb"] = viv.ageb.reindex(
+        diary.index.get_level_values("folio_vivienda")
+    ).to_numpy()
     diary["fecha"] = hab.fecha.reindex(diary.index).to_numpy()
     diary = diary[(diary.n >= 2) & diary.moving]
     flagged = pd.Series(False, index=hab.index, name=DIARY_FLAG)
@@ -1009,7 +1220,10 @@ def flag_repeated_diaries(
                 if a[0] == b[0]:
                     continue
                 offsets = np.abs(starts[i] - starts[j])
-                if not np.isnan(offsets).any() and offsets.max() <= _DIARY_TWIN_MAX_OFFSET:
+                if (
+                    not np.isnan(offsets).any()
+                    and offsets.max() <= _DIARY_TWIN_MAX_OFFSET
+                ):
                     flagged.loc[a] = True
                     break
     return flagged
@@ -1130,7 +1344,9 @@ def load_eod(
         shipped = df_trips.index
         df_trips, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab)
         # the dropped duplicates leave viajes_contados one too high for their persons
-        lost = shipped.difference(df_trips.index).droplevel("folio_viaje").value_counts()
+        lost = (
+            shipped.difference(df_trips.index).droplevel("folio_viaje").value_counts()
+        )
         df_hab.loc[lost.index, "viajes_contados"] -= lost.to_numpy()
         log.info("trip chains cleaned: %s", counts)
         if verbose:
