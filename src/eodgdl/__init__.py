@@ -1,4 +1,5 @@
 """eodgdl — IMEPLAN Guadalajara EOD 2023 origin-destination survey loader and TAZ tools."""
+
 from importlib.metadata import PackageNotFoundError, version
 
 try:
@@ -6,7 +7,17 @@ try:
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
-from eodgdl.eod import EODTables, clean_eod, load_eod, rename_imeplan
+from eodgdl import data, review, tasha
+from eodgdl._resources import imeplan_rename_map
+from eodgdl.chains import clean_trip_chains
+from eodgdl.eod import (
+    EODTables,
+    clean_eod,
+    flag_repeated_diaries,
+    load_eod,
+    rename_imeplan,
+)
+from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 from eodgdl.taz import (
     load_imeplan_agebs,
     load_mtaz,
@@ -14,9 +25,6 @@ from eodgdl.taz import (
     load_zm_muns,
     zone_system_report,
 )
-from eodgdl.schemas import hab_schema, trips_schema, viv_schema
-from eodgdl._resources import imeplan_rename_map
-from eodgdl import data
 
 __all__ = [
     "__version__",
@@ -25,6 +33,8 @@ __all__ = [
     "load_eod",
     "rename_imeplan",
     "clean_eod",
+    "clean_trip_chains",
+    "flag_repeated_diaries",
     # Zone system
     "load_zm_muns",
     "load_taz",
@@ -38,4 +48,8 @@ __all__ = [
     # Config / data
     "imeplan_rename_map",
     "data",
+    # Model output schema
+    "tasha",
+    # Review sheets for the trip chains
+    "review",
 ]

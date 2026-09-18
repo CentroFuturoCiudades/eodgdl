@@ -36,6 +36,55 @@ zone_system_report(taz, mtaz)                       # diagnostics
 
 Every loader fetches from the mirror by default and accepts a local path override.
 
+## Travel-demand model schema
+
+`eodgdl.tasha` targets the three tables the travel-demand model consumes
+(`od_households.csv`, `od_people.csv`, `od_trips.csv`). The contract lives in
+`model_schema.yaml`, the survey mapping in `mappings.yaml` — both shipped inside the
+package and meant to be read by hand.
+
+```python
+from eodgdl import load_eod, tasha
+
+od = tasha.build(load_eod("data"))   # ODTables(households, people, trips)
+tasha.validate_all(*od)
+
+tasha.build_map("Mode")              # {'A PIE': 'W', 'CAMIÓN O AUTOBÚS': 'B', …}
+tasha.mapping("Mode")                # ...plus the override, notes and caveats
+tasha.gaps()                         # what is assumed, constant, or unresolved
+```
+
+```bash
+eodgdl tasha build --data data/ --out output/   # build, write and validate
+eodgdl tasha check                              # mappings vs. contract
+eodgdl tasha gaps                               # open items
+eodgdl tasha validate output/                   # produced CSVs vs. contract
+```
+
+Zone columns carry the survey's own AGEB CVEGEO or locality id as a string, so the
+output joins straight to the census tables; read them back with `dtype=str`.
+
+See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
+mapping-entry format, and the open items.
+
+## Trip-chain review
+
+The chains `load_eod` leaves with a `problemas` code can be fixed by hand through a
+review sheet: a CSV in the chain browser's table format (`notebooks/chain_browser.ipynb`),
+one row per shipped trip, `shipped → cleaned` where the rules changed a value.
+
+```bash
+eodgdl review export --data data/ --out notebooks/chain_review.csv   # the pending chains, to edit by hand
+eodgdl review verify notebooks/chain_review.csv --data data/         # recover the edits, apply, recompute problemas
+```
+
+Next to every column that may take a change stands an empty `new …` column: write the
+value that should hold there (`dropped` under `new status` takes a row out, `restored`
+brings back a row `load_eod` dropped) and say why under `note`. `verify` (and the
+browser's *load sheet* box) reads the filled cells as the edits, applies them with
+`<field>:revision` codes in `ajustes`, and reports per person which defects were cleared,
+left or made. See `eodgdl.review` for the functions behind both.
+
 ## Installation
 
 ```bash
@@ -72,8 +121,14 @@ above. The 4 MB technical report (`Informe_Tecnico_Final_EOD_2023.pdf`) is inclu
 reference.
 
 A small number of manual data-entry corrections are applied by the loaders (encoded as
-documented constants in `eod.py` and `taz.py`): three trip-mode fixes, two micro-zone
+documented constants in `eod.py`, `chains.py` and `taz.py`): three trip-mode fixes, two micro-zone
 population double-count adjustments, and three AGEB `MZONA` reassignments.
+
+The AGEB table also mixes locality rows with the AGEB rows that subdivide them, double-
+counting those localities' population. `load_imeplan_agebs` keeps whichever side partitions
+the locality more finely — the AGEBs where there is more than one, otherwise the locality —
+which drops three rows and makes the AGEB and micro-zone population totals reconcile
+exactly.
 
 ## Giro imputation model (`eodgdl[giro]`)
 

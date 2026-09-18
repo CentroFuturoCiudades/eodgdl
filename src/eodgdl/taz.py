@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 
 from eodgdl.data._catalog import (
     AGEBS_ZONA_PARQUET,
@@ -25,7 +26,9 @@ _TAZ_ACCESS_POINTS = [
 _MZONA_ACCESS_POINTS = [603, 604, 605, 606, 607, 608]
 
 # Manual fixes (source: manual review; see README "Data provenance"):
-# duplicated-locality population double-counts subtracted from these micro-zonas
+# duplicated-locality population double-counts subtracted from these micro-zonas. This is
+# the micro-zone half of one correction; _drop_locality_ageb_overlap below is the AGEB half,
+# and the two must agree — tests/test_smoke.py reconciles them.
 _MTAZ_POBTOT_FIXES = {21: 3534.0, 442: 3103.0}
 # wrong MZONA assignments corrected in the AGEB table
 _AGEBS_MZONA_FIXES = {2163: 35, 2155: 624, 2161: 624}
@@ -86,6 +89,52 @@ def load_mtaz(
     return mtaz
 
 
+def _locality_key(df: pd.DataFrame) -> pd.Series:
+    """(CVE_ENT, CVE_MUN, CVE_LOC) zero-padded; NA where any part is missing.
+
+    Not derived from CVEGEO: 12 AGEB rows carry a malformed one (ID 2066 stores
+    '1407090134146' for locality 0134 / AGEB 1467), and CVE_LOC is inconsistently
+    zero-padded across rows. Rows with an incomplete key are the access points and a
+    few unidentified rows; none participates in an overlap.
+    """
+
+    def z(col: str, n: int) -> pd.Series:
+        return df[col].astype("string").str.zfill(n)
+
+    key = z("CVE_ENT", 2) + z("CVE_MUN", 3) + z("CVE_LOC", 4)
+    return key.mask(df[["CVE_ENT", "CVE_MUN", "CVE_LOC"]].isna().any(axis=1))
+
+
+def _drop_locality_ageb_overlap(agebs_zones: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Drop the coarser side where a locality row and its AGEB rows both appear.
+
+    The table mixes locality rows (no CVE_AGEB) with AGEB rows. Where both cover the
+    same locality its population is counted twice, so one side must go; keep whichever
+    partitions the locality more finely:
+
+        locality split into >1 AGEB  ->  keep the AGEBs, drop the locality row
+        locality split into  1 AGEB  ->  keep the locality, drop the AGEB row, which
+                                         adds no resolution and whose polygon covers
+                                         only the urban part of the locality
+
+    In the shipped data this removes IDs 2255 (a locality over 4 AGEBs), 2066 and 2265
+    (single AGEBs). The first two are the AGEB-side half of the double-count that
+    _MTAZ_POBTOT_FIXES corrects on the micro-zone side; 2265 carries no population.
+    """
+    key = _locality_key(agebs_zones)
+    is_loc = agebs_zones.CVE_AGEB.isna()
+    ageb_keys = key[~is_loc]
+
+    drop: list = []
+    for loc_id, loc_key in key[is_loc & key.notna()].items():
+        members = list(ageb_keys.index[ageb_keys == loc_key])
+        if len(members) > 1:
+            drop.append(loc_id)
+        elif members:
+            drop.extend(members)
+    return agebs_zones.drop(drop)
+
+
 def load_imeplan_agebs(
     taz: gpd.GeoDataFrame, fpath: Path | None = None, drop_ap: bool = False
 ) -> gpd.GeoDataFrame:
@@ -100,10 +149,8 @@ def load_imeplan_agebs(
     for idx, mzona in _AGEBS_MZONA_FIXES.items():
         agebs_zones.loc[idx, "MZONA"] = mzona
 
-    # NOTE: preserved from the original implementation — these drops lack an assignment and
-    # are therefore currently no-ops (kept for behavioral parity, not effect).
-    agebs_zones.drop(2255)
-    agebs_zones.drop(2066)
+    # Locality rows and the AGEB rows that subdivide them both appear; keep the finer.
+    agebs_zones = _drop_locality_ageb_overlap(agebs_zones)
 
     if drop_ap:
         # Drop access points and non-ageb geometries

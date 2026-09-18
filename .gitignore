@@ -13,6 +13,9 @@ wheels/
 # Notebook-generated artifacts
 /outputs/
 
+# Build output: tasha tables, the standalone dataset export
+/output/
+
 # Large public report PDF (148 MB, over GitHub's file-size limit; kept locally only).
 # Download from https://www.imeplan.mx/plataformas-de-informacion/visualizador-eod
 /data/Informe_Final_al_publico_EOD_2023.pdf
@@ -22,3 +25,9 @@ wheels/
 
 # Editor
 .vscode/
+
+# Local agent instructions (kept out of the repo)
+/CLAUDE.md
+
+# Rendered Quarto output (regenerate with `quarto render`)
+/reports/*.html
