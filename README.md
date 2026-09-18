@@ -121,7 +121,7 @@ above. The 4 MB technical report (`Informe_Tecnico_Final_EOD_2023.pdf`) is inclu
 reference.
 
 A small number of manual data-entry corrections are applied by the loaders (encoded as
-documented constants in `eod.py` and `taz.py`): three trip-mode fixes, two micro-zone
+documented constants in `eod.py`, `chains.py` and `taz.py`): three trip-mode fixes, two micro-zone
 population double-count adjustments, and three AGEB `MZONA` reassignments.
 
 The AGEB table also mixes locality rows with the AGEB rows that subdivide them, double-

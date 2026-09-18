@@ -147,7 +147,7 @@ people:
     derivation: Index level, 1-based.
     note: >-
       Every surveyed person has a row: load_eod's chain cleaning
-      (eodgdl.eod.clean_trip_chains) imputes the trips that lost their
+      (eodgdl.chains.clean_trip_chains) imputes the trips that lost their
       questionnaire block rather than excluding their persons, as it did
       until 2026-09-03.
 
@@ -321,7 +321,7 @@ trips:
       time-monotone — and the row order is that sequence: in it 99.8% of
       adjacent trips start where the previous one ended, against 67% under
       start-time order for the people whose times disagree. The evidence and
-      the five cleaning rules live with the loader, eodgdl.eod.clean_trip_chains.
+      the five cleaning rules live in eodgdl.chains.clean_trip_chains.
       Decided 2026-09-01; until then the contract said start-time order while
       the builder used row order. Re-sequencing whole tours by time was tested
       on 2026-09-02 and rejected: it resolves under 10% of the inversions and
@@ -334,12 +334,12 @@ trips:
       The hours are the ones load_eod returns, after its chain cleaning: the
       325 trips with no start time are imputed (37 from the home-to-home
       return that duplicates them, 288 from their nearest timed trips,
-      eodgdl.eod._impute_untimed_trips), and 2,032 mistyped start hours in
+      eodgdl.chains._impute_untimed_trips), and 2,032 mistyped start hours in
       1,552 chains are repaired by the fewest typo edits — a 12-hour-clock
       entry, an extra or missing leading 1, or both — that let every trip
       start after the previous one arrived (its start plus its leg minutes,
       15 minutes of tolerance), applied only where the cheapest reading is
-      unique (eodgdl.eod._repair_start_times). Every such row is marked in
+      unique (eodgdl.chains._repair_start_times). Every such row is marked in
       trips.ajustes (hora:duplicado, hora:vecinos, hora:+12h and so on); a
       consumer that wants to treat them as uncertain has the flag, though
       this column does not carry it. 885 trips still start before the
@@ -351,7 +351,7 @@ trips:
       one time code per row at most; they are all kept and tasha.chain_report
       counts them on every build. The rules, their
       evidence and the rejected alternatives — dropping those people,
-      re-sequencing tours — are documented in eodgdl.eod. The builder refuses
+      re-sequencing tours — are documented in eodgdl.chains. The builder refuses
       a trip table with untimed rows rather than guess.
 
   Mode:
@@ -429,7 +429,7 @@ trips:
       load_eod sets 120 origins to the household's zone: the trip follows a
       'Regresar a Casa' that reached home but was recorded as starting
       elsewhere, usually at a stop visited earlier in the day
-      (eodgdl.eod._start_from_home_after_return). The 32 continuity breaks
+      (eodgdl.chains._start_from_home_after_return). The 32 continuity breaks
       that remain in the built table are ones where either side could be
       wrong; tasha.chain_report counts them.
 
@@ -461,7 +461,7 @@ trips:
       adult escorting a child; the 787 activity trips typed 'Su casa' carry
       actividad_en_casa there. 7 trips have
       no motivo_viaje and fall to the default O. Two of load_eod's chain rules
-      shape this column upstream (eodgdl.eod): 84 'Regresar a Casa' trips
+      shape this column upstream (eodgdl.chains): 84 'Regresar a Casa' trips
       whose destination zone is not the household's already carry the motive
       their destination type implies (22 Estudiar, 13 Trabajar, 22 Compras, 27
       other), and 468 returns home made while already at home are gone — so

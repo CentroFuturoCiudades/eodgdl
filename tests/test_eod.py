@@ -5,7 +5,14 @@ import pandas as pd
 import pytest
 
 from eodgdl import clean_trip_chains, flag_repeated_diaries, load_eod
-from eodgdl.eod import FIX_CODES, ISSUE_CODES, _donor_mask, _trip_features, has_code, non_trips
+from eodgdl.chains import (
+    FIX_CODES,
+    ISSUE_CODES,
+    _donor_mask,
+    _trip_features,
+    has_code,
+    non_trips,
+)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()

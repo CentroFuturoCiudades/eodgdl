@@ -97,7 +97,7 @@ def _chain_notes(trips) -> None:
 
     notes = tasha.chain_report(trips)
     if notes:
-        print("chain diagnostics (informational; the cleaning rules are in eodgdl.eod):")
+        print("chain diagnostics (informational; the cleaning rules are in eodgdl.chains):")
         for note in notes:
             print(f"  - {note}")
         print()
@@ -158,7 +158,7 @@ def _review(args) -> int:
     import pandas as pd
 
     from eodgdl import load_eod, review
-    from eodgdl.eod import ISSUE_CODES, PERSON, has_code
+    from eodgdl.chains import ISSUE_CODES, PERSON, has_code
 
     shipped = load_eod(args.data, clean_chains=False)
     cleaned = load_eod(args.data)

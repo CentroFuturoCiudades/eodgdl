@@ -9,10 +9,10 @@ except PackageNotFoundError:  # running from a source tree without an install
 
 from eodgdl import data, review, tasha
 from eodgdl._resources import imeplan_rename_map
+from eodgdl.chains import clean_trip_chains
 from eodgdl.eod import (
     EODTables,
     clean_eod,
-    clean_trip_chains,
     flag_repeated_diaries,
     load_eod,
     rename_imeplan,

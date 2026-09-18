@@ -6,7 +6,7 @@ as ``derivation`` prose — the R/C demotion, the passenger override, the
 work/school zone lookups — is implemented below, and the prose is its spec.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
-``eodgdl.eod.clean_trip_chains`` (untimed trips imputed, mislabelled returns
+``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
 recoded, mistyped start hours repaired, the 38 home-to-home rows that
 duplicate an untimed return dropped). The rows that cleaning marks as not
 being trips — returns home made while already at home — stay in ``trips``
@@ -27,7 +27,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from eodgdl.eod import non_trips
+from eodgdl.chains import non_trips
 from eodgdl.tasha._schema import build_map, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
@@ -124,7 +124,7 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
 def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
     """od_trips.csv, one row per trip, in chain (folio_viaje) order.
 
-    The rows ``load_eod`` marked as non-trips (``eodgdl.eod.non_trips``) are
+    The rows ``load_eod`` marked as non-trips (``eodgdl.chains.non_trips``) are
     left out; ``TripNumber`` is renumbered over them and over the gaps in
     ``folio_viaje``.
     """

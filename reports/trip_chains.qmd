@@ -47,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 from eodgdl import clean_trip_chains, load_eod, tasha
-from eodgdl.eod import (
+from eodgdl.chains import (
     FIX_CODES,
     FIX_FLAG,
     ISSUE_CODES,
@@ -437,7 +437,7 @@ recode_tbl = (pd.DataFrame({"destination type": R.tipo_lugar_destino.reindex(com
 rescued = hh_no_recode - counts["home_to_home"]
 
 # --- start-time repair: the typo search that replaced the strict 12-hour rule
-from eodgdl.eod import _START_TIME_EDITS, _START_TIME_MAX_COST, _START_TIME_TOLERANCE
+from eodgdl.chains import _START_TIME_EDITS, _START_TIME_MAX_COST, _START_TIME_TOLERANCE
 
 
 def strict_twelve_hour(t):
@@ -1014,9 +1014,9 @@ returns the survey as shipped. One kind of row is dropped, the `{python} n_dropp
 home-to-home returns that duplicate an imputed return (@sec-untimed); the trip table keeps
 its other `{python} fmt(n_trips_c)` rows, and two columns record what happened to each. `ajustes` names
 every change the rules made to the row and `problemas` every defect they left, as
-semicolon-joined codes (@tbl-flags); `eodgdl.eod.has_code` filters on one, and
-`eodgdl.eod.non_trips` picks out the rows marked as not being trips, which the model build
-leaves out. Each rule's evidence is also the docstring of its function in `eodgdl.eod`.
+semicolon-joined codes (@tbl-flags); `eodgdl.chains.has_code` filters on one, and
+`eodgdl.chains.non_trips` picks out the rows marked as not being trips, which the model build
+leaves out. Each rule's evidence is also the docstring of its function in `eodgdl.chains`.
 @tbl-errors lists every kind of error this note found, how many trips carried it as
 shipped, and how many still do after the rules; the shares are of the
 `{python} fmt(n_trips)` trips as shipped and of the `{python} fmt(len(C))` in the chain
@@ -1126,7 +1126,7 @@ mode, the sex and occupation of the traveller, the person's own earlier motive a
 destination zone, whether the trip stays in one zone, leaves from home, is followed by a
 return home, is the first of the day, or follows a work or school trip, plus the scaled
 differences in leg minutes, the next trip's start hour and age
-(`eodgdl.eod._IMPUTE_WEIGHTS`). The most common motive among the thirty is written, with the
+(`eodgdl.chains._IMPUTE_WEIGHTS`). The most common motive among the thirty is written, with the
 most common destination type among the donors that voted for it (`motivo:vecinos`). The
 start time is then counted back from the next trip: its start, less this trip's leg minutes,
 less the median activity duration of those donors, kept between the previous trip's arrival
@@ -1200,7 +1200,7 @@ show(person_table((306, 6)))
 ```
 
 **Effect.** `{python} counts["home_to_home"]` rows are kept and marked `regreso_en_casa`: the
-`{python} n_non_trips` rows `eodgdl.eod.non_trips` picks out and the builder leaves out, the
+`{python} n_non_trips` rows `eodgdl.chains.non_trips` picks out and the builder leaves out, the
 `{python} counts["duplicate_returns"]` duplicates of @sec-untimed having been dropped. No
 trip in the built table goes from H to H (the contract forbids it, and `validate` checks),
 and the survey's `{python} breaks_raw` zone-continuity breaks fall to `{python} breaks_t2`
@@ -1333,7 +1333,7 @@ visited at another point of the day, as if carried over from it (@tbl-ex-origin)
 person was at home, so `load_eod` sets that origin to the home zone — the reading a
 home-based activity model makes anyway. The other breaks, where a return did not reach
 home or an origin is at home after a trip that went elsewhere, are left, since either
-side could be wrong. This is the one rule that invents a value; `eodgdl.eod` says so.
+side could be wrong. This is the one rule that invents a value; `eodgdl.chains` says so.
 
 ```{python}
 #| label: tbl-break-kinds
@@ -1591,7 +1591,7 @@ tasha.chain_report(od.trips)                 # what remains, as counts
 The rules and their evidence are the docstrings of `_impute_untimed_trips` (with
 `_duplicate_returns` and `_nearest_donors`), `_recode_returns_by_destination`,
 `_home_to_home_returns`, `_start_from_home_after_return` and `_repair_start_times` in
-`src/eodgdl/eod.py`; the recode table is `_MOTIVO_POR_TIPO_LUGAR_DESTINO`, the matcher's
+`src/eodgdl/chains.py`; the recode table is `_MOTIVO_POR_TIPO_LUGAR_DESTINO`, the matcher's
 features `_IMPUTE_WEIGHTS`, the edit menu `_START_TIME_EDITS`, and the flag vocabulary
 `FIX_CODES` and `ISSUE_CODES` in the same file. The survey's design is described in
 `data/Informe_Tecnico_Final_EOD_2023.pdf`, pp. 17–25 and 35–37.

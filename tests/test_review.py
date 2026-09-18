@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from eodgdl import EODTables, clean_trip_chains, load_eod, review
-from eodgdl.eod import PERSON, mark_issues, non_trips
+from eodgdl.chains import PERSON, mark_issues, non_trips
 from test_eod import AGEB, CAR, ELSEWHERE, SHOP, VIV, _trips
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"

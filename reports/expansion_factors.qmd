@@ -458,7 +458,7 @@ simply people who mixed bus and non-bus travel that day. So
 ::: {.callout-warning}
 ## Where this bites in `eodgdl`
 
-`src/eodgdl/eod.py:109` de-normalizes the three master CSVs by dropping columns that are
+`load_eod` (`src/eodgdl/eod.py`) de-normalizes the three master CSVs by dropping columns that are
 constant within a parent:
 
 ```python

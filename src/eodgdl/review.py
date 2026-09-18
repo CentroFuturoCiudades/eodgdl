@@ -30,7 +30,7 @@ rows cannot be added.
 
 ``verify_edits`` applies the edits (:func:`apply_edits`: each one leaves a
 ``<field>:revision`` code in ``ajustes``) and recomputes ``problemas``
-(:func:`eodgdl.eod.mark_issues`), so it says which defects the edits cleared
+(:func:`eodgdl.chains.mark_issues`), so it says which defects the edits cleared
 and which they left or made. ``eodgdl review export`` and ``eodgdl review
 verify`` wrap the two halves.
 """
@@ -44,17 +44,17 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from eodgdl.eod import (
+from eodgdl.chains import (
     FIX_FLAG,
     ISSUE_CODES,
     ISSUE_FLAG,
     PERSON,
-    EODTables,
     _home_zone,
     _leg_minutes,
     has_code,
     mark_issues,
 )
+from eodgdl.eod import EODTables
 
 KEYS = ["household", "person", "trip"]
 PERSON_COLUMNS = ["home", "sex", "age", "occupation", "repeated"]
@@ -364,7 +364,7 @@ def apply_edits(
     (so ``shipped`` is required then) under ``fila:revision``. An edit whose
     value already holds is skipped, so a sheet exported before a rule change
     still applies cleanly. ``problemas`` is then recomputed over the whole
-    table (:func:`eodgdl.eod.mark_issues`). Notes are not applied. Raises
+    table (:func:`eodgdl.chains.mark_issues`). Notes are not applied. Raises
     ``ValueError`` listing every edit that cannot be applied — an unknown
     label, zone or time, a trip the table lacks, a status other than the two
     — and applies nothing in that case.

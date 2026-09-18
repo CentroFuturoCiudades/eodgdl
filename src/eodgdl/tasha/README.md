@@ -44,13 +44,13 @@ eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
-`eodgdl.eod.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
+`eodgdl.chains.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
 imputed, 84 mislabelled returns recoded, 124 trips after a return home made
 to start at home, 2,032 mistyped start hours repaired — and refuses a trip
 table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
 non-trips there (491 returns home made while already at home,
-`eodgdl.eod.non_trips`), since the contract
+`eodgdl.chains.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
 another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: a
@@ -211,7 +211,7 @@ rather than about one column's coding, so nothing surfaces them automatically.
   order matches it for 99.9% of clean multi-trip days; re-sequencing tours by
   time was tested and rejected (under 10% of inversions, misreads night
   shifts). The evidence and the five chain rules live with the loader,
-  `eodgdl.eod.clean_trip_chains`; the mapping notes point there, and
+  `eodgdl.chains.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs
   (`tasha.chain_report`): 839 trips in 766 people still start before the
@@ -220,7 +220,7 @@ rather than about one column's coding, so nothing surfaces them automatically.
   previous one ended; `trips.problemas` marks each, and since 2026-09-04
   every other residual defect too — overnight wraps, same-minute starts,
   days that start or end away from home, activities typed `Su casa`,
-  `Guardería` (`eodgdl.eod.ISSUE_CODES`) — so the trips with a defect are
+  `Guardería` (`eodgdl.chains.ISSUE_CODES`) — so the trips with a defect are
   exactly the rows with a non-empty `problemas`. Two follow-ups were
   tried the same day: recoding the `Regresar a Casa` trips whose
   `tipo_lugar_destino` says the place was not a home is now a survey-level
@@ -229,7 +229,7 @@ rather than about one column's coding, so nothing surfaces them automatically.
   from the duplicate return that follows them or from their nearest timed
   trips, and only the duplicate row that carried a return's answers is
   dropped — the held-out scores are in
-  `eodgdl.eod._impute_untimed_trips`.
+  `eodgdl.chains._impute_untimed_trips`.
 
 - **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
   `zones.alternatives` offers `ID_ZONAEOD` (71 zones) and `MZONA` (601) as the
