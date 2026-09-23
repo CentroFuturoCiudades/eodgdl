@@ -112,7 +112,7 @@ def test_targets_are_consistent_and_pinned(files):
     mun20 = c["PersonConstraintsByMunicipality_2020.csv"]
     assert len(hh20) == len(pp20) == 64 and len(mun20) == 9
     assert round(hh20.Dwellings.sum()) == 1_454_608
-    assert round(pp20.Persons.sum()) == 4_635_931
+    assert round(pp20.Persons.sum()) == 4_653_609  # 4,635,931 with a stated age as published
     assert round(mun20.Cyclist.sum()) == 100_453  # 101,907 whole-municipality cyclists, universe share applied
     assert c["TripConstraintsByRegion.csv"].BusBoardings.iloc[0] == 1_851_750
     ages = ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]
@@ -190,3 +190,75 @@ def test_census_cyclists_reproduce_the_spec_constants():
     bike = (p["MED_TRASLADO_TRAB_Bicicleta"] == 1) | (p["MED_TRASLADO_ESC_Bicicleta"] == 1)
     counts = p.FACTOR.astype(float).where(bike, 0).groupby(p.MUN.astype(int)).sum().round()
     assert counts.to_dict() == {int(k): float(v) for k, v in entry["constant"].items()}
+
+
+def test_row_corrections_make_zones_consistent(files):
+    # Zone 43 houses a third of its population in collective quarters; zone 56 has 43 % of
+    # its residents without a stated age (dwellings without occupant information whose
+    # details INEGI did not impute). Uncorrected, persons 6+ ran from 24 % to 141 % of
+    # private-dwelling occupants across zones; the survey has ~93 % everywhere.
+    pp = files.constraints["PersonConstraintsByZone_2020.csv"].set_index("Zone")
+    hh = files.constraints["HouseholdConstraintsByZone_2020.csv"].set_index("Zone")
+    assert (pp.Persons / hh.Occupants).between(0.8, 1.0).all()
+    assert (hh[["HasCar", "HasMoto", "HasBike", "HasInternet"]].max(axis=1) <= hh.Dwellings).all()
+    universe = reweight.census_universe(DATA_DIR)
+    ps, ds = reweight.person_scale(universe), reweight.dwelling_scale(universe)
+    assert ps.notna().all() and (ps >= 0).all() and ds.notna().all() and (ds >= 1).all()
+    six_plus = ["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]
+    z43 = universe.Zone == 43
+    raw = universe.loc[z43, six_plus].astype(float).sum(axis=1)
+    assert pp.Persons.loc[43] == pytest.approx((raw * ps[z43]).sum())
+    assert pp.Persons.loc[43] / raw.sum() == pytest.approx(0.632, abs=0.005)
+    z56 = universe.Zone == 56
+    assert pp.Persons.loc[56] / universe.loc[z56, six_plus].astype(float).sum().sum() > 1.6
+
+
+def test_motorcycles_grow_with_the_registered_fleet(files):
+    # 2023 HasMoto = 2020 HasMoto x each municipality's growth of registered private
+    # motorcycles (INEGI VMRC); everything else household-level grows with population.
+    vmrc = reweight.load_vmrc(DATA_DIR / "VMRC_AMG.csv")
+    for m, lo, hi in [(39, 1.32, 1.34), (97, 1.63, 1.65)]:
+        assert lo < vmrc.ratio("MOTO_PARTICULAR", m, 2020, 2023) < hi
+    c = files.constraints
+    h20, h23 = c["HouseholdConstraintsByZone_2020.csv"], c["HouseholdConstraintsByZone_2023.csv"]
+    moto_growth = h23.HasMoto.sum() / h20.HasMoto.sum()
+    pop_growth = h23.Dwellings.sum() / h20.Dwellings.sum()
+    assert 1.40 < moto_growth < 1.55 and 1.02 < pop_growth < 1.04
+    assert h23.HasCar.sum() / h20.HasCar.sum() == pytest.approx(pop_growth, abs=0.01)
+    assert (h23[["HasCar", "HasMoto", "HasBike", "HasInternet"]].max(axis=1) <= h23.Dwellings).all()
+    idx = files.index.set_index(["target_column", "year"])
+    assert bool(idx.loc[("HasMoto", 2023), "scaled"])
+
+
+def test_check_spec_rejects_two_growth_sources(monkeypatch):
+    spec = copy.deepcopy(reweight.load_spec())
+    spec["constraints"]["households"]["HasMoto"]["conapo"] = "total"
+    monkeypatch.setattr(eodgdl.reweight._spec, "load_spec", lambda: spec)
+    assert any("one growth source" in p for p in reweight.check_spec())
+
+
+def test_each_year_lists_the_whole_constraint_set(files):
+    # BusBoardings has no year suffix (a 2023 figure already); it must still be part of the
+    # 2023 set a reader gets by filtering constraints.csv on `year`.
+    by_year = files.index.groupby("year").target_column.apply(set)
+    assert by_year.loc[2020] == by_year.loc[2023]
+    assert "BusBoardings" in by_year.loc[2023]
+    assert not files.index.duplicated(["year", "target_column"]).any()
+
+
+def test_internet_grows_with_endutih(files):
+    rates = reweight.load_rates(DATA_DIR)
+    assert rates["endutih_internet"] == pytest.approx(1.193, abs=0.002)
+    c = files.constraints
+    h20, h23 = c["HouseholdConstraintsByZone_2020.csv"], c["HouseholdConstraintsByZone_2023.csv"]
+    pop_growth = h23.Dwellings.sum() / h20.Dwellings.sum()
+    growth = h23.HasInternet.sum() / h20.HasInternet.sum() / pop_growth
+    assert 1.12 < growth < 1.193 + 1e-9          # the per-row cap only ever lowers it
+    assert (h23.HasInternet <= h23.Dwellings + 1e-6).all()
+
+
+def test_check_spec_requires_conapo_under_a_rate(monkeypatch):
+    spec = copy.deepcopy(reweight.load_spec())
+    del spec["constraints"]["households"]["HasInternet"]["conapo"]
+    monkeypatch.setattr(eodgdl.reweight._spec, "load_spec", lambda: spec)
+    assert any("on top of conapo" in p for p in reweight.check_spec())

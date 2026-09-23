@@ -40,6 +40,11 @@ from eodgdl.reweight.targets import (
     coverage,
     crosswalk,
     load_conapo,
+    load_rates,
+    load_vmrc,
+    Vmrc,
+    dwelling_scale,
+    person_scale,
     reconcile,
 )
 
@@ -48,5 +53,5 @@ __all__ = [
     "ReweightFiles", "build", "write", "diagnostic", "years",
     "check",
     "build_zones", "zone_ids", "build_households", "build_people", "build_trips",
-    "crosswalk", "census_universe", "reconcile", "coverage", "load_conapo", "Conapo", "build_constraints",
+    "crosswalk", "census_universe", "reconcile", "coverage", "load_conapo", "Conapo", "load_vmrc", "Vmrc", "load_rates", "build_constraints", "person_scale", "dwelling_scale",
 ]

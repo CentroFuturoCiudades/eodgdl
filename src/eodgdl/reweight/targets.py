@@ -10,7 +10,8 @@ table wrote 0.
 Every target is read from spec.yaml (``constraints``): an expression over census columns,
 summed by geography first, or a constant with its provenance. A 2023 set multiplies each
 AGEB's columns by the CONAPO 2023/2020 ratio of its municipality for the band group the
-target names (``conapo``), before summing.
+target names (``conapo``), before summing -- or, for a dwelling attribute that names a
+registered-vehicle fleet (``vmrc``), by that fleet's 2023/2020 ratio in the municipality.
 """
 from __future__ import annotations
 
@@ -171,6 +172,45 @@ class Conapo(NamedTuple):
         return float(self.target.loc[(municipality, sex), band] / self.base.loc[(municipality, sex), band])
 
 
+class Vmrc(NamedTuple):
+    """INEGI's registered private fleet by municipality and year (the ``vmrc`` spec block)."""
+
+    frame: pd.DataFrame  # index (Municipality, ANIO); one column per fleet
+
+    def ratio(self, column, municipality, base, target):
+        """target-year / base-year fleet in one municipality."""
+        f = self.frame[column]
+        return float(f.loc[(municipality, target)] / f.loc[(municipality, base)])
+
+
+def load_vmrc(path=None):
+    """The registered fleets of the study area's municipalities as a :class:`Vmrc`."""
+    spec = load_spec()["vmrc"]
+    if path is None:
+        from eodgdl.data import resolve
+
+        path = resolve(spec["file"])
+    v = pd.read_csv(path)
+    return Vmrc(v.set_index(["Municipality", "ANIO"])[spec["columns"]].astype(float))
+
+
+def load_rates(data_dir=None):
+    """{rate name: target/base ratio} for every entry of the ``rates`` spec block."""
+    spec = load_spec()
+    base, target = spec["conapo"]["base_year"], spec["conapo"]["target_year"]
+    out = {}
+    for name, entry in (spec.get("rates") or {}).items():
+        path = _local(data_dir, entry["file"])
+        if path is None:
+            from eodgdl.data import resolve
+
+            path = resolve(entry["file"])
+        r = pd.read_csv(path)
+        r = r[r.domain == entry["domain"]].set_index("year").share
+        out[name] = float(r.loc[target] / r.loc[base])
+    return out
+
+
 def load_conapo(path=None):
     """CONAPO projections for the study area's municipalities as a :class:`Conapo`."""
     spec = load_spec()["conapo"]
@@ -203,11 +243,78 @@ def _row_ratio(universe, entry, conapo):
     return universe.Municipality.map(per_mun)
 
 
-def _target(universe, entry, geography, conapo, shares):
+STATED_AGES = ["P_0A2", "P_3A5", "P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]
+
+
+def person_scale(universe):
+    """Per census row: ``(POBTOT - POBCOL) / residents with a stated age``.
+
+    Two corrections in one factor, applied to every person count of the row before
+    summing (``row_scale: persons`` in ``spec.yaml``):
+
+    * **collective quarters** -- the census person counts include residents of prisons,
+      barracks, care homes and dormitories (``POBCOL``), whom a household survey never
+      samples;
+    * **residents without a stated age** -- INEGI counts the occupants of dwellings without
+      occupant information in ``POBTOT`` and usually imputes their ages, but not in every
+      AGEB: in zone 56 43 % of residents have no age, and so no band, sex or activity.
+
+    ``counts * (POBTOT - POBCOL) / POBTOT`` restricts a row to private dwellings, and
+    ``* POBTOT / stated`` spreads the unknown ages over the known bands in proportion; the
+    product is this factor. The census publishes neither group's composition, so both are
+    assumed to share the row's known mix. A suppressed ``POBCOL`` counts as 0; a row with
+    no stated age keeps its (then missing) counts.
+    """
+    u = universe.astype({c: float for c in [*STATED_AGES, "POBTOT", "POBCOL"]})
+    stated = u[STATED_AGES].sum(axis=1, min_count=1)
+    private = u["POBTOT"] - u["POBCOL"].fillna(0.0)
+    factor = private / stated.where(stated > 0)
+    return factor.astype(float).fillna(1.0).clip(lower=0.0)
+
+
+def dwelling_scale(universe):
+    """Per census row: ``TVIVPARHAB / dwellings whose characteristics were captured``.
+
+    The ``VPH_*`` counts are over ``VIVPARH_CV``, which INEGI defines as including the
+    dwellings without occupant information -- whose characteristics it usually imputes, but
+    not in every AGEB. Where it did not, those dwellings sit in ``VIVPARH_CV`` without any
+    ``VPH_*`` attribute. They are estimated from the same signal as the missing ages: the
+    row's residents without a stated age over its occupants per dwelling, capped at its
+    dwellings without occupant information (``VIVPARH_CV - VIVPAR_HAB``). Dividing by what
+    remains (``row_scale: dwellings``) spreads the uncaptured dwellings over the captured
+    mix and lifts the count to all private inhabited dwellings; results are capped at the
+    row's ``TVIVPARHAB``.
+    """
+    u = universe.astype({c: float for c in [*STATED_AGES, "POBTOT", "OCUPVIVPAR", "TVIVPARHAB",
+                                            "VIVPARH_CV", "VIVPAR_HAB"]})
+    stated = u[STATED_AGES].sum(axis=1, min_count=1)
+    no_age = (u["POBTOT"] - stated).clip(lower=0.0)
+    per_dwelling = u["OCUPVIVPAR"] / u["TVIVPARHAB"].where(u["TVIVPARHAB"] > 0)
+    no_info = (u["VIVPARH_CV"] - u["VIVPAR_HAB"]).clip(lower=0.0).fillna(0.0)
+    missing = (no_age / per_dwelling.where(per_dwelling > 0)).fillna(0.0).clip(upper=no_info)
+    captured = u["VIVPARH_CV"] - missing
+    factor = u["TVIVPARHAB"] / captured.where(captured > 0)
+    return factor.fillna(1.0).clip(lower=1.0)
+
+
+ROW_SCALES = {"persons": person_scale, "dwellings": dwelling_scale}
+
+
+def _vmrc_ratio(universe, entry, vmrc):
+    """The scaling factor of every census row for a `vmrc` target: its municipality's fleet ratio."""
+    spec = load_spec()["conapo"]
+    per_mun = {m: vmrc.ratio(entry["vmrc"], m, spec["base_year"], spec["target_year"])
+               for m in universe.Municipality.unique()}
+    return universe.Municipality.map(per_mun)
+
+
+def _target(universe, entry, geography, conapo, shares, vmrc=None, rates=None):
     """The target of one constraint per geography id (a Series indexed by the id)."""
     column = GEOGRAPHY_COLUMN[geography]
     ids = sorted(universe[column].unique())
     scale = conapo is not None and "conapo" in entry
+    if conapo is not None and "vmrc" in entry and vmrc is None:
+        raise ValueError(f"a scaled set needs the VMRC fleets for {entry['vmrc']}")
     if "census" in entry:
         expr = entry["census"]
         cols = census_columns(expr)
@@ -215,8 +322,20 @@ def _target(universe, entry, geography, conapo, shares):
         if missing:
             raise KeyError(f"census columns not in the census frames: {missing}")
         sub = universe[cols]
+        if "row_scale" in entry:
+            sub = sub.mul(ROW_SCALES[entry["row_scale"]](universe), axis=0)
+            if entry["row_scale"] == "dwellings":
+                sub = sub.clip(upper=universe["TVIVPARHAB"].astype(float), axis=0)
         if scale:
-            sub = sub.mul(_row_ratio(universe, entry, conapo), axis=0)
+            growth = _row_ratio(universe, entry, conapo)
+            sub = sub.mul(growth, axis=0)
+            if "rate" in entry:
+                if rates is None or entry["rate"] not in rates:
+                    raise ValueError(f"a scaled set needs the rate {entry['rate']}")
+                cap = universe["TVIVPARHAB"].astype(float) * growth
+                sub = sub.mul(rates[entry["rate"]]).clip(upper=cap, axis=0)
+        elif conapo is not None and "vmrc" in entry:
+            sub = sub.mul(_vmrc_ratio(universe, entry, vmrc), axis=0)
         agg = sub.groupby(universe[column]).sum(min_count=1)
         return agg.eval(expr).reindex(ids)
     values = pd.Series(entry["constant"], dtype=float)
@@ -235,7 +354,7 @@ def _target(universe, entry, geography, conapo, shares):
     return values.reindex(ids)
 
 
-def build_constraints(universe, year=None, conapo=None, shares=None):
+def build_constraints(universe, year=None, conapo=None, shares=None, vmrc=None, rates=None):
     """{file name: frame} for one constraint set; `year` None or the base year = the census as is.
 
     `shares` is :func:`coverage`'s frame, needed by a constant with `universe_share`.
@@ -254,7 +373,7 @@ def build_constraints(universe, year=None, conapo=None, shares=None):
             geography = entry["geography"]
             suffix = year if (year is not None and is_scaled(table, geography)) else None
             name = constraint_file(table, geography, suffix)
-            series = _target(universe, entry, geography, scaling, shares)
+            series = _target(universe, entry, geography, scaling, shares, vmrc, rates)
             if name not in files:
                 files[name] = pd.DataFrame({GEOGRAPHY_COLUMN[geography]: series.index.astype(int)})
             files[name][target] = series.to_numpy()

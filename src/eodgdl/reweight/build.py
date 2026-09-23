@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from eodgdl.data._catalog import CONAPO_CSV
+from eodgdl.data._catalog import CONAPO_CSV, VMRC_CSV
 from eodgdl.reweight._spec import constraint_index, load_spec
 from eodgdl.reweight.records import (
     build_households,
@@ -22,6 +22,8 @@ from eodgdl.reweight.targets import (
     census_universe,
     coverage,
     load_conapo,
+    load_rates,
+    load_vmrc,
     reconcile,
 )
 
@@ -64,18 +66,22 @@ def build(tables, data_dir=None):
         raise ValueError("the census and IMEPLAN's crosswalk disagree: " + "; ".join(disagreements))
     shares = coverage(universe)
     conapo = load_conapo(Path(data_dir) / CONAPO_CSV if data_dir is not None else None)
+    vmrc = load_vmrc(Path(data_dir) / VMRC_CSV if data_dir is not None else None)
+    rates = load_rates(data_dir)
     base, target = years()
     constraints = {}
     index = []
     diagnostics = {}
     for year in (base, target):
-        frames = build_constraints(universe, year, conapo, shares)
+        frames = build_constraints(universe, year, conapo, shares, vmrc, rates)
         constraints.update(frames)
         idx = constraint_index(year).assign(year=year)
         index.append(idx)
         diagnostics[year] = diagnostic(records, frames, idx)
+    # Every year lists its whole set, the unscaled files included: a reader that filters
+    # on `year` must get every constraint (de-duplicating across years once left the
+    # 2023 set without BusBoardings).
     index = pd.concat(index, ignore_index=True)
-    index = index.drop_duplicates(["file", "target_column"]).reset_index(drop=True)
     return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares)
 
 

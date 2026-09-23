@@ -58,10 +58,15 @@ def constraint_file(table, geography, year=None):
     return f"{name}_{year}.csv" if year is not None else f"{name}.csv"
 
 
+GROWTH_KEYS = ("conapo", "vmrc")
+
+
 def is_scaled(table, geography):
-    """Whether the file for (table, geography) has a year suffix: any target with `conapo`."""
+    """Whether the file for (table, geography) has a year suffix: any target with a growth
+    source (`conapo` or `vmrc`)."""
     return any(
-        "conapo" in e for e in constraints(table).values() if e["geography"] == geography
+        any(k in e for k in GROWTH_KEYS)
+        for e in constraints(table).values() if e["geography"] == geography
     )
 
 
@@ -89,7 +94,7 @@ def constraint_index(year):
                     "geography": geography,
                     "map_column": GEOGRAPHY_COLUMN[geography],
                     "matching_attributes": ";".join(matching_attributes(target, table)),
-                    "scaled": bool(scaled and "conapo" in constraints(table)[target]),
+                    "scaled": bool(scaled and any(k in constraints(table)[target] for k in GROWTH_KEYS)),
                 })
     return pd.DataFrame(rows)
 
@@ -123,10 +128,24 @@ def check_spec():
                     problems.append(f"{table}.{target}: constant keys must be integer geography ids")
                 if "provenance" not in entry:
                     problems.append(f"{table}.{target}: a constant needs a provenance")
+            if "row_scale" in entry and (entry["row_scale"] not in ("persons", "dwellings") or "census" not in entry):
+                problems.append(f"{table}.{target}: row_scale must be persons or dwellings, on a census target")
             if "universe_share" in entry and ("constant" not in entry or entry.get("geography") != "municipality"):
                 problems.append(f"{table}.{target}: universe_share needs a municipality constant")
             if "conapo" in entry and entry["conapo"] not in bands:
                 problems.append(f"{table}.{target}: conapo band {entry['conapo']!r} is not defined")
+            if "rate" in entry:
+                if entry["rate"] not in (spec.get("rates") or {}):
+                    problems.append(f"{table}.{target}: rate {entry['rate']!r} is not in rates")
+                if "conapo" not in entry or "census" not in entry:
+                    problems.append(f"{table}.{target}: a rate scales a census target on top of conapo")
+            if "vmrc" in entry:
+                if "conapo" in entry:
+                    problems.append(f"{table}.{target}: one growth source only (conapo or vmrc)")
+                if "census" not in entry:
+                    problems.append(f"{table}.{target}: vmrc growth applies to census targets only")
+                if entry["vmrc"] not in spec["vmrc"]["columns"]:
+                    problems.append(f"{table}.{target}: vmrc column {entry['vmrc']!r} is not listed")
             if entry.get("sex") not in (None, "F", "M"):
                 problems.append(f"{table}.{target}: sex must be F or M")
     for name in spec["attributes"]:

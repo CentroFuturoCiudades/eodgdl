@@ -33,8 +33,15 @@
 #   provenance   where a constant comes from
 #   universe_share  on a municipality constant that counts the whole municipality: the
 #                census column whose survey-universe share of the municipality scales it
+#   row_scale    persons | dwellings: a per-census-row correction applied before summing
+#                (targets.person_scale / targets.dwelling_scale)
 #   conapo       which CONAPO band group scales the 2020 value to 2023 (see `conapo`);
 #                omitted = the target is not scaled and its file carries no year suffix
+#   vmrc         instead of conapo: the registered fleet (a `vmrc` column) whose
+#                municipal 2023/2020 ratio scales the value (see `vmrc`)
+#   rate         with conapo: an external rate (a `rates` entry) whose 2023/2020 ratio
+#                multiplies the value on top of population growth, capped per census row
+#                at its dwellings (see `rates`)
 #   sex          F | M when the target is one sex (also selects the CONAPO sex)
 #   note, status as above
 
@@ -251,6 +258,43 @@ attributes:
       note: Informational. Stage 3 of the survey's weights (bus trips scaled to SETRAN).
 
 # ===========================================================================
+vmrc:
+# ===========================================================================
+  # INEGI, Vehiculos de motor registrados en circulacion (VMRC), annual municipal series,
+  # "Cifras Definitivas" (data/VMRC_AMG.csv, extracted for the 9 municipalities, 2015-2023,
+  # from https://www.inegi.org.mx/contenidos/programas/vehiculosmotor/datosabiertos/vmrc_anual_csv.zip).
+  # A census dwelling-attribute target with `vmrc: <column>` takes, in the 2023 set, the
+  # 2023/2020 ratio of that registered fleet in its municipality instead of CONAPO's
+  # population growth: ownership rates moved much faster than population (private
+  # motorcycles +44 % over the 9 municipalities, private cars +8 %; population +3 %).
+  # The fleet counts vehicles, not dwellings that have one, and includes vehicles owned by
+  # firms, so the ratio is a proxy for the growth of dwellings with the vehicle. It is used
+  # for motorcycles only: the survey sat 1.4x above the population-scaled motorcycle target
+  # and 0.96x of the fleet-scaled one. For cars the survey already matched the
+  # population-scaled target (1.006) and would fall to 0.94x of the fleet-scaled one -- the
+  # car fleet grew mostly in vehicles per owning dwelling, not in owning dwellings.
+  file: VMRC_AMG.csv
+  columns: [MOTO_PARTICULAR, AUTO_PARTICULAR]
+
+# ===========================================================================
+rates:
+# ===========================================================================
+  # External estimates of a household rate in the base and target years. A census target
+  # with `rate: <name>` keeps its CONAPO growth and is multiplied by the rate's
+  # target/base ratio, then capped per census row at that row's dwellings (TVIVPARHAB x
+  # its CONAPO ratio): the census level is kept and only the survey-measured change is
+  # borrowed, so any difference in how the two sources word the question cancels.
+  endutih_internet:
+    file: ENDUTIH_internet_AMG.csv
+    domain: Jalisco, localities 100k+
+    provenance: >-
+      INEGI ENDUTIH 2020 and 2023 open data; share of dwellings where any household has an
+      internet connection (P4_4), weighted by FAC_VIV, in Jalisco's localities of 100,000+
+      (ENT 14, TLOC 1) -- the public files carry no city identifier. 0.745 (se 0.016, 882
+      dwellings) to 0.890 (se 0.010, 896): ratio 1.193 +- 0.028. Derived by
+      scripts/endutih_internet.py.
+
+# ===========================================================================
 conapo:
 # ===========================================================================
   # CONAPO population projections by municipality, sex, year and 5-year band
@@ -291,149 +335,206 @@ constraints:
       conapo: total
       note: >-
         Total private inhabited dwellings (1,454,608 in the universe). TVIVHAB adds the
-        collective ones; VIVPAR_HAB is the subset with occupant information that the
-        VPH_* counts refer to.
+        collective ones. Two subsets matter below: VIVPARH_CV, the dwellings whose
+        characteristics were captured -- the base of the VPH_* counts, which INEGI
+        defines as including the dwellings without occupant information and excluding
+        only mobile homes, shelters and premises not built for housing (1,453,351) --
+        and VIVPAR_HAB, which excludes the dwellings without occupant information
+        (1,351,875). VPH_* never exceed VIVPARH_CV in any census row, and exceed
+        VIVPAR_HAB in 203.
     Occupants:
       geography: zone
-      census: OCUPVIVPAR * TVIVPARHAB / VIVPAR_HAB
+      census: OCUPVIVPAR
       conapo: total
       note: >-
-        Occupants of private dwellings, rescaled from the with-information base
-        (VIVPAR_HAB) to all private inhabited dwellings (TVIVPARHAB) per zone.
+        Occupants of all private inhabited dwellings, as published. Unlike the VPH_*
+        counts it needs no rescale: INEGI already assigns occupants to the dwellings
+        without occupant information, so OCUPVIVPAR equals POBTOT - POBCOL exactly
+        (all 2,126 unsuppressed census rows of the universe). Rescaling it by
+        TVIVPARHAB / VIVPAR_HAB, as an earlier version did, added 421k occupants
+        (+8 %) and up to +112 % in a zone, contradicting the dwelling and person targets.
     HasCar:
       geography: zone
-      census: VPH_AUTOM * TVIVPARHAB / VIVPAR_HAB
+      census: VPH_AUTOM
+      row_scale: dwellings
       conapo: total
-      note: Dwellings with a car or van, same rescale as Occupants.
+      note: >-
+        Dwellings with a car or van. VPH_* count the dwellings with captured
+        characteristics (VIVPARH_CV, see Dwellings), so each census row is rescaled to all
+        private inhabited dwellings (TVIVPARHAB), less the dwellings whose characteristics
+        INEGI left blank (row_scale: dwellings, targets.dwelling_scale) -- 0.9 % overall,
+        half of zone 56. An earlier version divided by VIVPAR_HAB instead, inflating every
+        VPH_* target 7.6 % and putting HasInternet above Dwellings in five zones.
     HasMoto:
       geography: zone
-      census: VPH_MOTO * TVIVPARHAB / VIVPAR_HAB
-      conapo: total
+      census: VPH_MOTO
+      row_scale: dwellings
+      vmrc: MOTO_PARTICULAR
+      note: >-
+        In the 2023 set scaled by the growth of registered private motorcycles (vmrc),
+        +33 % to +64 % by municipality: the survey's motorcycle share sat 1.4x above the
+        2020 census rate in the median zone, a gap the fleet growth accounts for.
     HasBike:
       geography: zone
-      census: VPH_BICI * TVIVPARHAB / VIVPAR_HAB
+      census: VPH_BICI
+      row_scale: dwellings
       conapo: total
     HasInternet:
       geography: zone
-      census: VPH_INTER * TVIVPARHAB / VIVPAR_HAB
+      census: VPH_INTER
+      row_scale: dwellings
       conapo: total
+      rate: endutih_internet
+      note: >-
+        In the 2023 set also scaled by ENDUTIH's 2020-2023 growth of dwellings with
+        internet (x1.19, rates.endutih_internet). ENDUTIH's own 2020 wave already caught
+        part of the pandemic surge the March 2020 census missed, so this is if anything
+        conservative -- yet it puts the target above the survey: at its design weights the
+        survey reaches 0.93x of it. The two sources disagree here, unlike for motorcycles.
 
   persons:
 
     Persons:
       geography: zone
+      row_scale: persons
       census: P_6A11 + P_12A14 + P_15A17 + P_18YMAS
       conapo: age5p
       note: >-
         Population aged 6+ with a stated age, so that the six age bands partition it
-        exactly. POBTOT - P_0A2 - P_3A5 is 1 % larger (age not specified). INEGI
+        exactly. Like every zone person target it is scaled row by row (row_scale:
+        persons, targets.person_scale) to the residents of private dwellings, with the
+        residents whose age INEGI did not record spread over the stated bands: the census
+        counts residents of collective quarters (POBCOL -- 11,396 of zone 43's 33,344, a
+        third), whom a household survey never samples, and in a few AGEBs leaves the
+        occupants of dwellings without occupant information without an age (43 % of zone
+        56's residents, 0.9 % of the universe). INEGI
         suppresses some sex-split cells but not the totals, so Male + Female falls short
         of this by up to 39 persons in a few zones (427 over the study area); the sex x
         age crosses fall short of their bands the same way.
     Male:
       geography: zone
+      row_scale: persons
       census: P_6A11_M + P_12A14_M + P_15A17_M + P_18YMAS_M
       conapo: age5p
       sex: M
     Female:
       geography: zone
+      row_scale: persons
       census: P_6A11_F + P_12A14_F + P_15A17_F + P_18YMAS_F
       conapo: age5p
       sex: F
 
     Age6_11:
       geography: zone
+      row_scale: persons
       census: P_6A11
       conapo: age6_11
     Age12_14:
       geography: zone
+      row_scale: persons
       census: P_12A14
       conapo: age12_14
     Age15_17:
       geography: zone
+      row_scale: persons
       census: P_15A17
       conapo: age15_17
     Age18_24:
       geography: zone
+      row_scale: persons
       census: P_18A24
       conapo: age18_24
     Age25_59:
       geography: zone
+      row_scale: persons
       census: P_18YMAS - P_18A24 - P_60YMAS
       conapo: age25_59
     Age60p:
       geography: zone
+      row_scale: persons
       census: P_60YMAS
       conapo: age60p
 
     Male_Age6_11:
       geography: zone
+      row_scale: persons
       attributes: [Male, Age6_11]
       census: P_6A11_M
       conapo: age6_11
       sex: M
     Male_Age12_14:
       geography: zone
+      row_scale: persons
       attributes: [Male, Age12_14]
       census: P_12A14_M
       conapo: age12_14
       sex: M
     Male_Age15_17:
       geography: zone
+      row_scale: persons
       attributes: [Male, Age15_17]
       census: P_15A17_M
       conapo: age15_17
       sex: M
     Male_Age18_24:
       geography: zone
+      row_scale: persons
       attributes: [Male, Age18_24]
       census: P_18A24_M
       conapo: age18_24
       sex: M
     Male_Age25_59:
       geography: zone
+      row_scale: persons
       attributes: [Male, Age25_59]
       census: P_18YMAS_M - P_18A24_M - P_60YMAS_M
       conapo: age25_59
       sex: M
     Male_Age60p:
       geography: zone
+      row_scale: persons
       attributes: [Male, Age60p]
       census: P_60YMAS_M
       conapo: age60p
       sex: M
     Female_Age6_11:
       geography: zone
+      row_scale: persons
       attributes: [Female, Age6_11]
       census: P_6A11_F
       conapo: age6_11
       sex: F
     Female_Age12_14:
       geography: zone
+      row_scale: persons
       attributes: [Female, Age12_14]
       census: P_12A14_F
       conapo: age12_14
       sex: F
     Female_Age15_17:
       geography: zone
+      row_scale: persons
       attributes: [Female, Age15_17]
       census: P_15A17_F
       conapo: age15_17
       sex: F
     Female_Age18_24:
       geography: zone
+      row_scale: persons
       attributes: [Female, Age18_24]
       census: P_18A24_F
       conapo: age18_24
       sex: F
     Female_Age25_59:
       geography: zone
+      row_scale: persons
       attributes: [Female, Age25_59]
       census: P_18YMAS_F - P_18A24_F - P_60YMAS_F
       conapo: age25_59
       sex: F
     Female_Age60p:
       geography: zone
+      row_scale: persons
       attributes: [Female, Age60p]
       census: P_60YMAS_F
       conapo: age60p
@@ -441,11 +542,13 @@ constraints:
 
     Employed:
       geography: zone
+      row_scale: persons
       census: POCUPADA
       conapo: age10p
       note: Occupied population, 12+.
     NotEmployed:
       geography: zone
+      row_scale: persons
       census: P_12A14 + P_15A17 + P_18YMAS - POCUPADA
       conapo: age10p
       note: >-
