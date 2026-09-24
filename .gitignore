@@ -20,6 +20,9 @@ wheels/
 # Download from https://www.imeplan.mx/plataformas-de-informacion/visualizador-eod
 /data/Informe_Final_al_publico_EOD_2023.pdf
 
+# TMG's Toronto example of a SurveyReweight input set, kept locally for reference
+/data/ODReweighting_example_toronto/
+
 # OS junk
 .DS_Store
 
