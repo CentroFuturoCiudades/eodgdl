@@ -59,10 +59,20 @@ def files():
 
 
 @pytest.fixture(scope="module")
-def viv():
+def tables():
     if not HAS_DATA:
         pytest.skip("in-repo data/ not present")
-    return eodgdl.load_eod(DATA_DIR).viv
+    return eodgdl.load_eod(DATA_DIR)
+
+
+@pytest.fixture(scope="module")
+def viv(tables):
+    return tables.viv
+
+
+@pytest.fixture(scope="module")
+def trips(tables):
+    return tables.trips
 
 
 def test_records_have_the_survey_s_rows_and_integer_keys(files):
@@ -118,9 +128,9 @@ def test_targets_are_consistent_and_pinned(files):
     pp20 = c["PersonConstraintsByZone_2020.csv"]
     mun20 = c["PersonConstraintsByMunicipality_2020.csv"]
     assert len(hh20) == len(pp20) == 64 and len(mun20) == 9
-    assert round(hh20.Dwellings.sum()) == 1_459_133
-    assert round(pp20.Persons.sum()) == 4_670_527
-    assert round(mun20.Cyclist.sum()) == 100_402  # 101,907 whole-municipality cyclists, universe share applied
+    assert round(hh20.Dwellings.sum()) == 1_462_273
+    assert round(pp20.Persons.sum()) == 4_680_209
+    assert round(mun20.Cyclist.sum()) == 100_593  # 101,907 whole-municipality cyclists, universe share applied
     assert c["TripConstraintsByRegion.csv"].BusBoardings.iloc[0] == 1_851_750
     ages = ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]
     assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
@@ -146,7 +156,7 @@ def test_targets_are_consistent_and_pinned(files):
     # 2023 keeps the census's partitions: bands sum to Persons, each sex's bands to its
     # total, the two activity targets to the 12+ bands; the sexes fall short of the
     # totals only by INEGI's suppressed cells, as in 2020.
-    assert round(pp23.Persons.sum()) == 4_840_939
+    assert round(pp23.Persons.sum()) == 4_851_016
     for y, p in ((2020, pp20), (2023, pp23)):
         assert (p[ages].sum(axis=1) - p.Persons).abs().max() < 1e-6, y
         for sex in ("Male", "Female"):
@@ -157,29 +167,37 @@ def test_targets_are_consistent_and_pinned(files):
             assert (p[f"Male_{b}"] + p[f"Female_{b}"] - p[b]).abs().max() < 50, (y, b)
 
 
-def test_census_universe_is_the_assigned_units(files, viv):
+def test_census_universe_is_the_assigned_units(files, viv, trips):
     # mxcensus is the source of every value; zoning.assign_units says which rows make a zone.
-    universe = reweight.census_universe(viv)
-    assert len(universe) == 2281 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
+    universe = reweight.census_universe(viv, trips)
+    assert len(universe) == 2295 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
     assert universe.Zone.nunique() == 64
 
 
-def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv):
+def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, trips):
     a = files.zone_assignment.set_index("CVEGEO")
-    assert a.index.is_unique and reweight.check_assignment(a, viv) == []
+    assert a.index.is_unique and reweight.check_assignment(a, viv, trips) == []
     assert a.groupby(["unit", "rule"], observed=True).size().to_dict() == {
-        ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26, ("ageb", "polygon"): 920,
-        ("ageb", "majority"): 80, ("ageb", "outside"): 20,
-        ("locality", "polygon"): 258, ("locality", "override"): 4, ("locality", "outside"): 521,
+        ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
+        ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
+        ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "outside"): 13,
+        ("locality", "trip ends"): 7, ("locality", "polygon"): 258, ("locality", "override"): 4,
+        ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
     }
     # The survey never splits an AGEB, and every sampled one carries the zone it coded.
     code, zone = viv.ageb.astype(str), viv.centralidad.astype(str)
     assert (zone.groupby(code).nunique() == 1).all()
     urban = code.str.len() == 13
     assert (code[urban].map(a.zone) == zone[urban]).all()
-    # An unsampled AGEB goes whole to the polygon holding most of its population.
-    unsampled = a[(a.unit == "ageb") & a.survey_zone.isna() & a.polygon_zone.notna()]
-    assert (unsampled.zone == unsampled.polygon_zone).all() and (unsampled.polygon_share > 0.4).all()
+    # An unsampled AGEB takes the zone the survey coded most for its trip ends, else it goes
+    # whole to the polygon holding most of its population.
+    travelled = a[(a.unit == "ageb") & a.survey_zone.isna() & a.trip_zone.notna()]
+    assert (travelled.zone == travelled.trip_zone).all()
+    rest = a[(a.unit == "ageb") & a.survey_zone.isna() & a.trip_zone.isna() & a.polygon_zone.notna()]
+    assert (rest.zone == rest.polygon_zone).all() and (rest.polygon_share > 0.4).all()
+    # 141200001098A: a campus the survey codes 68B (968 trip ends), though 82 % of its
+    # residents live in 44's polygon.
+    assert a.loc["141200001098A", ["zone", "polygon_zone", "rule"]].tolist() == ["68B", "44", "trip ends over polygon"]
     # La Aurora (Juanacatlán) lies outside every polygon; the survey coded its dwellings 49F.
     aurora = a.loc[["1405100020181", "1405100020196", "1405100020209", "1405100020213"]]
     assert (aurora.zone == "49F").all() and aurora.polygon_zone.isna().all()
@@ -188,11 +206,25 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv):
     assert set(overrides.rural_ageb) == {"140970123", "140973679"}
 
 
-def test_check_assignment_catches_a_misplaced_rural_ageb(files, viv):
+def test_check_assignment_catches_a_misplaced_rural_ageb(files, viv, trips):
     a = files.zone_assignment.set_index("CVEGEO")
     a.loc[a.rule == "override", "zone"] = None
-    problems = reweight.check_assignment(a, viv)
-    assert len(problems) == 2 and all("rural AGEB" in p for p in problems)
+    problems = reweight.check_assignment(a, viv, trips)
+    assert problems and all("rural AGEB" in p for p in problems)
+    assert {p.split()[2].rstrip(":") for p in problems} == {"140970123", "140973679"}
+
+
+def test_every_trip_end_is_in_its_ageb_s_zone(files, viv, trips):
+    # The survey codes a trip end's zone by where it lies; every AGEB it records is in the
+    # zone system, in the zone it coded (a rural AGEB, in a zone holding one of its
+    # localities). Only the access points, the airport and six road gateways, are not.
+    a = files.zone_assignment.set_index("CVEGEO")
+    agreement = reweight.trip_end_agreement(a, viv, trips)
+    assert agreement.to_dict() == {"in zone": 305_172, "access point": 3_094}
+    # the chain rule that moves an origin home moves its zone too
+    moved = trips[trips.ajustes.astype(str).str.contains("origen:casa")].reset_index()
+    home = viv.centralidad.astype(str)
+    assert (moved.zona_origen.astype(str) == moved.folio_vivienda.map(home).to_numpy()).all()
 
 
 def test_redrawn_zones_follow_the_assignment(files):
@@ -252,7 +284,7 @@ def test_census_cyclists_reproduce_the_spec_constants():
     assert counts.to_dict() == {int(k): float(v) for k, v in entry["constant"].items()}
 
 
-def test_row_corrections_make_zones_consistent(files, viv):
+def test_row_corrections_make_zones_consistent(files, viv, trips):
     # Zone 56 (63F) has 59 % of its residents without a stated age (dwellings without
     # occupant information whose details INEGI did not impute), zone 43 (45) almost no
     # collective quarters since Puente Grande's prisons fell outside the universe.
@@ -262,7 +294,7 @@ def test_row_corrections_make_zones_consistent(files, viv):
     hh = files.constraints["HouseholdConstraintsByZone_2020.csv"].set_index("Zone")
     assert (pp.Persons / hh.Occupants).between(0.8, 1.0).all()
     assert (hh[["HasCar", "HasMoto", "HasBike", "HasInternet"]].max(axis=1) <= hh.Dwellings).all()
-    universe = reweight.census_universe(viv)
+    universe = reweight.census_universe(viv, trips)
     ps, ds = reweight.person_scale(universe), reweight.dwelling_scale(universe)
     assert ps.notna().all() and (ps >= 0).all() and ds.notna().all() and (ds >= 1).all()
     six_plus = ["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]
@@ -328,8 +360,8 @@ def test_check_spec_requires_conapo_under_a_rate(monkeypatch):
     assert any("on top of conapo" in p for p in reweight.check_spec())
 
 
-def test_row_targets_add_up_to_the_zone_targets(files, viv):
-    universe = reweight.census_universe(viv)
+def test_row_targets_add_up_to_the_zone_targets(files, viv, trips):
+    universe = reweight.census_universe(viv, trips)
     conapo = reweight.load_conapo(DATA_DIR / "CONAPO_proyecciones_AMG.csv")
     for year, scaling in ((2020, None), (2023, conapo)):
         for name, table, file in (("Persons", "persons", "PersonConstraintsByZone"),
@@ -339,7 +371,7 @@ def test_row_targets_add_up_to_the_zone_targets(files, viv):
             assert (rows.groupby(universe.Zone).sum() - zone).abs().max() < 1e-6
 
 
-def test_sampled_agebs_carry_their_zone_taz_and_targets(files, viv):
+def test_sampled_agebs_carry_their_zone_taz_and_targets(files, viv, trips):
     s = files.sampled_agebs
     code = viv.ageb.astype(str)
     assert len(s) == code.nunique() == 1046 and s.AGEB.is_unique
@@ -348,7 +380,7 @@ def test_sampled_agebs_carry_their_zone_taz_and_targets(files, viv):
     assert (s.centralidad == s.AGEB.map(viv.centralidad.astype(str).groupby(code).first())).all()
     assert (s.sampled_dwellings == s.AGEB.map(code.value_counts())).all()
     # An urban AGEB's values are its own census row, the zone targets' own arithmetic.
-    universe = reweight.census_universe(viv)
+    universe = reweight.census_universe(viv, trips)
     urban = s[s.unit == "urban"].set_index("AGEB")
     persons = reweight.row_targets(universe, "persons", "Persons")
     assert (urban.Persons6plus_2020 - persons.reindex(urban.index)).abs().max() < 1e-6
@@ -364,10 +396,10 @@ def test_sampled_agebs_carry_their_zone_taz_and_targets(files, viv):
     assert (urban.Occupants_2020 == occupants).all() and (urban.Occupants_2020 >= urban.Persons6plus_2020 - 1e-6).mean() > 0.95
 
 
-def test_rows_without_a_stated_age_take_their_zone_s_mix(viv):
+def test_rows_without_a_stated_age_take_their_zone_s_mix(viv, trips):
     # AGEB 1412000013876 (centralidad 16) has 179 residents and no stated age: its person
     # counts are its zone's per private-dwelling resident, not 0.
-    universe = reweight.census_universe(viv)
+    universe = reweight.census_universe(viv, trips)
     persons = reweight.row_targets(universe, "persons", "Persons")
     row = universe.loc["1412000013876"]
     assert float(row[["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]].astype(float).sum()) == 0

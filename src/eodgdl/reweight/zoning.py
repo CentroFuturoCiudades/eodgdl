@@ -31,7 +31,8 @@ import pandas as pd
 from eodgdl.taz import load_taz, load_zm_muns
 
 STATE = 14
-RULES = ["survey", "survey over polygon", "polygon", "majority", "override", "outside"]
+RULES = ["survey", "survey over polygon", "trip ends", "trip ends over polygon", "polygon", "majority",
+         "override", "outside"]
 
 # Rural localities the survey places in a zone whose polygon does not contain them. In
 # both rural AGEBs every locality inside a polygon lies in another zone than the one the
@@ -132,28 +133,65 @@ def _geography(state=STATE):
     return agebs, locs, mza
 
 
-def _survey_zones(viv, width):
-    """The zone the survey coded in each AGEB code of `width` characters, and its dwellings."""
-    code = viv.ageb.astype(str)
-    sub = pd.DataFrame({"code": code, "zone": viv.centralidad.astype(str)})[code.str.len() == width]
-    zones = sub.groupby("code").zone.agg(set)
-    split = zones[zones.map(len) > 1]
-    if len(split):
-        raise ValueError(f"AGEBs the survey coded with more than one zone: {dict(split)}")
-    return zones.map(lambda s: next(iter(s))), sub.groupby("code").size()
+def survey_codes(viv, trips):
+    """How the survey codes each AGEB: one row per (code, source, zone) with its count.
+
+    ``source`` is ``dwellings`` (``viv.ageb`` / ``centralidad``) or ``trip ends`` (every
+    trip's ``origen`` / ``zona_origen`` and ``destino`` / ``zona_destino``, the non-trips
+    left out). The survey codes a trip end's zone by where it lies, and an AGEB's origins
+    and destinations agree on its zone (the most frequent one is the same for all 1,691
+    codes seen as both). Access points (``99999...``) are left out: they are no census unit.
+    """
+    from eodgdl.chains import non_trips
+
+    t = trips[~non_trips(trips)]
+    frames = [
+        pd.DataFrame({"code": viv.ageb.astype(str), "zone": viv.centralidad.astype(str), "source": "dwellings"}),
+        pd.DataFrame({"code": t.origen.astype(str), "zone": t.zona_origen.astype(str), "source": "trip ends"}),
+        pd.DataFrame({"code": t.destino.astype(str), "zone": t.zona_destino.astype(str), "source": "trip ends"}),
+    ]
+    codes = pd.concat(frames)
+    codes = codes[~codes.code.str.startswith("99999")]
+    return codes.groupby(["code", "source", "zone"]).size().rename("n").reset_index()
 
 
-def assign_units(viv, state=STATE):
+def _dwelling_zones(codes):
+    """The zone the survey coded for each AGEB's dwellings, and how many; raises on a split AGEB."""
+    dw = codes[codes.source == "dwellings"]
+    split = dw.groupby("code").zone.nunique()
+    if (split > 1).any():
+        raise ValueError(f"AGEBs the survey coded with more than one zone: {sorted(split.index[split > 1])}")
+    return dw.set_index("code").zone, dw.set_index("code").n
+
+
+def _trip_zones(codes):
+    """Each AGEB's most frequent trip-end zone (ties by zone code) and its number of trip ends."""
+    te = codes[codes.source == "trip ends"].sort_values(["code", "n", "zone"], ascending=[True, False, True])
+    return te.drop_duplicates("code").set_index("code").zone, te.groupby("code").n.sum()
+
+
+def assign_units(viv, trips, state=STATE):
     """One row per census unit of the nine municipalities (urban AGEB or rural locality).
 
     Indexed by CVEGEO: ``unit`` (``ageb`` | ``locality``), ``MUN``, ``POBTOT``,
     ``polygon_zone`` (the polygon holding most of the unit's population, NA when most of it
     is outside every polygon), ``polygon_share`` (that share; 1 or 0 for a locality),
     ``survey_zone`` and ``sampled_dwellings`` (urban AGEBs the survey sampled),
-    ``rural_ageb`` (localities), and the result: ``zone`` (NA when outside) and ``rule``.
+    ``trip_zone`` and ``trip_ends`` (the most frequent zone the survey coded for the
+    AGEB's trip ends, and how many), ``rural_ageb`` (localities), and the result: ``zone``
+    (NA when outside) and ``rule``.
+
+    An urban AGEB takes, in order, the zone the survey coded for its dwellings, the zone it
+    coded most for its trip ends, or the polygon holding most of its population; so every
+    AGEB the survey sampled or recorded a trip end in is in the zone system. A rural AGEB
+    is not a unit, but every zone the survey coded for it (dwellings or trip ends) must hold
+    one of its localities: after the polygons and ``_RURAL_LOCALITY_ZONES``, a zone that
+    holds none takes the AGEB's locality nearest to that zone's polygon (the larger on a
+    tie), unless that locality is the only one it has in another zone the survey coded.
     """
     agebs, locs, blocks = _geography(state)
     polys = zone_polygons()
+    codes = survey_codes(viv, trips)
     at = gpd.sjoin(blocks, polys[["geometry"]].reset_index(names="polygon"), how="left", predicate="within")
     by_polygon = at.fillna({"polygon": ""}).groupby(["ageb", "polygon"]).POBTOT.sum().unstack(fill_value=0.0)
     by_polygon = by_polygon.reindex(agebs.index, fill_value=0.0)
@@ -173,17 +211,22 @@ def assign_units(viv, state=STATE):
         "polygon_share": share.max(axis=1),
         "straddles": (share > 0).sum(axis=1) > 1,
     })
-    survey, dwellings = _survey_zones(viv, 13)
-    unknown = sorted(set(survey.index) - set(urban.index))
+    survey, dwellings = _dwelling_zones(codes)
+    trip_zone, trip_ends = _trip_zones(codes)
+    unknown = sorted({c for c in [*survey.index, *trip_zone.index] if len(c) == 13} - set(urban.index))
     if unknown:
-        raise ValueError(f"sampled AGEBs the census does not have: {unknown}")
+        raise ValueError(f"AGEBs the survey records that the census does not have: {unknown}")
     urban["survey_zone"] = survey.reindex(urban.index)
     urban["sampled_dwellings"] = dwellings.reindex(urban.index).fillna(0).astype(int)
-    sampled = urban.survey_zone.notna()
-    urban["zone"] = urban.survey_zone.where(sampled, urban.polygon_zone)
+    urban["trip_zone"] = trip_zone.reindex(urban.index)
+    urban["trip_ends"] = trip_ends.reindex(urban.index).fillna(0).astype(int)
+    sampled, travelled = urban.survey_zone.notna(), urban.survey_zone.isna() & urban.trip_zone.notna()
+    urban["zone"] = urban.survey_zone.where(sampled, urban.trip_zone.where(travelled, urban.polygon_zone))
     urban["rule"] = "outside"
-    urban.loc[~sampled & urban.polygon_zone.notna(), "rule"] = "majority"
-    urban.loc[~sampled & urban.polygon_zone.notna() & ~urban.straddles, "rule"] = "polygon"
+    urban.loc[urban.polygon_zone.notna(), "rule"] = "majority"
+    urban.loc[urban.polygon_zone.notna() & ~urban.straddles, "rule"] = "polygon"
+    urban.loc[travelled, "rule"] = "trip ends"
+    urban.loc[travelled & (urban.trip_zone != urban.polygon_zone), "rule"] = "trip ends over polygon"
     urban.loc[sampled, "rule"] = "survey"
     urban.loc[sampled & (urban.survey_zone != urban.polygon_zone), "rule"] = "survey over polygon"
 
@@ -203,38 +246,109 @@ def assign_units(viv, state=STATE):
     rural["rule"] = rural.polygon_zone.notna().map({True: "polygon", False: "outside"})
     rural.loc[override.index, "zone"] = override
     rural.loc[override.index, "rule"] = "override"
+    _place_rural_codes(rural, locs, polys, codes, locked=set(override.index))
 
-    out = pd.concat([urban, rural])
+    # A rural AGEB the survey records but that holds no census locality (only unpopulated
+    # places, e.g. a factory) is a unit of its own, with no population, so its code still
+    # maps to the zone the survey coded most for it.
+    rural_codes = codes[codes.code.str.len() == 9]
+    empty = sorted(set(rural_codes.code) - set(rural.rural_ageb.dropna()))
+    top = rural_codes.sort_values(["code", "n", "zone"], ascending=[True, False, True]).drop_duplicates("code").set_index("code")
+    bare = pd.DataFrame({
+        "unit": "rural ageb", "MUN": [int(c[2:5]) for c in empty], "POBTOT": 0.0,
+        "polygon_zone": pd.NA, "polygon_share": 0.0, "straddles": False, "rural_ageb": empty,
+        "zone": top.zone.reindex(empty).to_numpy(),
+        "rule": ["survey" if s == "dwellings" else "trip ends" for s in top.source.reindex(empty)],
+    }, index=pd.Index(empty))
+
+    out = pd.concat([urban, rural, bare])
     out.index.name = "CVEGEO"
     out["rule"] = pd.Categorical(out.rule, categories=RULES)
     out["sampled_dwellings"] = out.sampled_dwellings.astype("Int64")
+    out["trip_ends"] = out.trip_ends.astype("Int64")
     return out[["unit", "MUN", "POBTOT", "polygon_zone", "polygon_share", "straddles", "survey_zone",
-                "sampled_dwellings", "rural_ageb", "zone", "rule"]]
+                "sampled_dwellings", "trip_zone", "trip_ends", "rural_ageb", "zone", "rule"]]
 
 
-def check_assignment(assignment, viv):
-    """Where the assignment and the survey disagree; empty when every sampled unit is placed.
+def _place_rural_codes(rural, locs, polys, codes, locked):
+    """Give every zone the survey coded for a rural AGEB one of its localities (in place)."""
+    rural_codes = codes[codes.code.str.len() == 9]
+    dwelling = set(map(tuple, rural_codes.loc[rural_codes.source == "dwellings", ["code", "zone"]].values))
+    required = rural_codes.groupby("code").zone.agg(set)
+    for ageb, zones in required.items():
+        members = rural.index[rural.rural_ageb == ageb]
+        if len(members) == 0:
+            continue
+        for zone in sorted(zones):
+            if (rural.loc[members, "zone"] == zone).any() or zone not in polys.index:
+                continue
+            distance = locs.geometry.reindex(members).distance(polys.geometry[zone])
+            order = sorted(members, key=lambda c: (distance[c], -(rural.at[c, "POBTOT"] if pd.notna(rural.at[c, "POBTOT"]) else 0)))
+            for c in order:
+                current = rural.at[c, "zone"]
+                if c in locked or (pd.notna(current) and current in zones and (rural.loc[members, "zone"] == current).sum() == 1):
+                    continue
+                rural.at[c, "zone"] = zone
+                rural.at[c, "rule"] = "survey" if (ageb, zone) in dwelling else "trip ends"
+                locked.add(c)
+                break
 
-    Each sampled urban AGEB must carry the zone the survey coded (true by construction),
-    and each sampled rural AGEB must hold at least one locality assigned to the zone the
-    survey coded there: a rural AGEB that fails needs an entry in ``_RURAL_LOCALITY_ZONES``.
-    Every assigned zone must be a survey zone.
+
+def check_assignment(assignment, viv, trips):
+    """Where the assignment and the survey disagree; empty when every coded AGEB is placed.
+
+    Every urban AGEB with dwellings carries the zone the survey coded for them, and every
+    other one with trip ends the zone it coded most for them (true by construction). Every
+    zone the survey coded for a rural AGEB, from its dwellings or its trip ends, holds one
+    of its localities: one that does not needs an entry in ``_RURAL_LOCALITY_ZONES``. Every
+    assigned zone is a survey zone.
     """
     problems = []
-    urban = assignment[assignment.unit == "ageb"]
-    sampled = urban[urban.survey_zone.notna()]
-    wrong = sampled[sampled.zone != sampled.survey_zone]
-    problems += [f"AGEB {c}: assigned {r.zone}, surveyed {r.survey_zone}" for c, r in wrong.iterrows()]
-    survey, dwellings = _survey_zones(viv, 9)
-    locs = assignment[assignment.unit == "locality"]
+    codes = survey_codes(viv, trips)
+    survey, _ = _dwelling_zones(codes)
+    trip_zone, _ = _trip_zones(codes)
+    urban = assignment[assignment.unit == "ageb"].zone
     for code, zone in survey.items():
-        held = locs[(locs.rural_ageb == code) & (locs.zone == zone)]
-        if held.empty:
-            problems.append(f"rural AGEB {code}: {dwellings[code]} dwellings coded {zone}, no locality of it assigned there")
+        if len(code) == 13 and urban.get(code) != zone:
+            problems.append(f"AGEB {code}: assigned {urban.get(code)}, its dwellings coded {zone}")
+    for code, zone in trip_zone.items():
+        if len(code) == 13 and code not in survey.index and urban.get(code) != zone:
+            problems.append(f"AGEB {code}: assigned {urban.get(code)}, its trip ends coded {zone}")
+    locs = assignment[assignment.unit.isin(["locality", "rural ageb"])]
+    held = set(map(tuple, locs.loc[locs.zone.notna(), ["rural_ageb", "zone"]].values))
+    rural_codes = codes[codes.code.str.len() == 9]
+    for (code, source), g in rural_codes.groupby(["code", "source"]):
+        for zone, n in zip(g.zone, g.n):
+            if (code, zone) not in held:
+                problems.append(f"rural AGEB {code}: {n} {source} coded {zone}, no locality of it assigned there")
     unknown = set(assignment.zone.dropna()) - set(viv.centralidad.astype(str))
     if unknown:
         problems.append(f"zones no dwelling was coded with: {sorted(unknown)}")
     return problems
+
+
+def trip_end_agreement(assignment, viv, trips):
+    """Every trip end classified against the zone system: a count per class.
+
+    ``in zone`` -- an urban AGEB whose assigned zone is the one coded for the end, or a
+    rural AGEB with a locality in it; ``other zone`` -- an urban AGEB that straddles two
+    zones, whose single zone is not this end's; ``access point``.
+    """
+    from eodgdl.chains import non_trips
+
+    t = trips[~non_trips(trips)]
+    ends = pd.concat([pd.DataFrame({"code": t.origen.astype(str), "zone": t.zona_origen.astype(str)}),
+                      pd.DataFrame({"code": t.destino.astype(str), "zone": t.zona_destino.astype(str)})])
+    urban = assignment[assignment.unit == "ageb"].zone
+    locs = assignment[assignment.unit.isin(["locality", "rural ageb"]) & assignment.zone.notna()]
+    held = set(map(tuple, locs[["rural_ageb", "zone"]].values))
+    def kind(code, zone):
+        if code.startswith("99999"):
+            return "access point"
+        if len(code) == 13:
+            return "in zone" if urban.get(code) == zone else "other zone"
+        return "in zone" if (code, zone) in held else "other zone"
+    return pd.Series([kind(c, z) for c, z in zip(ends.code, ends.zone)]).value_counts()
 
 
 def unit_shapes(state=STATE):

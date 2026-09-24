@@ -37,7 +37,8 @@ def main():
 
     from eodgdl import load_eod, load_zm_muns, reweight
 
-    viv = load_eod(os.environ["EODGDL_DATA_DIR"]).viv
+    tables = load_eod(os.environ["EODGDL_DATA_DIR"])
+    viv, trips = tables.viv, tables.trips
     chunk = re.search(r"#\| label: fig-zone-map\n(.*?)```", REPORT.read_text(), re.S)
     if chunk is None:
         raise SystemExit(f"no fig-zone-map chunk in {REPORT}")
@@ -47,11 +48,11 @@ def main():
         "plt.show()",
         f'plt.savefig({str(out)!r}, dpi={args.dpi}, bbox_inches="tight", facecolor="white")')
     # the names the chunk takes from the report's setup, build and zones chunks
-    names = {"plt": plt, "np": np, "MUN_NAME": load_zm_muns(), "n_zones": 64, "viv": viv, "reweight": reweight}
+    names = {"plt": plt, "np": np, "MUN_NAME": load_zm_muns(), "n_zones": 64, "viv": viv, "trips": trips, "reweight": reweight}
     exec(compile(code, f"{REPORT.name}:fig-zone-map", "exec"), names)
     print(f"wrote {out}")
 
-    assignment = reweight.assign_units(viv)
+    assignment = reweight.assign_units(viv, trips)
     shapes = reweight.zone_shapes(assignment)
     census = assignment[assignment.zone.notna()].groupby("zone").agg(
         agebs=("unit", lambda u: int((u == "ageb").sum())), localities=("unit", lambda u: int((u == "locality").sum())),

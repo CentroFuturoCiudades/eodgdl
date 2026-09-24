@@ -32,14 +32,15 @@ taz = load_taz(drop_ap=True)                       # the centralidad polygons th
 
 # every census unit (urban AGEB, rural locality) in at most one zone: the polygons plus the
 # survey's own coding; needs the `reweight` extra (census data through mxcensus)
-viv = load_eod().viv
-units = reweight.assign_units(viv)                 # CVEGEO -> zone, rule, population
+tables = load_eod()
+units = reweight.assign_units(tables.viv, tables.trips)   # CVEGEO -> zone, rule, population
 zones = reweight.zone_shapes(units)                # the zones redrawn along AGEB edges
 ```
 
 Every loader fetches from the mirror by default and accepts a local path override. An
 urban AGEB is never split: a sampled one takes the zone the survey coded there, an
-unsampled one goes whole to the polygon holding most of its population. `reports/reweight_inputs.qmd`
+unsampled one takes the zone the survey coded for its trip ends, or else goes whole to the
+polygon holding most of its population. `reports/reweight_inputs.qmd`
 maps the result; `scripts/zone_system_map.py` writes the map and the redrawn zones.
 
 ## Travel-demand model schema

@@ -163,8 +163,8 @@ flowchart LR
     A --> Z["zone × municipality<br/>ZoneSystem.csv"]
   end
   subgraph census [Census 2020]
-    C["mxcensus.load_census(14)<br/>AGEB + locality frames"] --> U["census universe<br/>2,281 AGEBs + localities"]
-    X["centralidad polygons<br/>+ the survey's zone codes"] --> Z2["zoning.assign_units<br/>one zone per AGEB / locality"] --> U
+    C["mxcensus.load_census(14)<br/>AGEB + locality frames"] --> U["census universe<br/>2,295 AGEBs + localities"]
+    X["centralidad polygons<br/>+ the survey's zone codes<br/>(dwellings, trip ends)"] --> Z2["zoning.assign_units<br/>one zone per AGEB / locality"] --> U
     U --> S["row corrections<br/>persons · dwellings"]
     S --> T20["sum by geography<br/>2020 targets"]
     S --> G["× CONAPO / VMRC / ENDUTIH<br/>per municipality"] --> T23["2023 targets"]
@@ -363,30 +363,36 @@ A few of these are decisions rather than lookups:
 #| label: universe
 #| include: false
 
-cw = reweight.crosswalk(viv)
-universe = reweight.census_universe(viv)
+cw = reweight.crosswalk(viv, trips)
+universe = reweight.census_universe(viv, trips)
 assign = files.zone_assignment.set_index("CVEGEO")
-assert reweight.check_assignment(assign, viv) == []
+assert reweight.check_assignment(assign, viv, trips) == []
 n_ageb, n_loc = int(cw.AGEB.notna().sum()), int(cw.AGEB.isna().sum())
-assert (len(cw), n_ageb, n_loc, len(universe)) == (2_281, 2_019, 262, 2_281)
+assert (len(cw), n_ageb, n_loc, len(universe)) == (2_295, 2_026, 269, 2_295)
 assert universe.Zone.nunique() == n_zones
+agreement = reweight.trip_end_agreement(assign, viv, trips)
+assert agreement.to_dict() == {"in zone": 305_172, "access point": 3_094}
 
 rule_counts = assign.groupby(["unit", "rule"], observed=True).agg(units=("POBTOT", "size"), population=("POBTOT", "sum"))
 assert rule_counts.units.to_dict() == {
-    ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26, ("ageb", "polygon"): 920,
-    ("ageb", "majority"): 80, ("ageb", "outside"): 20,
-    ("locality", "polygon"): 258, ("locality", "override"): 4, ("locality", "outside"): 521,
+    ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
+    ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
+    ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "outside"): 13,
+    ("locality", "trip ends"): 7, ("locality", "polygon"): 258, ("locality", "override"): 4,
+    ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
 }
 RULE_TEXT = {
-    "survey": "sampled; the survey's zone, which is also where most of its population lies",
-    "survey over polygon": "sampled; the survey's zone, against the polygons",
-    "polygon": "unsampled; wholly inside one polygon",
-    "majority": "unsampled; straddles, goes whole to the polygon with most of its population",
+    "survey": "sampled; the zone the survey coded for its dwellings, where most of its population lies too",
+    "survey over polygon": "sampled; the zone the survey coded for its dwellings, against the polygons",
+    "trip ends": "not sampled; the zone the survey coded most for its trip ends",
+    "trip ends over polygon": "not sampled; the zone the survey coded most for its trip ends, against the polygons",
+    "polygon": "no dwelling or trip end; wholly inside one polygon",
+    "majority": "no dwelling or trip end; straddles, goes whole to the polygon with most of its population",
     "override": "placed by _RURAL_LOCALITY_ZONES",
     "outside": "most of its population outside every polygon; not in the universe",
 }
 rule_tbl = rule_counts.reset_index().assign(
-    unit=lambda d: d.unit.map({"ageb": "urban AGEB", "locality": "rural locality"}),
+    unit=lambda d: d.unit.map({"ageb": "urban AGEB", "locality": "rural locality", "rural ageb": "rural AGEB, no census locality"}),
     meaning=lambda d: d.rule.astype(str).map(RULE_TEXT),
     units=lambda d: d.units.map(fmt), population=lambda d: d.population.map(fmt),
 )[["unit", "rule", "meaning", "units", "population"]]
@@ -414,25 +420,37 @@ Every census value comes from INEGI's Censo de Población y Vivienda 2020 throug
 `mxcensus.load_census(state=14)`: the AGEB frame (urban AGEBs) and the locality frame
 (localities, the rural ones among them). Which of those rows make up each survey zone is
 decided by `reweight.zoning` from two things only: the centralidad polygons the survey was
-fielded on, and the zone the survey coded for each dwelling. IMEPLAN's AGEB table plays no
-part.
+fielded on, and the zones the survey coded, for each dwelling and for each trip end (it codes
+a trip end's zone by where it lies, and an AGEB's origins and destinations always agree on
+it). IMEPLAN's AGEB table plays no part.
 
 The census counts people in two kinds of unit that tile the nine municipalities, and each
 gets at most one zone (`zoning.assign_units`):
 
 - **Urban AGEBs are never split.** The survey does not split them either: every sampled AGEB
-  has all its dwellings in one zone. A sampled AGEB takes the zone the survey coded there. An
-  unsampled one goes whole to the polygon holding most of its population, counted over its
-  census blocks (the blocks only choose; they never divide an AGEB). One whose population
-  lies mostly outside every polygon is left out.
+  has all its dwellings in one zone. A sampled AGEB takes the zone the survey coded for its
+  dwellings; one with trip ends but no dwelling, the zone the survey coded most for them; any
+  other goes whole to the polygon holding most of its population, counted over its census
+  blocks (the blocks only choose; they never divide an AGEB), or is left out when most of its
+  population lies outside every polygon. So every AGEB the survey sampled or recorded a trip
+  end in is in the zone system.
 - **Rural localities** go to the polygon containing them. The survey codes a rural dwelling
-  by its rural AGEB, which spans several zones and localities, so rural AGEBs are not units;
-  the build only checks that each of the `{python} viv.ageb[sampled_rural].nunique()` sampled
-  rural AGEBs holds a locality assigned to the zone the survey coded there
-  (`zoning.check_assignment`, which the build runs and fails on).
+  or trip end by its rural AGEB, which spans several zones and localities, so rural AGEBs are
+  not units; instead every zone the survey coded for a rural AGEB must hold one of its
+  localities. `_RURAL_LOCALITY_ZONES` places two sampled rural AGEBs' large localities by
+  hand; any other zone that holds none takes the AGEB's locality nearest to its polygon. Two
+  rural AGEBs the survey records trip ends in hold no census locality at all (a factory, a
+  recreation area): each is a unit of its own with no population, so its code still maps to
+  a zone. `zoning.check_assignment`, which the build runs and fails on, verifies all of it.
 
-@tbl-rules counts the result. Where the survey and the polygons disagree the survey wins,
-because its households are weighted by the zone it coded:
+@tbl-rules counts the result. Of the survey's `{python} fmt(agreement.sum())` trip ends,
+`{python} fmt(agreement["in zone"])` lie in the zone the assignment gives their AGEB and the
+other `{python} fmt(agreement["access point"])` at the access points (the airport and six
+road gateways), which are no census unit. Where the survey and the polygons disagree the
+survey wins, because its households are weighted by the zone it coded, and its trips are
+assigned from the zones it coded: `{python} int((assign.rule == "trip ends over polygon").sum())`
+AGEBs with trip ends but no dwelling go against the polygons, the largest a campus the
+survey codes `68B` though most of its residents live in `44`'s polygon; and
 `{python} len(against)` sampled AGEBs are assigned against the polygons. In
 `{python} len(against) - len(against_outside)` of them the survey's zone holds the smaller
 share of a straddling AGEB (of `{python} n_straddle_sampled` sampled AGEBs that straddle);
@@ -447,7 +465,7 @@ universe; its residents are collective quarters, which no target counts anyway.
 
 ```{python}
 #| label: tbl-rules
-#| tbl-cap: "How every census unit of the nine municipalities was placed (ZoneAssignment.csv has one row per unit, with the rule, the polygon holding most of its population and that share, and the survey's zone and sampled dwellings)."
+#| tbl-cap: "How every census unit of the nine municipalities was placed (ZoneAssignment.csv has one row per unit, with the rule, the polygon holding most of its population and that share, the zone the survey coded for its dwellings and its trip ends, and how many of each)."
 show(rule_tbl)
 ```
 
@@ -458,7 +476,7 @@ GeoPackage beside the map. @fig-zone-map shows the assignment against the origin
 
 ```{python}
 #| label: fig-zone-map
-#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; bright red outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Dark grey, cross-hatched: the urban AGEBs left out of the universe (most of their population outside every polygon); rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
+#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; bright red outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: AGEBs placed in the zone the survey coded for their dwellings or trip ends, against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Dark grey, cross-hatched: the urban AGEBs left out of the universe (most of their population outside every polygon); rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
 #| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a white background, with the sampled rural AGEBs in light grey, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and dashed outlines enclose the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Bright red outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
 import colorsys
 
@@ -470,7 +488,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from mxcensus.data import POOCH
 
-assign_map = reweight.assign_units(viv)
+assign_map = reweight.assign_units(viv, trips)
 shapes = reweight.unit_shapes().join(assign_map[["zone", "rule", "survey_zone"]])
 placed = shapes[shapes.zone.notna()]
 poly_geo = reweight.zone_polygons()
@@ -534,7 +552,7 @@ fig, ax = plt.subplots(figsize=(10, 10))
 rural_geo.plot(ax=ax, color="white", edgecolor="#e2e2e2", linewidth=0.3)   # not sampled: empty
 sampled_rural.plot(ax=ax, color="#ededed", edgecolor="none")
 left_out = shapes[(shapes.unit == "ageb") & shapes.zone.isna()]
-assert len(left_out) == 20
+assert len(left_out) == 13
 left_out.plot(ax=ax, facecolor="#4a4a4a", edgecolor="black", linewidth=0.6, zorder=2)
 left_out.plot(ax=ax, facecolor="none", edgecolor="white", hatch="xxx", linewidth=0, zorder=2)
 # a ring around each, so the small ones are found too
@@ -546,8 +564,10 @@ outlined.plot(ax=ax, color=outlined.zone.map(zone_color).map(pale), edgecolor="#
 dots.plot(ax=ax, color=dots.zone.map(zone_color).map(pale), markersize=7, edgecolor="#1a1a1a", linewidth=0.45, zorder=3)
 sampled_rural.boundary.plot(ax=ax, color="#1a1a1a", linewidth=0.8, linestyle=(0, (3, 2)), zorder=4)
 HATCHES = {"survey over polygon": ("////", "#111111"), "majority": ("\\\\\\", "#666666")}
+AGAINST = ["survey over polygon", "trip ends over polygon"]   # the survey's zone, against the polygons
 for rule, (hatch, ink) in HATCHES.items():
-    shapes[shapes.rule == rule].plot(ax=ax, facecolor="none", edgecolor=ink, hatch=hatch, linewidth=0)
+    rules = AGAINST if rule == "survey over polygon" else [rule]
+    shapes[shapes.rule.isin(rules)].plot(ax=ax, facecolor="none", edgecolor=ink, hatch=hatch, linewidth=0)
 POLYGON_RED = "#ff1a1a"
 poly_geo.boundary.plot(ax=ax, color=POLYGON_RED, linewidth=0.8, zorder=5)
 mun_geo.boundary.plot(ax=ax, color="black", linewidth=1.6, zorder=6)
@@ -602,7 +622,7 @@ ax.legend(handles=[
     Patch(facecolor="white", edgecolor="#bdbdbd", linewidth=0.5, label="rural AGEB, not sampled"),
     Patch(facecolor="#4a4a4a", edgecolor="white", hatch="xxx", label="urban AGEB left out (mostly outside every polygon), ringed"),
     *[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
-      for r, text in (("survey over polygon", "sampled: the survey's zone, against the polygons"),
+      for r, text in (("survey over polygon", "the zone the survey coded (dwellings or trip ends), against the polygons"),
                       ("majority", "not sampled, straddles: whole to its majority polygon"))],
 ], loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=2, frameon=False, fontsize=8,
     title="the color is the zone", title_fontsize=8)
@@ -679,7 +699,7 @@ tgt_tbl = pd.DataFrame(tgt_rows)
 
 hh20 = c[f"HouseholdConstraintsByZone_{BASE}.csv"].set_index("Zone")
 pp20 = c[f"PersonConstraintsByZone_{BASE}.csv"].set_index("Zone")
-assert round(hh20.Dwellings.sum()) == 1_459_133 and round(pp20.Persons.sum()) == 4_670_527
+assert round(hh20.Dwellings.sum()) == 1_462_273 and round(pp20.Persons.sum()) == 4_680_209
 assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
 sex_gap = float(pp20.Persons.sum() - (pp20.Male + pp20.Female).sum())
 sex_gap_max = float((pp20.Persons - pp20.Male - pp20.Female).abs().max())
@@ -844,7 +864,7 @@ show(vph_tbl)
 cyc = reweight.constraints("persons")["Cyclist"]
 cyc_whole = sum(cyc["constant"].values())
 mun20 = c[f"PersonConstraintsByMunicipality_{BASE}.csv"].set_index("Municipality")
-assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_402
+assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_593
 cyc_tbl = pd.DataFrame({
     "municipality": [MUN_NAME[m] for m in mun20.index],
     "whole municipality": [fmt(cyc["constant"][m]) for m in mun20.index],
@@ -998,8 +1018,9 @@ reports a problem. All three report none for the set described here.
   each constraint names existing attributes and exactly one of `census` / `constant`,
   constants have integer geography ids and a provenance, growth sources and band groups
   exist, and no target has two growth sources.
-- **`check_assignment()`** requires every sampled AGEB to be in the zone the survey coded
-  and every sampled rural AGEB to hold a locality assigned there (@sec-universe).
+- **`check_assignment()`** requires every AGEB the survey sampled or recorded a trip end in
+  to be in the zone it coded, and every rural AGEB to hold a locality in each zone coded for
+  it (@sec-universe).
 - **`check(out_dir)`** reads the written files back the way the tool's loaders do, and
   imports nothing else from the package: every key an integer, ids unique, every person and
   trip joined to its household, every household TAZ in `ZoneSystem.csv`, no empty cell, the

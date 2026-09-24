@@ -59,18 +59,20 @@ def _census(state=14):
 # ---------------------------------------------------------------- the crosswalk
 
 
-def crosswalk(viv, state=14):
+def crosswalk(viv, trips, state=14):
     """The census units of the survey universe with their census key and geography ids.
 
     One row per urban AGEB or rural locality that :func:`zoning.assign_units` places in a
     zone, indexed by CVEGEO: the INEGI key (``AGEB`` is NA on a locality row), the rule
-    that placed it, and the Zone / Municipality / Region ids the records use.
+    that placed it, and the Zone / Municipality / Region ids the records use. The survey's
+    dwellings and trip ends decide the zones, so both are needed; a rural AGEB placed on
+    its own (no census locality in it) has no census row and is left out.
     """
-    a = assign_units(viv, state)
-    problems = check_assignment(a, viv)
+    a = assign_units(viv, trips, state)
+    problems = check_assignment(a, viv, trips)
     if problems:
         raise ValueError("the zone assignment disagrees with the survey: " + "; ".join(problems))
-    a = a[a.zone.notna()]
+    a = a[a.zone.notna() & a.unit.isin(["ageb", "locality"])]
     code = a.index.to_series()
     cw = pd.DataFrame({
         "ENTIDAD": code.str[:2].astype(int),
@@ -91,7 +93,7 @@ def crosswalk(viv, state=14):
     return cw
 
 
-def census_universe(viv, state=14):
+def census_universe(viv, trips, state=14):
     """Every numeric census column of every AGEB and rural locality in the survey universe.
 
     Indexed like the crosswalk (CVEGEO), with the Zone / Municipality / Region ids
@@ -99,7 +101,7 @@ def census_universe(viv, state=14):
     locality row the locality frame on (ENTIDAD, MUN, LOC); the crosswalk is built from
     those frames, so every row matches. Suppressed cells stay NaN, so sums skip them.
     """
-    cw = crosswalk(viv, state)
+    cw = crosswalk(viv, trips, state)
     _, _, df_loc, df_ageb = _census(state)
     is_ageb = cw.AGEB.notna()
     from_agebs = df_ageb.reindex(pd.MultiIndex.from_frame(cw.loc[is_ageb, AGEB_KEY]))

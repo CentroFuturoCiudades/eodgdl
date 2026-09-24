@@ -71,8 +71,8 @@ def fmt(n) -> str:
 # counts (via mxcensus) and its shape.
 tables = load_eod()
 _, df_mun, _, _ = mxcensus.load_census(state=14)  # state 14 = Jalisco
-census = reweight.census_universe(tables.viv)
-units = reweight.assign_units(tables.viv).loc[census.index]
+census = reweight.census_universe(tables.viv, tables.trips)
+units = reweight.assign_units(tables.viv, tables.trips).loc[census.index]
 a = gpd.GeoDataFrame(
     {"unit": units.unit, "MUN": census.Municipality,
      "households": census.TVIVHAB.astype(float), "population": census.POBTOT.astype(float)},
@@ -203,7 +203,7 @@ The survey covers the **`{python} n_muns`** municipalities of the Guadalajara Me
 Area. The study area is the census units of its zone system: **`{python} fmt(n_agebs)`**
 urban *AGEBs* (INEGI *Áreas Geoestadísticas Básicas*) and **`{python} fmt(n_locs)`** rural
 localities, each placed whole in one survey zone from the zone polygons and the survey's own
-coding (`eodgdl.reweight.zoning`; `reports/reweight_inputs.qmd` maps it). Together they
+coding of dwellings and trip ends (`eodgdl.reweight.zoning`; `reports/reweight_inputs.qmd` maps it). Together they
 contain roughly **`{python} fmt(tot_hh)` households** and **`{python} fmt(tot_pop)`
 residents** according to the 2020 Census.
 

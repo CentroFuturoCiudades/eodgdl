@@ -63,7 +63,7 @@ def build(tables, data_dir=None):
         build_households(viv), build_people(hab, trips, legs), build_trips(trips, legs),
         {}, pd.DataFrame(), {}, pd.DataFrame(),
     )
-    universe = census_universe(viv)  # raises if the zone assignment disagrees with the survey
+    universe = census_universe(viv, trips)  # raises if the zone assignment disagrees with the survey
     shares = coverage(universe)
     conapo = load_conapo(Path(data_dir) / CONAPO_CSV if data_dir is not None else None)
     vmrc = load_vmrc(Path(data_dir) / VMRC_CSV if data_dir is not None else None)
@@ -82,7 +82,7 @@ def build(tables, data_dir=None):
     # on `year` must get every constraint (de-duplicating across years once left the
     # 2023 set without BusBoardings).
     index = pd.concat(index, ignore_index=True)
-    assignment = assign_units(viv)
+    assignment = assign_units(viv, trips)
     return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares,
                             zone_assignment=assignment.reset_index(),
                             sampled_agebs=sampled_agebs(universe, viv, assignment, conapo, vmrc, rates))
