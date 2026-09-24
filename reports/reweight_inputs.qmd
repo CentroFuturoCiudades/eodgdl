@@ -420,9 +420,11 @@ Every census value comes from INEGI's Censo de Población y Vivienda 2020 throug
 `mxcensus.load_census(state=14)`: the AGEB frame (urban AGEBs) and the locality frame
 (localities, the rural ones among them). Which of those rows make up each survey zone is
 decided by `reweight.zoning` from two things only: the centralidad polygons the survey was
-fielded on, and the zones the survey coded, for each dwelling and for each trip end (it codes
-a trip end's zone by where it lies, and an AGEB's origins and destinations always agree on
-it). IMEPLAN's AGEB table plays no part.
+fielded on, and the zones the survey coded, for each dwelling and for each trip end. The
+survey's zone is a function of the AGEB code, not of where a point lies: each of the
+`{python} fmt(reweight.survey_codes(viv, trips).groupby("code").zone.nunique().size)` codes
+it records carries exactly one zone across its dwellings, origins and destinations, even
+where the AGEB straddles two polygons. IMEPLAN's AGEB table plays no part.
 
 The census counts people in two kinds of unit that tile the nine municipalities, and each
 gets at most one zone (`zoning.assign_units`):

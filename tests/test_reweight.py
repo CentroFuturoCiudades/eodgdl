@@ -221,6 +221,10 @@ def test_every_trip_end_is_in_its_ageb_s_zone(files, viv, trips):
     a = files.zone_assignment.set_index("CVEGEO")
     agreement = reweight.trip_end_agreement(a, viv, trips)
     assert agreement.to_dict() == {"in zone": 305_172, "access point": 3_094}
+    # the survey's zone is a function of the AGEB code: one zone per code, across its
+    # dwellings, origins and destinations
+    codes = reweight.survey_codes(viv, trips)
+    assert (codes.groupby("code").zone.nunique() == 1).all() and codes.code.nunique() == 1694
     # the chain rule that moves an origin home moves its zone too
     moved = trips[trips.ajustes.astype(str).str.contains("origen:casa")].reset_index()
     home = viv.centralidad.astype(str)
