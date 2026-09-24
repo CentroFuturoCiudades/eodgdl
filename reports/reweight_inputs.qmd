@@ -458,8 +458,8 @@ GeoPackage beside the map. @fig-zone-map shows the assignment against the origin
 
 ```{python}
 #| label: fig-zone-map
-#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; thin dark outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Grey: urban AGEBs outside the universe; rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
-#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a white background, with the sampled rural AGEBs in light grey, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and dashed outlines enclose the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Thin dark outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
+#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; bright red outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Grey: urban AGEBs outside the universe; rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
+#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a white background, with the sampled rural AGEBs in light grey, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and dashed outlines enclose the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Bright red outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
 import colorsys
 
 import geopandas as gpd
@@ -542,11 +542,16 @@ sampled_rural.boundary.plot(ax=ax, color="#1a1a1a", linewidth=0.8, linestyle=(0,
 HATCHES = {"survey over polygon": ("////", "#111111"), "majority": ("\\\\\\", "#666666")}
 for rule, (hatch, ink) in HATCHES.items():
     shapes[shapes.rule == rule].plot(ax=ax, facecolor="none", edgecolor=ink, hatch=hatch, linewidth=0)
-poly_geo.boundary.plot(ax=ax, color="#333333", linewidth=0.6)
-mun_geo.boundary.plot(ax=ax, color="black", linewidth=1.6)
+POLYGON_RED = "#ff1a1a"
+poly_geo.boundary.plot(ax=ax, color=POLYGON_RED, linewidth=0.8, zorder=5)
+mun_geo.boundary.plot(ax=ax, color="black", linewidth=1.6, zorder=6)
+
+
+labelled = []
 
 
 def label(z, point):
+    labelled.append((point.x, point.y))
     ax.annotate(z, (point.x, point.y), ha="center", va="center", fontsize=6.5, color="#111",
                 bbox=dict(boxstyle="round,pad=0.12", fc="white", ec="none", alpha=0.75))
 
@@ -559,15 +564,28 @@ for z, g in poly_geo.geometry.items():
     pieces = [q for q in getattr(away, "geoms", [away]) if q.area > 1e6]
     if pieces:
         label(z, max(pieces, key=lambda q: q.area).representative_point())
-# municipality names go on their land outside the zones where there is room (not Guadalajara)
+# municipality names go on their land outside the zones where there is room; where there is
+# none (Guadalajara), on the point of the municipality farthest from every zone label
 footprint = zone_geo.union_all().union(poly_geo.union_all()).buffer(500)
+labels_xy = np.array(labelled)
+
+
+def clear_spot(geom, step=250):
+    x0_, y0_, x1_, y1_ = geom.bounds
+    grid = gpd.GeoSeries(gpd.points_from_xy(*[a.ravel() for a in np.meshgrid(np.arange(x0_, x1_, step), np.arange(y0_, y1_, step))]))
+    inner = grid[grid.within(geom.buffer(-1500))]
+    gap = np.hypot(*(np.stack([inner.x, inner.y], 1)[:, None, :] - labels_xy[None]).transpose(2, 0, 1)).min(axis=1)
+    return inner.iloc[int(gap.argmax())]
+
+
 for _, m in mun_geo.iterrows():
     free_land = max(getattr(g := m.geometry.difference(footprint), "geoms", [g]), key=lambda q: q.area)
-    p = (free_land if free_land.area > 5e6 else m.geometry).representative_point()
+    p = free_land.representative_point() if free_land.area > 5e6 else clear_spot(m.geometry)
     ax.annotate(MUN_NAME[int(m.CVE_MUN)], (p.x, p.y), ha="center", va="center", fontsize=9.5,
                 fontweight="bold", path_effects=halo)
 swatch = palette[0]
 ax.legend(handles=[
+    Line2D([], [], color=POLYGON_RED, linewidth=1.2, label="centralidad polygon"),
     Patch(facecolor=swatch, edgecolor="white", label="urban AGEB, sampled"),
     Patch(facecolor=pale(swatch), edgecolor="white", label="urban AGEB, not sampled"),
     Patch(facecolor=pale(swatch), edgecolor="#1a1a1a", linewidth=0.45, label="rural locality (INEGI outline)"),
@@ -578,8 +596,8 @@ ax.legend(handles=[
     *[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
       for r, text in (("survey over polygon", "sampled: the survey's zone, against the polygons"),
                       ("majority", "not sampled, straddles: whole to its majority polygon"))],
-], loc="lower left", frameon=False, fontsize=8, title="the color is the zone", title_fontsize=8,
-    alignment="left")
+], loc="lower left", frameon=True, facecolor="white", edgecolor="none", framealpha=0.9, fontsize=8,
+    title="the color is the zone", title_fontsize=8, alignment="left").set_zorder(7)
 x0, y0, x1, y1 = poly_geo.total_bounds
 ax.set_xlim(x0 - 3000, x1 + 3000)
 ax.set_ylim(y0 - 3000, y1 + 3000)
