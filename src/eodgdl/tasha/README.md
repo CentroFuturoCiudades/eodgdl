@@ -239,9 +239,12 @@ rather than about one column's coding, so nothing surfaces them automatically.
   matching networks and skims wants.
 
   Separately, `validate()` checks a zone id's *shape* but never whether it joins.
-  38 locality ids are absent from `RELACION_AGEBS-ZONA_con_datos_censales.parquet`
-  and so carry no census attributes: 7,962 trip origins, 7,961 destinations,
-  1,146 households, 1,275 `EmploymentZone`s and 449 `SchoolZone`s.
+  The 44 rural AGEB ids (9 characters, INEGI's rural AGEB key, not locality ids)
+  have no census row of their own, since INEGI publishes rural counts by locality,
+  and the 7 access points have none: rural AGEBs are the zone of 1,417 households,
+  1,765 `EmploymentZone`s, 586 `SchoolZone`s, 10,111 trip origins and 10,088
+  destinations; access points of 827 `EmploymentZone`s, 58 `SchoolZone`s, 1,554
+  origins and 1,540 destinations.
 
 ## Provenance
 

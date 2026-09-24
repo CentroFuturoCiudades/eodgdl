@@ -22,11 +22,14 @@ zones:
   id_lengths: [9, 13]
   description: >-
     The INEGI zone id as the survey reports it, unchanged: a 13-character AGEB
-    CVEGEO, or a 9-character rural locality id. 1,701 distinct values appear
-    across viv.ageb, trips.origen and trips.destino — 1,650 AGEBs and 51
-    locality ids. All 1,650 AGEBs join to
-    RELACION_AGEBS-ZONA_con_datos_censales.parquet; 38 of the locality ids do
-    not, so those zones carry no census attributes.
+    CVEGEO for an urban AGEB, or 9 characters for a rural AGEB or an access
+    point. 1,701 distinct values appear across viv.ageb, trips.origen and
+    trips.destino — 1,650 urban AGEBs, 44 rural AGEBs (INEGI's 9-character rural
+    AGEB key, not a locality id, though 6 coincide with one as strings) and the
+    7 access points (99999000x: the airport and six road gateways). All 1,650
+    urban AGEBs are in INEGI's census AGEB table; a rural AGEB has no census row
+    of its own (INEGI publishes rural counts by locality) and an access point
+    has none, so those zones carry no census attributes.
   sentinel:
     "0": Not applicable (used by EmploymentZone / SchoolZone only)
   notes: >-
@@ -37,8 +40,10 @@ zones:
     dtype=str (`tasha.zone_columns(table)` lists them) rather than relying on
     inference.
   alternatives: >-
-    centralidad / ID_ZONAEOD (71 zones, string codes like '06A') and MZONA
-    micro-zones (601 integer zones) are also available in the eodgdl package.
+    centralidad / ID_ZONAEOD (64 survey zones plus the 7 access points,
+    string codes like '06A'; eodgdl.reweight.zoning assigns every census AGEB
+    and rural locality to one of them) and MZONA micro-zones (601 integer zones)
+    are also available in the eodgdl package.
     Whichever is chosen, use it in every *Zone column — the outputs do not
     record which one they used.
 

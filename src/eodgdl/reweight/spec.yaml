@@ -3,7 +3,8 @@
 #
 # Two halves. `attributes` turns the survey (eodgdl's viv / hab / trips / legs, as
 # `load_eod()` returns them) into the numeric record columns the tool reads; `constraints`
-# turns the 2020 census AGEB table (`load_imeplan_agebs`) into the target totals it matches
+# turns the 2020 census (the AGEBs and rural localities `zoning.assign_units` places in each
+# zone) into the target totals it matches
 # them against. The tool only ever multiplies a household's weight by the attributes named
 # in a constraint and compares the sum per geography with the target, so a target and the
 # attributes it matches must count the same thing on the same universe.

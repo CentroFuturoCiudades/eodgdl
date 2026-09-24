@@ -48,7 +48,8 @@ import numpy as np
 import pandas as pd
 
 import mxcensus
-from eodgdl import load_eod, load_imeplan_agebs, load_taz, load_zm_muns
+import geopandas as gpd
+from eodgdl import load_eod, load_zm_muns, reweight
 
 plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
 
@@ -64,36 +65,26 @@ def fmt(n) -> str:
 #| label: load-study-area
 #| include: false
 
-# --- Survey study area: AGEB geometries from the IMEPLAN zone system ---
-taz = load_taz(drop_ap=True)
-agebs = load_imeplan_agebs(taz, drop_ap=True)
-
-# Keep rows that carry a full INEGI AGEB code so they can be matched to the census.
-a = agebs.copy()
-for c in ["CVE_ENT", "CVE_MUN", "CVE_LOC"]:
-    a[c + "_i"] = pd.to_numeric(a[c], errors="coerce")
-a["AGEBk"] = a["CVE_AGEB"].astype("string").str.zfill(4)
-a = a[
-    a["CVE_AGEB"].notna()
-    & a["CVE_ENT_i"].notna()
-    & a["CVE_MUN_i"].notna()
-    & a["CVE_LOC_i"].notna()
-].copy()
-a["ENTIDAD"] = a["CVE_ENT_i"].astype(int)
-a["MUN"] = a["CVE_MUN_i"].astype(int)
-a["LOC"] = a["CVE_LOC_i"].astype(int)
-
-# --- Census households & population per AGEB, from mxcensus (INEGI 2020) ---
-_, df_mun, _, df_ageb = mxcensus.load_census(state=14)  # state 14 = Jalisco
-a["_key"] = list(zip(a.ENTIDAD, a.MUN, a.LOC, a.AGEBk.astype(str)))
-a["households"] = a["_key"].map(df_ageb["TVIVHAB"].to_dict())
-a["population"] = a["_key"].map(df_ageb["POBTOT"].to_dict())
+# --- Survey study area: the census units of the zone system ---
+# Every urban AGEB and rural locality that eodgdl.reweight.zoning places in a survey zone
+# (from the centralidad polygons and the survey's own coding), with its INEGI 2020 census
+# counts (via mxcensus) and its shape.
+tables = load_eod()
+_, df_mun, _, _ = mxcensus.load_census(state=14)  # state 14 = Jalisco
+census = reweight.census_universe(tables.viv)
+units = reweight.assign_units(tables.viv).loc[census.index]
+a = gpd.GeoDataFrame(
+    {"unit": units.unit, "MUN": census.Municipality,
+     "households": census.TVIVHAB.astype(float), "population": census.POBTOT.astype(float)},
+    geometry=reweight.unit_shapes().geometry.reindex(census.index), crs=reweight.zone_polygons().crs,
+)
 
 # Per-municipality summary of the study area.
 mun_tbl = (
     a.groupby("MUN")
     .agg(
-        AGEBs=("CVEGEO", "nunique"),
+        AGEBs=("unit", lambda u: int((u == "ageb").sum())),
+        Localities=("unit", lambda u: int((u == "locality").sum())),
         Households=("households", "sum"),
         Population=("population", "sum"),
     )
@@ -103,10 +94,10 @@ mun_tbl["Municipality"] = mun_tbl["MUN"].map(MUNS)
 mun_tbl = mun_tbl.sort_values("Households", ascending=False)
 
 n_muns = mun_tbl.shape[0]
-n_agebs = int(a["CVEGEO"].nunique())
+n_agebs = int((a.unit == "ageb").sum())
+n_locs = int((a.unit == "locality").sum())
 tot_hh = float(a["households"].sum())
 tot_pop = float(a["population"].sum())
-n_unmatched = int(a["households"].isna().sum())
 ```
 
 ```{python}
@@ -142,7 +133,7 @@ conapo_growth = (conapo_2040_tot / muni_2020_tot - 1) * 100
 #| include: false
 
 # --- Survey tables, expanded to the population with the survey weights ---
-viv, hab, trips, legs = load_eod()
+viv, hab, trips, legs = tables
 
 n_viv, n_hab, n_trips = len(viv), len(hab), len(trips)
 est_trips = float(trips["ponderador"].sum())     # estimated daily trips
@@ -209,21 +200,24 @@ from the cleaned EOD tables via [`eodgdl`](https://github.com/CentroFuturoCiudad
 # Study area
 
 The survey covers the **`{python} n_muns`** municipalities of the Guadalajara Metropolitan
-Area. The study area is partitioned into **`{python} fmt(n_agebs)`** urban *AGEBs* (INEGI
-*Áreas Geoestadísticas Básicas* — the census basic geostatistical areas that nest inside
-the EOD zone system). Together those AGEBs contain roughly **`{python} fmt(tot_hh)`
-households** and **`{python} fmt(tot_pop)` residents** according to the 2020 Census.
+Area. The study area is the census units of its zone system: **`{python} fmt(n_agebs)`**
+urban *AGEBs* (INEGI *Áreas Geoestadísticas Básicas*) and **`{python} fmt(n_locs)`** rural
+localities, each placed whole in one survey zone from the zone polygons and the survey's own
+coding (`eodgdl.reweight.zoning`; `reports/reweight_inputs.qmd` maps it). Together they
+contain roughly **`{python} fmt(tot_hh)` households** and **`{python} fmt(tot_pop)`
+residents** according to the 2020 Census.
 
 ::: {.callout-note}
 ## Study area at a glance
 
-| Municipalities | AGEBs | Households | Pop. 2020 (study-area AGEBs) | Municipal pop. 2020 | Projected 2040 |
+| Municipalities | AGEBs + rural localities | Households | Pop. 2020 (study area) | Municipal pop. 2020 | Projected 2040 |
 |:--:|:--:|:--:|:--:|:--:|:--:|
-| **`{python} n_muns`** | **`{python} fmt(n_agebs)`** | **`{python} fmt(tot_hh)`** | **`{python} fmt(tot_pop)`** | **`{python} fmt(muni_2020_tot)`** | **`{python} fmt(conapo_2040_tot)`** |
+| **`{python} n_muns`** | **`{python} fmt(n_agebs)` + `{python} fmt(n_locs)`** | **`{python} fmt(tot_hh)`** | **`{python} fmt(tot_pop)`** | **`{python} fmt(muni_2020_tot)`** | **`{python} fmt(conapo_2040_tot)`** |
 
-Households and the study-area population are INEGI 2020 Census counts for the study-area
-AGEBs (via `mxcensus`); **Municipal pop. 2020** is the full INEGI 2020 count for the 9
-municipalities (the study area covers ~97% of it). **Projected 2040** is CONAPO's
+Households and the study-area population are INEGI 2020 Census counts for the study area's
+AGEBs and rural localities (via `mxcensus`); **Municipal pop. 2020** is the full INEGI 2020
+count for the 9 municipalities (the study area covers
+`{python} f"{tot_pop / muni_2020_tot:.0%}"` of it). **Projected 2040** is CONAPO's
 whole-municipality population projection (`POB_TOTAL`, both sexes) — about
 **`{python} f"{conapo_growth:+.0f}"`%** above the municipal 2020 population.
 :::
@@ -232,9 +226,9 @@ whole-municipality population projection (`POB_TOTAL`, both sexes) — about
 
 @tbl-muns breaks the study area down by municipality. Zapopan and Guadalajara are the two
 largest, together accounting for over half of the area's households. The table places the
-survey's **study-area population** (the 2020 census count for the urban AGEBs) next to the
+survey's **study-area population** (the 2020 census count for its AGEBs and rural localities) next to the
 **full municipal population** (2020 census) and CONAPO's **projection to 2040**: the
-study-area AGEBs cover essentially all of the core municipalities but only part of the
+study area covers essentially all of the core municipalities but only part of the
 outer ones, so the municipal totals run higher there. CONAPO expects the 9 municipalities
 to reach roughly **`{python} fmt(conapo_2040_tot)` residents** by 2040
 (**`{python} f"{conapo_growth:+.0f}"`%** over their 2020 census population), with the
@@ -244,15 +238,16 @@ to lose residents.
 
 ```{python}
 #| label: tbl-muns
-#| tbl-cap: "Study-area municipalities: AGEBs, households, and population. *Households* and *Pop. 2020 (study-area AGEBs)* are INEGI 2020 Census counts restricted to the study-area AGEBs; *Municipal pop. 2020* is the INEGI 2020 Census count for the **whole** municipality, so it is larger wherever the survey area covers only part of a municipality (e.g. Ixtlahuacán, Zapotlanejo, Juanacatlán). *Projected 2040* is CONAPO's whole-municipality projection (`POB_TOTAL`, both sexes), and *Growth to 2040* compares it with the municipal 2020 census population."
+#| tbl-cap: "Study-area municipalities: AGEBs, rural localities, households, and population. *Households* and *Pop. 2020 (study area)* are INEGI 2020 Census counts restricted to the study area's AGEBs and rural localities; *Municipal pop. 2020* is the INEGI 2020 Census count for the **whole** municipality, so it is larger wherever the survey area covers only part of a municipality (e.g. Ixtlahuacán, Zapotlanejo, Juanacatlán). *Projected 2040* is CONAPO's whole-municipality projection (`POB_TOTAL`, both sexes), and *Growth to 2040* compares it with the municipal 2020 census population."
 
 show = mun_tbl[
-    ["Municipality", "AGEBs", "Households", "Population", "MuniPop2020", "Pop2040", "Growth"]
+    ["Municipality", "AGEBs", "Localities", "Households", "Population", "MuniPop2020", "Pop2040", "Growth"]
 ].copy()
 total_row = pd.DataFrame(
     {
         "Municipality": ["Total"],
         "AGEBs": [n_agebs],
+        "Localities": [n_locs],
         "Households": [show["Households"].sum()],
         "Population": [show["Population"].sum()],
         "MuniPop2020": [muni_2020_tot],
@@ -296,7 +291,7 @@ municipalities of Tlajomulco, El Salto, Ixtlahuacán, Juanacatlán, and Zapotlan
 
 ```{python}
 #| label: fig-hh-map
-#| fig-cap: "Households per AGEB across the EOD 2023 study area (INEGI 2020 Census `TVIVHAB`). Grey AGEBs lack a census match."
+#| fig-cap: "Households per AGEB or rural locality across the EOD 2023 study area (INEGI 2020 Census `TVIVHAB`); a locality INEGI records only as a point is a dot."
 #| fig-alt: "Choropleth map of the Guadalajara metropolitan area showing households per AGEB, with the densest values concentrated in the central contiguous urban core and lower values in the outer municipalities."
 
 fig, ax = plt.subplots(figsize=(9, 9))
@@ -308,27 +303,17 @@ a.plot(
     linewidth=0.05,
     edgecolor="0.6",
     legend=True,
-    missing_kwds={"color": "lightgrey", "label": "No census match"},
-    legend_kwds={"title": "Households (AGEB)", "loc": "lower left", "fontsize": 8, "title_fontsize": 9},
+    markersize=6,
+    legend_kwds={"title": "Households (AGEB / locality)", "loc": "lower left", "fontsize": 8, "title_fontsize": 9},
     ax=ax,
 )
-a.dissolve(by="MUN").boundary.plot(ax=ax, color="black", linewidth=0.6)
+a[~a.geom_type.isin(["Point", "MultiPoint"])].dissolve(by="MUN").boundary.plot(ax=ax, color="black", linewidth=0.6)
 ax.set_axis_off()
-ax.set_title("Households per AGEB — EOD 2023 study area")
+ax.set_title("Households per AGEB or rural locality — EOD 2023 study area")
 plt.tight_layout()
 plt.show()
 ```
 
-```{python}
-#| label: map-note
-#| output: asis
-if n_unmatched:
-    print(
-        f"> Note: {n_unmatched} of {n_agebs:,} study-area AGEBs could not be matched to a "
-        "2020 Census record (new or recoded AGEBs) and appear in grey on the map; they are "
-        "excluded from the household and population totals above."
-    )
-```
 
 # Survey results
 
@@ -432,8 +417,9 @@ mt.style.hide(axis="index").set_properties(
   `eodgdl.load_eod()`. Estimated trips, population, and households are sample counts
   expanded by the survey weight `ponderador`; the modal split weights each trip's main
   mode (`modo_principal`).
-- **Study area & census:** AGEB geometries from the IMEPLAN EOD zone system
-  (`eodgdl.load_imeplan_agebs`); municipality, AGEB, household (`TVIVHAB`) and population
+- **Study area & census:** the census units of the survey's zone system
+  (`eodgdl.reweight.zoning`: every census AGEB and rural locality placed whole in one survey
+  zone); municipality, AGEB, locality, household (`TVIVHAB`) and population
   (`POBTOT`) counts from the INEGI 2020 Census via `mxcensus.load_census(state=14)`.
 - **Population projections:** CONAPO, *Proyecciones de la Población de los Municipios de
   México, 2020–2070*. The committed `data/CONAPO_proyecciones_AMG.csv` is the subset for the

@@ -19,7 +19,6 @@ from eodgdl.eod import (
 )
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 from eodgdl.taz import (
-    load_imeplan_agebs,
     load_mtaz,
     load_taz,
     load_zm_muns,
@@ -39,7 +38,6 @@ __all__ = [
     "load_zm_muns",
     "load_taz",
     "load_mtaz",
-    "load_imeplan_agebs",
     "zone_system_report",
     # Schemas
     "viv_schema",
