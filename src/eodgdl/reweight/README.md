@@ -127,7 +127,8 @@ the zone coded for its dwellings (26 of them against the polygons, La Aurora in 
 among them), one with trip ends but no dwelling the zone coded most for them (15 against the
 polygons, the largest a campus coded `68B` whose residents mostly live in `44`'s polygon),
 any other goes whole to the polygon holding most of its population by census blocks, and
-one lying mostly outside every polygon is left out. The census counts rural population by
+one lying mostly outside every polygon to the polygon holding the most of the rest, or the
+nearest one: every urban AGEB is in a zone. The census counts rural population by
 locality only, so a rural AGEB the survey records (dwellings or trip ends) goes to the zone it coded, with its
 localities inside some polygon, the survey's frame, wherever the polygons would put them; its
 localities outside every polygon stay out of the targets (IMEPLAN planned a sample in almost
@@ -135,22 +136,22 @@ none of them), except that a rural AGEB with none inside keeps its locality near
 zone's polygon, and a sampled one whose counted localities hold fewer dwellings than it
 sampled adds its nearest left-out localities until they can (Cuexcomatitlán for 51F); a rural AGEB the survey never records leaves its localities
 with the polygon containing them. Two rural AGEBs with trip ends hold no census locality and
-map to their zone with no population. 2,026 AGEBs and 269 localities are in the universe (`ZoneAssignment.csv`): every
+map to their zone with no population. 2,039 AGEBs and 269 localities are in the universe (`ZoneAssignment.csv`): every
 one of the survey's 305,172 trip ends that is not at an access point lies in the zone its
 AGEB is assigned, and the build fails otherwise (`zoning.check_assignment`). Suppressed census cells stay blank. Columns are summed by
 zone or municipality, then combined:
 
 | target | census |
 |---|---|
-| `Dwellings` | `TVIVPARHAB` — private inhabited dwellings, 1,461,249 |
+| `Dwellings` | `TVIVPARHAB` — private inhabited dwellings, 1,462,391 |
 | `Occupants` | `OCUPVIVPAR`, as published — it already covers every private inhabited dwelling (it equals `POBTOT − POBCOL` exactly), so it is **not** rescaled |
 | `HasCar`, `HasMoto`, `HasBike`, `HasInternet` | `VPH_AUTOM`, `VPH_MOTO`, `VPH_BICI`, `VPH_INTER`, lifted row by row to all private inhabited dwellings (see the corrections below the table) |
-| `Persons` | `P_6A11 + P_12A14 + P_15A17 + P_18YMAS` — ages 6+, so the age bands partition it; 4,676,989 after the row corrections below (4,646,211 with a stated age as published) |
+| `Persons` | `P_6A11 + P_12A14 + P_15A17 + P_18YMAS` — ages 6+, so the age bands partition it; 4,680,094 after the row corrections below (4,659,645 with a stated age as published) |
 | `Male`, `Female` | the `_M` / `_F` versions of the same |
 | `Age6_11 … Age60p` | `P_6A11`, `P_12A14`, `P_15A17`, `P_18A24`, `P_18YMAS − P_18A24 − P_60YMAS`, `P_60YMAS`, and their `_M` / `_F` versions for the 12 sex × age crosses |
 | `Employed` (zone) | `POCUPADA` — the occupied population, 12+ |
 | `NotEmployed` (zone) | `P_12A14 + P_15A17 + P_18YMAS − POCUPADA` — everyone else aged 12+: unemployed, inactive, activity not specified. `PE_INAC` is not a target on its own: the survey's non-respondents would be forced to match the census's 16,000 unknowns |
-| `Cyclist` (municipality) | Census 2020 extended questionnaire (via `mxcensus`): persons whose mode to work or to school is a bicycle, weighted; **101,907** over the nine whole municipalities, the INEGI figure IMEPLAN calibrated its person weights to. The microdata has no AGEB, so each municipality's count is scaled by the universe's share of its population (`coverage.csv`), which gives **100,519** |
+| `Cyclist` (municipality) | Census 2020 extended questionnaire (via `mxcensus`): persons whose mode to work or to school is a bicycle, weighted; **101,907** over the nine whole municipalities, the INEGI figure IMEPLAN calibrated its person weights to. The microdata has no AGEB, so each municipality's count is scaled by the universe's share of its population (`coverage.csv`), which gives **100,870** |
 | `BusBoardings` (region) | **1,851,750**, SETRAN's 2023 daily bus boardings, the control of the survey's trip weight |
 
 **Two row-level corrections** (`row_scale` in `spec.yaml`, `targets.person_scale` /
@@ -158,8 +159,8 @@ zone or municipality, then combined:
 
 - **Person targets** (`row_scale: persons`) are multiplied by
   `(POBTOT − POBCOL) / residents with a stated age`. The census counts residents of
-  collective quarters (`POBCOL`), whom a household survey never samples — at most 1.4 %
-  of a zone, since Puente Grande's prisons lie outside the universe — and in a few AGEBs
+  collective quarters (`POBCOL`), whom a household survey never samples — a third of
+  zone `45`, Puente Grande's prisons — and in a few AGEBs
   INEGI left the occupants of dwellings without occupant information without an age: they
   are in `POBTOT` but in no band, sex or activity (17.5 % of `63F`'s residents, 12–13 % of
   `16` and `20`, 0.9 % of the universe).
@@ -185,7 +186,7 @@ occupants of every private dwelling: it equals `POBTOT − POBCOL` exactly), nor
 `Cyclist` (the extended questionnaire samples private dwellings).
 
 **The universe is not the nine whole municipalities.** Guadalajara and Tlaquepaque are
-inside it whole, Zapopan, Tlajomulco and Tonalá to 99 %, El Salto 95 %, Juanacatlán 86 %,
+inside it whole, Zapopan, Tlajomulco and Tonalá to 99 %, El Salto 99.9 %, Juanacatlán 86 %,
 Ixtlahuacán 79 %, Zapotlanejo 72 % (`coverage.csv`). Every target here is a sum over the
 universe; a whole-municipality figure from any other source must be scaled the same way
 before it becomes a target.
@@ -202,18 +203,18 @@ two crosses (`grow_with`); `Persons`, `Male` and `Female` are the sums of their 
 together to the grown 12+ bands (`grow_within`), which keeps 2020's employment rate. So the
 bands still sum to `Persons`, each sex's bands to its total and the two activity targets to
 the 12+ population exactly, and a band exceeds its two crosses only by the cells INEGI
-suppressed, as in 2020. Study-area totals go from 1,461,249 to 1,504,512 dwellings and
-4,676,989 to 4,847,595 persons 6+.
+suppressed, as in 2020. Study-area totals go from 1,462,391 to 1,505,698 dwellings and
+4,680,094 to 4,850,841 persons 6+.
 
 **Motorcycles grow with the fleet, not the population.** `HasMoto` is scaled instead by
 the 2023/2020 ratio of *registered private motorcycles* in its municipality (INEGI's VMRC,
 `data/VMRC_AMG.csv`, `vmrc:` in `spec.yaml`): +33 % (Guadalajara) to +64 % (Tlajomulco),
 +44 % over the nine municipalities, against +3 % of population. The survey's motorcycle
 share had sat 1.4× above the 2020 census rate in the median zone; the fleet-scaled
-target moves it from 173,019 to 254,791, and the survey at its design weight to 0.95× of
+target moves it from 173,124 to 254,947, and the survey at its design weight to 0.95× of
 it. The fleet counts vehicles, including firms', so this is a proxy for the growth of
 dwellings with a motorcycle. Cars are left on population growth: their fleet grew 8 %,
-but the survey already matched the population-scaled car target (1.002×) and would fall
+but the survey already matched the population-scaled car target (1.001×) and would fall
 to 0.94× of a fleet-scaled one — cars grew per owning dwelling more than in owning
 dwellings.
 
@@ -224,7 +225,7 @@ multiplied by INEGI ENDUTIH's 2020–2023 growth in the share of dwellings with 
 public files have no city identifier), ×1.193 ± 0.028. Only the *change* is borrowed, so
 any wording difference between ENDUTIH and the census cancels; each census row is capped
 at its dwellings (two zones reach it), so the study-area target grows ×1.196, to
-1,219,873. Unlike motorcycles, this moves the target *past* the survey: at its design
+1,220,920. Unlike motorcycles, this moves the target *past* the survey: at its design
 weights the survey reaches 0.95× of it (1.14× before). Either the survey under-reports
 internet or ENDUTIH's domain grew faster than the metro; the data here cannot tell which.
 
@@ -232,13 +233,13 @@ internet or ENDUTIH's domain grew faster than the metro; the data here cannot te
 
 | | target | survey | ratio |
 |---|---:|---:|---:|
-| Dwellings | 1,461,249 | 1,476,347 | 1.01 overall; by zone 0.62–1.15, median deviation 3 % (`40` ×1.15, `69B` ×1.13; `50` ×0.62) — the shipped stage-1 weights do not hit this census table by zone |
-| Persons 6+ | 4,676,989 | 4,861,796 | 1.04; ages 6–11 under (0.84), 60+ over (1.31) |
-| Employed | 2,693,199 | 2,252,572 | 0.84 |
-| NotEmployed | 1,472,166 | 2,181,263 | 1.48 — the survey over-represents non-workers (a home-presence bias) |
-| Cyclist | 100,519 | 49,073 | 0.49 (IMEPLAN found 70,612 with its own, wider, definition, against 101,907) |
+| Dwellings | 1,462,391 | 1,476,347 | 1.01 overall; by zone 0.62–1.15, median deviation 3 % (`40` ×1.15, `69B` ×1.13; `50` ×0.62) — the shipped stage-1 weights do not hit this census table by zone |
+| Persons 6+ | 4,680,094 | 4,861,796 | 1.04; ages 6–11 under (0.84), 60+ over (1.31) |
+| Employed | 2,695,199 | 2,252,572 | 0.84 |
+| NotEmployed | 1,472,937 | 2,181,263 | 1.48 — the survey over-represents non-workers (a home-presence bias) |
+| Cyclist | 100,870 | 49,073 | 0.49 (IMEPLAN found 70,612 with its own, wider, definition, against 101,907) |
 | BusBoardings | 1,851,750 | 3,863,267 | 2.09 — the survey's stage-3 factor was 0.568 on bus trips |
-| HasMoto | 173,019 | 242,196 | 1.40 |
+| HasMoto | 173,124 | 242,196 | 1.40 |
 
 ## Caveats
 
@@ -246,7 +247,7 @@ internet or ENDUTIH's domain grew faster than the metro; the data here cannot te
   (`Male_Age12_14`). Every target with a positive value has at least one matching record
   (checked by `eodgdl reweight check`), but those households will carry large corrections.
   Drop the crosses if the weight range or the constraint report says so.
-- **No unemployment control.** INEGI's unemployed (`PDESOCUP`, 40,358 in the universe)
+- **No unemployment control.** INEGI's unemployed (`PDESOCUP`, 40,565 in the universe)
   are the people aged 12+ without a job who looked for one in the reference week; anyone
   without work who did not look is inactive. The survey never asks about job search. Its
   `Busco trabajo` answer (122 persons, 13,704 at the design weight) is the closest match and

@@ -128,9 +128,9 @@ def test_targets_are_consistent_and_pinned(files):
     pp20 = c["PersonConstraintsByZone_2020.csv"]
     mun20 = c["PersonConstraintsByMunicipality_2020.csv"]
     assert len(hh20) == len(pp20) == 64 and len(mun20) == 9
-    assert round(hh20.Dwellings.sum()) == 1_461_249
-    assert round(pp20.Persons.sum()) == 4_676_989
-    assert round(mun20.Cyclist.sum()) == 100_519  # 101,907 whole-municipality cyclists, universe share applied
+    assert round(hh20.Dwellings.sum()) == 1_462_391
+    assert round(pp20.Persons.sum()) == 4_680_094
+    assert round(mun20.Cyclist.sum()) == 100_870  # 101,907 whole-municipality cyclists, universe share applied
     assert c["TripConstraintsByRegion.csv"].BusBoardings.iloc[0] == 1_851_750
     ages = ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]
     assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
@@ -156,7 +156,7 @@ def test_targets_are_consistent_and_pinned(files):
     # 2023 keeps the census's partitions: bands sum to Persons, each sex's bands to its
     # total, the two activity targets to the 12+ bands; the sexes fall short of the
     # totals only by INEGI's suppressed cells, as in 2020.
-    assert round(pp23.Persons.sum()) == 4_847_595
+    assert round(pp23.Persons.sum()) == 4_850_841
     for y, p in ((2020, pp20), (2023, pp23)):
         assert (p[ages].sum(axis=1) - p.Persons).abs().max() < 1e-6, y
         for sex in ("Male", "Female"):
@@ -170,7 +170,7 @@ def test_targets_are_consistent_and_pinned(files):
 def test_census_universe_is_the_assigned_units(files, viv, trips):
     # mxcensus is the source of every value; zoning.assign_units says which rows make a zone.
     universe = reweight.census_universe(viv, trips)
-    assert len(universe) == 2295 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
+    assert len(universe) == 2308 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
     assert universe.Zone.nunique() == 64
 
 
@@ -180,7 +180,7 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, tr
     assert a.groupby(["unit", "rule"], observed=True).size().to_dict() == {
         ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
         ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
-        ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "outside"): 13,
+        ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
         ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
         ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
     }
@@ -195,6 +195,10 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, tr
     assert (travelled.zone == travelled.trip_zone).all()
     rest = a[(a.unit == "ageb") & a.survey_zone.isna() & a.trip_zone.isna() & a.polygon_zone.notna()]
     assert (rest.zone == rest.polygon_zone).all() and (rest.polygon_share > 0.4).all()
+    # Every urban AGEB is in a zone; one mostly outside every polygon goes to the polygon
+    # holding the most of the rest, or the nearest (Puente Grande's prisons join 45).
+    assert a[a.unit == "ageb"].zone.notna().all()
+    assert a.loc["1407001161467", ["zone", "rule"]].tolist() == ["45", "nearest polygon"]
     # 141200001098A: a campus the survey codes 68B (968 trip ends), though 82 % of its
     # residents live in 44's polygon.
     assert a.loc["141200001098A", ["zone", "polygon_zone", "rule"]].tolist() == ["68B", "44", "trip ends over polygon"]
@@ -296,10 +300,9 @@ def test_census_cyclists_reproduce_the_spec_constants():
 
 def test_row_corrections_make_zones_consistent(files, viv, trips):
     # Zone 56 (63F) has 17.5 % of its residents without a stated age (dwellings without
-    # occupant information whose details INEGI did not impute), zone 43 (45) almost no
-    # collective quarters since Puente Grande's prisons fell outside the universe.
-    # Uncorrected, persons 6+ run from 35 % to 96 % of private-dwelling occupants across
-    # zones; the survey has ~93 % everywhere.
+    # occupant information whose details INEGI did not impute), zone 43 (45) a third of
+    # its residents in collective quarters (Puente Grande's prisons). Corrected, persons 6+
+    # are 85-96 % of private-dwelling occupants in every zone; the survey has ~93 %.
     pp = files.constraints["PersonConstraintsByZone_2020.csv"].set_index("Zone")
     hh = files.constraints["HouseholdConstraintsByZone_2020.csv"].set_index("Zone")
     assert (pp.Persons / hh.Occupants).between(0.8, 1.0).all()

@@ -11,7 +11,9 @@ urban AGEBs and rural localities. :func:`assign_units` gives each unit at most o
 * **an unsampled urban AGEB** goes whole to the polygon holding most of its population,
   counted over its census blocks (``polygon`` when all of it lies in one polygon,
   ``majority`` when it straddles); one with most of its population outside every polygon
-  is out of the universe (``outside``). Blocks never split an AGEB: they only choose;
+  goes to the polygon holding the most of the rest, or to the nearest polygon
+  (``nearest polygon``), so every urban AGEB is in a zone. Blocks never split an AGEB:
+  they only choose;
 * **a rural AGEB the survey records** goes to the zone it coded, and so do its localities
   that lie inside some polygon -- the survey's frame -- wherever the polygons would put
   them; its localities outside every polygon stay out of the targets (IMEPLAN planned a
@@ -36,7 +38,7 @@ from eodgdl.taz import load_taz, load_zm_muns
 
 STATE = 14
 RULES = ["survey", "survey over polygon", "trip ends", "trip ends over polygon", "polygon", "majority",
-         "outside"]
+         "nearest polygon", "outside"]
 
 def _mxcensus():
     try:
@@ -218,6 +220,16 @@ def assign_units(viv, trips, state=STATE):
     urban.loc[travelled & (urban.trip_zone != urban.polygon_zone), "rule"] = "trip ends over polygon"
     urban.loc[sampled, "rule"] = "survey"
     urban.loc[sampled & (urban.survey_zone != urban.polygon_zone), "rule"] = "survey over polygon"
+    # Every urban AGEB is in a zone: one the survey never records and that lies mostly outside
+    # every polygon goes to the polygon holding the most of what is inside, or, with nothing
+    # inside, to the nearest polygon (all lie on or within a few km of one).
+    for code in urban.index[urban.zone.isna()]:
+        inside = share.loc[code].drop("", errors="ignore")
+        if (inside > 0).any():
+            urban.at[code, "zone"] = inside.idxmax()
+        else:
+            urban.at[code, "zone"] = polys.geometry.distance(agebs.geometry[code]).idxmin()
+        urban.at[code, "rule"] = "nearest polygon"
 
     inside = gpd.sjoin(locs[["geometry"]], polys[["geometry"]].reset_index(names="polygon"), how="left", predicate="within").polygon
     rural_agebs = _mgn("ar", polys.crs).set_index("CVEGEO")[["geometry"]]
@@ -282,8 +294,8 @@ def assign_units(viv, trips, state=STATE):
 def check_assignment(assignment, viv, trips):
     """Where the assignment and the survey disagree; empty when every coded AGEB is placed.
 
-    Every urban AGEB with dwellings carries the zone the survey coded for them, and every
-    other one with trip ends the zone coded for them. Every rural AGEB the survey records has
+    Every urban AGEB is in a zone; one with dwellings carries the zone the survey coded for
+    them, and every other one with trip ends the zone coded for them. Every rural AGEB the survey records has
     a unit in the zone it coded (a locality, or the rural AGEB itself when it holds no census
     locality) and none in another zone. Every assigned zone is a survey zone.
     """
@@ -292,6 +304,7 @@ def check_assignment(assignment, viv, trips):
     survey, _ = _dwelling_zones(codes)
     trip_zone, _ = _trip_zones(codes)
     urban = assignment[assignment.unit == "ageb"].zone
+    problems += [f"AGEB {code}: in no zone" for code in urban.index[urban.isna()]]
     for code, zone in survey.items():
         if len(code) == 13 and urban.get(code) != zone:
             problems.append(f"AGEB {code}: assigned {urban.get(code)}, its dwellings coded {zone}")
