@@ -378,17 +378,16 @@ assert rule_counts.units.to_dict() == {
     ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
     ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
     ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "outside"): 13,
-    ("locality", "trip ends"): 7, ("locality", "polygon"): 258, ("locality", "override"): 4,
+    ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
     ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
 }
 RULE_TEXT = {
-    "survey": "sampled; the zone the survey coded for its dwellings, where most of its population lies too",
+    "survey": "sampled (for a locality: its rural AGEB); the zone the survey coded for the dwellings",
     "survey over polygon": "sampled; the zone the survey coded for its dwellings, against the polygons",
-    "trip ends": "not sampled; the zone the survey coded most for its trip ends",
+    "trip ends": "not sampled (for a locality: its rural AGEB); the zone the survey coded for the trip ends",
     "trip ends over polygon": "not sampled; the zone the survey coded most for its trip ends, against the polygons",
     "polygon": "no dwelling or trip end; wholly inside one polygon",
     "majority": "no dwelling or trip end; straddles, goes whole to the polygon with most of its population",
-    "override": "placed by _RURAL_LOCALITY_ZONES",
     "outside": "most of its population outside every polygon; not in the universe",
 }
 rule_tbl = rule_counts.reset_index().assign(
@@ -436,14 +435,16 @@ gets at most one zone (`zoning.assign_units`):
   blocks (the blocks only choose; they never divide an AGEB), or is left out when most of its
   population lies outside every polygon. So every AGEB the survey sampled or recorded a trip
   end in is in the zone system.
-- **Rural localities** go to the polygon containing them. The survey codes a rural dwelling
-  or trip end by its rural AGEB, which spans several zones and localities, so rural AGEBs are
-  not units; instead every zone the survey coded for a rural AGEB must hold one of its
-  localities. `_RURAL_LOCALITY_ZONES` places two sampled rural AGEBs' large localities by
-  hand; any other zone that holds none takes the AGEB's locality nearest to its polygon. Two
-  rural AGEBs the survey records trip ends in hold no census locality at all (a factory, a
-  recreation area): each is a unit of its own with no population, so its code still maps to
-  a zone. `zoning.check_assignment`, which the build runs and fails on, verifies all of it.
+- **Rural AGEBs** are coded by the survey like urban ones, one zone per code, but the census
+  counts rural population by locality only. So a rural AGEB the survey records (dwellings or trip ends) goes to the zone it coded, with its
+localities inside some polygon, the survey's frame, wherever the polygons would put them; its
+localities outside every polygon stay out of the targets (IMEPLAN planned a sample in almost
+none of them), except that a rural AGEB with none inside keeps its locality nearest to the
+zone's polygon, and a sampled one whose counted localities hold fewer dwellings than it
+sampled adds its nearest left-out localities until they can (Cuexcomatitlán for 51F). A rural AGEB the survey never
+  records leaves its localities with the polygon containing them. Two rural AGEBs with trip
+  ends hold no census locality at all (a factory, a recreation area): each is a unit of its
+  own with no population, so its code still maps to a zone. `zoning.check_assignment`, which the build runs and fails on, verifies all of it.
 
 @tbl-rules counts the result. Of the survey's `{python} fmt(agreement.sum())` trip ends,
 `{python} fmt(agreement["in zone"])` lie in the zone the assignment gives their AGEB and the
@@ -458,9 +459,11 @@ survey codes `68B` though most of its residents live in `44`'s polygon; and
 share of a straddling AGEB (of `{python} n_straddle_sampled` sampled AGEBs that straddle);
 the other `{python} len(against_outside)` lie outside every polygon, among them the four of
 La Aurora (Juanacatlán), whose `{python} int(assign.loc[(assign.survey_zone == "49F") & (assign.MUN == 51)].sampled_dwellings.sum())`
-dwellings the survey coded `49F`, a zone whose polygon lies in Zapotlanejo. Two sampled
-rural AGEBs have no locality inside the zone the survey coded; `_RURAL_LOCALITY_ZONES` places
-their large localities there, with the evidence beside each entry. One exclusion is worth
+dwellings the survey coded `49F`, a zone whose polygon lies in Zapotlanejo. Rural AGEBs
+move the most: the survey puts each whole in one zone, while the polygons split 20 of them,
+so their in-frame localities follow the survey; that is what brings zones `63F`, `40`, `17`
+and `57`, whose design weights had sat 30–190 % above the census counts, back within 15 %
+of them. One exclusion is worth
 knowing: El Salto's AGEB `1467` in locality `0116` (Puente Grande's prisons,
 `{python} fmt(prison.POBTOT)` residents) lies mostly outside every polygon and is not in the
 universe; its residents are collective quarters, which no target counts anyway.
@@ -701,7 +704,7 @@ tgt_tbl = pd.DataFrame(tgt_rows)
 
 hh20 = c[f"HouseholdConstraintsByZone_{BASE}.csv"].set_index("Zone")
 pp20 = c[f"PersonConstraintsByZone_{BASE}.csv"].set_index("Zone")
-assert round(hh20.Dwellings.sum()) == 1_462_273 and round(pp20.Persons.sum()) == 4_680_209
+assert round(hh20.Dwellings.sum()) == 1_461_249 and round(pp20.Persons.sum()) == 4_676_989
 assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
 sex_gap = float(pp20.Persons.sum() - (pp20.Male + pp20.Female).sum())
 sex_gap_max = float((pp20.Persons - pp20.Male - pp20.Female).abs().max())
@@ -760,14 +763,14 @@ svy = pd.DataFrame({"persons": pp.groupby(pp.HouseholdID.map(hh_zone)).size(),
                     "occupants": hh.groupby(hh.HouseholdTAZ // 1000).Occupants.sum()})
 svy_ratio = svy.persons / svy.occupants
 r_raw, r_cor = by_zone.raw / by_zone.occupants, by_zone.corrected / by_zone.occupants
-assert r_cor.between(0.8, 1.0).all() and r_raw.min() < 0.4
+assert r_cor.between(0.8, 1.0).all() and r_raw.min() < 0.8
 zone_code = {i: z for z, i in reweight.records.zone_index().items()}
 aged = u[["P_0A2", "P_3A5", *six_plus]].sum(axis=1).groupby(u.Zone).sum()
 noage = 1 - aged / by_zone.pobtot
 col_share = by_zone.pobcol / by_zone.pobtot
 z_col, z_noage = col_share.idxmax(), noage.idxmax()
 noage_all = 1 - aged.sum() / by_zone.pobtot.sum()
-assert col_share.max() < 0.02 and noage.max() > 0.5
+assert col_share.max() < 0.02 and noage.max() > 0.15
 
 vph = ["VPH_AUTOM", "VPH_MOTO", "VPH_BICI", "VPH_INTER"]
 vph_names = dict(zip(vph, ["HasCar", "HasMoto", "HasBike", "HasInternet"]))
@@ -818,7 +821,7 @@ band where the survey's own ratio (interviewed persons over listed occupants) si
 ```{python}
 #| label: fig-row-scale
 #| fig-cap: "Persons aged 6+ as a share of private-dwelling occupants, by zone, sorted by the uncorrected census ratio. The correction brings the census into the survey's band; the outlier at the left is the zone where most residents have no stated age."
-#| fig-alt: "Dot plot over the 64 survey zones. Grey dots, the uncorrected census ratio of persons 6+ to occupants, rise from about 0.35 at the far left, one zone well below the rest, through about 0.8 to about 0.95, with most zones near 0.9. Blue dots, the corrected census ratio, lie in a flat band between 0.85 and 0.95 for every zone. Orange dots, the survey's own ratio, lie in the same band, slightly above the blue."
+#| fig-alt: "Dot plot over the 64 survey zones. Grey dots, the uncorrected census ratio of persons 6+ to occupants, rise from about 0.75 at the far left, the zone with the most residents without a stated age, to about 0.95, with most zones near 0.9. Blue dots, the corrected census ratio, lie in a flat band between 0.85 and 0.95 for every zone. Orange dots, the survey's own ratio, lie in the same band, slightly above the blue."
 order = r_raw.sort_values().index
 x = np.arange(len(order))
 fig, ax = plt.subplots(figsize=(9, 3.6))
@@ -866,7 +869,7 @@ show(vph_tbl)
 cyc = reweight.constraints("persons")["Cyclist"]
 cyc_whole = sum(cyc["constant"].values())
 mun20 = c[f"PersonConstraintsByMunicipality_{BASE}.csv"].set_index("Municipality")
-assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_593
+assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_519
 cyc_tbl = pd.DataFrame({
     "municipality": [MUN_NAME[m] for m in mun20.index],
     "whole municipality": [fmt(cyc["constant"][m]) for m in mun20.index],
@@ -1115,14 +1118,9 @@ plt.show()
   asked for; treat it as optional and watch `HasCar` in the constraint report.
 - **No income target.** The census has no income variable, and most households did not
   report theirs.
-- **Zones the survey found larger than the census.** In `63F` the survey interviewed
-  `{python} fmt((viv.centralidad.astype(str) == "63F").sum())` dwellings against
-  `{python} fmt(hh20.Dwellings.loc[reweight.records.zone_index()["63F"]])` census dwellings in
-  its units, a third of them; its design weights put it at
-  ×`{python} f"{d20.loc[(d20.target_column == 'Dwellings') & (d20.Zone == reweight.records.zone_index()['63F']), 'ratio'].iat[0]:.1f}"`
-  its dwelling target. Housing built after March 2020, or dwellings in localities outside
-  the polygon, would both do it; the assignment cannot tell which, and the tool will pull
-  those households' weights down hard.
+- **Thin rural samples.** A sampled rural AGEB's counted localities only have to be able to
+  hold its sample. For `140510016` (zone `60`) they hold barely more dwellings than the ten it
+  sampled; the survey's lookup cannot say which of its hamlets it visited.
 - **2023 is a municipal scaling.** CONAPO ratios, the motorcycle fleet and ENDUTIH's
   state-level internet share are applied uniformly within each municipality. The internet
   growth moves the target past the survey (×`{python} f"{r23['HasInternet']:.2f}"`); whether

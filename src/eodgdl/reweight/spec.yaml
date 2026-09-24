@@ -347,13 +347,13 @@ constraints:
       census: TVIVPARHAB
       conapo: total
       note: >-
-        Total private inhabited dwellings (1,462,273 in the universe). TVIVHAB adds the
+        Total private inhabited dwellings (1,461,249 in the universe). TVIVHAB adds the
         collective ones. Two subsets matter below: VIVPARH_CV, the dwellings whose
         characteristics were captured -- the base of the VPH_* counts, which INEGI
         defines as including the dwellings without occupant information and excluding
-        only mobile homes, shelters and premises not built for housing (1,461,011) --
+        only mobile homes, shelters and premises not built for housing (1,459,988) --
         and VIVPAR_HAB, which excludes the dwellings without occupant information
-        (1,358,677). VPH_* never exceed VIVPARH_CV in any census row, and exceed
+        (1,357,653). VPH_* never exceed VIVPARH_CV in any census row, and exceed
         VIVPAR_HAB in 223.
     Occupants:
       geography: zone
@@ -421,7 +421,7 @@ constraints:
         whose age INEGI did not record spread over the stated bands: the census counts
         residents of collective quarters (POBCOL, at most 1.4 % of a zone), whom a
         household survey never samples, and in a few AGEBs leaves the occupants of
-        dwellings without occupant information without an age (59 % of 63F's residents,
+        dwellings without occupant information without an age (17.5 % of 63F's residents,
         0.9 % of the universe); a row with residents but no stated age at all takes its
         zone's mix (targets.fill_unaged). INEGI suppresses some sex-split cells but not
         the totals, so Male + Female falls short of this by up to 41 persons in a zone
