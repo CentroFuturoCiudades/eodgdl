@@ -240,7 +240,8 @@ internet or ENDUTIH's domain grew faster than the metro; the data here cannot te
 - **Cyclist** uses the census commute definition; IMEPLAN's own reweighted set was narrower
   and cannot be reproduced from the shipped columns.
 - **Suppression.** INEGI blanks cells of one or two units. Sums skip them, so the sexed
-  targets fall short of the unsexed ones by up to 39 persons in a few zones (427 in all).
+  targets fall short of the unsexed ones by up to 41 persons in a zone (469 in all, after
+  the row corrections).
 
 ## Regenerating
 

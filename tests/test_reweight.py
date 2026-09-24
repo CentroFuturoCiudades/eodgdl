@@ -118,7 +118,7 @@ def test_targets_are_consistent_and_pinned(files):
     ages = ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]
     assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
     # INEGI suppresses some sex-split cells but not the totals, so the sexed targets fall
-    # short of the unsexed ones by a few dozen persons in a handful of zones (427 in all).
+    # short of the unsexed ones by up to 41 persons in a zone (469 in all).
     assert (pp20.Male + pp20.Female - pp20.Persons).abs().max() < 50
     assert abs((pp20.Male + pp20.Female).sum() - pp20.Persons.sum()) < 500
     for band in ages:

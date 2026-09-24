@@ -363,8 +363,9 @@ constraints:
         characteristics (VIVPARH_CV, see Dwellings), so each census row is rescaled to all
         private inhabited dwellings (TVIVPARHAB), less the dwellings whose characteristics
         INEGI left blank (row_scale: dwellings, targets.dwelling_scale) -- 0.9 % overall,
-        half of zone 56. An earlier version divided by VIVPAR_HAB instead, inflating every
-        VPH_* target 7.6 % and putting HasInternet above Dwellings in five zones.
+        half of zone 56. An earlier version divided by VIVPAR_HAB instead, inflating the
+        VPH_* targets 8.9 % over the census as published (8-9 % each) and putting
+        HasInternet above Dwellings in five zones.
     HasMoto:
       geography: zone
       census: VPH_MOTO
@@ -409,7 +410,7 @@ constraints:
         occupants of dwellings without occupant information without an age (43 % of zone
         56's residents, 0.9 % of the universe). INEGI
         suppresses some sex-split cells but not the totals, so Male + Female falls short
-        of this by up to 39 persons in a few zones (427 over the study area); the sex x
+        of this by up to 41 persons in a zone (469 over the study area); the sex x
         age crosses fall short of their bands the same way.
     Male:
       geography: zone
