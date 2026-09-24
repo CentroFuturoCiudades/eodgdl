@@ -673,7 +673,7 @@ tgt_tbl = pd.DataFrame(tgt_rows)
 
 hh20 = c[f"HouseholdConstraintsByZone_{BASE}.csv"].set_index("Zone")
 pp20 = c[f"PersonConstraintsByZone_{BASE}.csv"].set_index("Zone")
-assert round(hh20.Dwellings.sum()) == 1_459_133 and round(pp20.Persons.sum()) == 4_668_290
+assert round(hh20.Dwellings.sum()) == 1_459_133 and round(pp20.Persons.sum()) == 4_670_527
 assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
 sex_gap = float(pp20.Persons.sum() - (pp20.Male + pp20.Female).sum())
 sex_gap_max = float((pp20.Persons - pp20.Male - pp20.Female).abs().max())
@@ -778,7 +778,10 @@ both are uneven across zones, so both are corrected per census row before summin
   activity, but `{python} pct(noage.max(), 0)` of zone `{python} zone_code[z_noage]`'s.
 
 The factor restricts a row to private dwellings and spreads the unknown ages over the known
-bands in proportion; here the second part does nearly all the work. The census publishes neither group's composition, so both are assumed
+bands in proportion; here the second part does nearly all the work. A row with residents but
+no stated age at all (117 rows, 2,525 residents, most of them tiny units whose age cells INEGI
+suppressed) has no mix to spread over, so `targets.fill_unaged` gives it its zone's: each
+person count per private-dwelling resident over the zone's rows that state ages. The census publishes neither group's composition, so both are assumed
 to share the row's known mix. @fig-row-scale shows the effect: uncorrected, persons 6+ run
 from `{python} pct(r_raw.min(), 0)` to `{python} pct(r_raw.max(), 0)` of occupants across
 zones; corrected, from `{python} pct(r_cor.min(), 0)` to `{python} pct(r_cor.max(), 0)`, the

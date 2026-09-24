@@ -242,8 +242,9 @@ def person_scale(universe):
     ``counts * (POBTOT - POBCOL) / POBTOT`` restricts a row to private dwellings, and
     ``* POBTOT / stated`` spreads the unknown ages over the known bands in proportion; the
     product is this factor. The census publishes neither group's composition, so both are
-    assumed to share the row's known mix. A suppressed ``POBCOL`` counts as 0; a row with
-    no stated age keeps its (then missing) counts.
+    assumed to share the row's known mix. A suppressed ``POBCOL`` counts as 0. A row with
+    residents but no stated age has no mix to spread over; :func:`fill_unaged` gives it
+    its zone's.
     """
     u = universe.astype({c: float for c in [*STATED_AGES, "POBTOT", "POBCOL"]})
     stated = u[STATED_AGES].sum(axis=1, min_count=1)
@@ -277,6 +278,31 @@ def dwelling_scale(universe):
     return factor.fillna(1.0).clip(lower=1.0)
 
 
+def fill_unaged(universe, counts):
+    """Person counts for the census rows with residents but no stated age: their zone's mix.
+
+    117 rows (2,525 residents) state no age at all -- mostly tiny units whose age cells
+    INEGI suppressed, and AGEB 1412000013876 (179 residents, 10 sampled dwellings). The
+    row correction cannot spread unknown ages over known ones there, so every person count
+    of such a row (``counts``, already corrected) becomes its zone's count per
+    private-dwelling resident, over the rows that do state ages, times the row's own
+    private-dwelling residents (``POBTOT - POBCOL``). Every band, sex and activity count
+    comes from the same zone mix, so they stay consistent with each other.
+    """
+    u = universe.astype({c: float for c in [*STATED_AGES, "POBTOT", "POBCOL"]})
+    stated = u[STATED_AGES].sum(axis=1, min_count=1).fillna(0.0)
+    private = (u["POBTOT"] - u["POBCOL"].fillna(0.0)).clip(lower=0.0)
+    unaged = (stated == 0) & (private > 0)
+    if not unaged.any():
+        return counts
+    zone, aged = universe["Zone"], ~unaged
+    per_resident = counts[aged].fillna(0.0).groupby(zone[aged]).sum().div(
+        private[aged].groupby(zone[aged]).sum(), axis=0)
+    filled = counts.copy()
+    filled.loc[unaged] = per_resident.reindex(zone[unaged]).to_numpy() * private[unaged].to_numpy()[:, None]
+    return filled
+
+
 ROW_SCALES = {"persons": person_scale, "dwellings": dwelling_scale}
 
 
@@ -305,6 +331,8 @@ def _census_rows(universe, entry, conapo=None, vmrc=None, rates=None):
         sub = sub.mul(ROW_SCALES[entry["row_scale"]](universe), axis=0)
         if entry["row_scale"] == "dwellings":
             sub = sub.clip(upper=universe["TVIVPARHAB"].astype(float), axis=0)
+        if entry["row_scale"] == "persons":
+            sub = fill_unaged(universe, sub.astype(float))
     if conapo is not None and "conapo" in entry:
         growth = _row_ratio(universe, entry, conapo)
         sub = sub.mul(growth, axis=0)
