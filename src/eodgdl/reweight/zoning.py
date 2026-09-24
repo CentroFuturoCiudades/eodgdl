@@ -15,9 +15,9 @@ urban AGEBs and rural localities. :func:`assign_units` gives each unit at most o
   (``nearest polygon``), so every urban AGEB is in a zone. Blocks never split an AGEB:
   they only choose;
 * **a rural AGEB the survey records** goes to the zone it coded, and so do its localities
-  inside that zone's polygon; its localities inside another zone's polygon stay with that
-  zone, and those outside every polygon stay out of the targets (IMEPLAN planned a sample
-  in almost none of them), with two exceptions the survey itself forces: when none lies
+  inside that zone's polygon; its localities inside another zone's polygon are assigned to
+  no zone (``other zone``: the survey puts their AGEB elsewhere), and those outside every
+  polygon stay out of the targets (IMEPLAN planned a sample in almost none of them), with two exceptions the survey itself forces: when none lies
   inside the zone's polygon, its locality nearest to it stands for it, and when those
   counted hold fewer dwellings than the survey sampled there, its other localities join,
   nearest to the zone's polygon first, until they can hold the sample;
@@ -38,7 +38,7 @@ from eodgdl.taz import load_taz, load_zm_muns
 
 STATE = 14
 RULES = ["survey", "survey over polygon", "trip ends", "trip ends over polygon", "polygon", "majority",
-         "nearest polygon", "outside"]
+         "nearest polygon", "other zone", "outside"]
 
 def _mxcensus():
     try:
@@ -176,9 +176,9 @@ def assign_units(viv, trips, state=STATE):
     coded for its trip ends, or the polygon holding most of its population. A rural AGEB the
     survey records (dwellings or trip ends) takes the zone it coded, with its localities
     inside that zone's polygon (or, if none is, its locality nearest to it, and for a sampled
-    one as many more of the nearest as its sample needs); its other localities go with the
-    polygon containing them, or are ``outside``, like any rural locality the survey does not
-    record. The survey's zone is a function of the AGEB code, so every AGEB it records,
+    one as many more of the nearest as its sample needs); its other localities are in no
+    zone: ``other zone`` inside another zone's polygon, ``outside`` outside every polygon. A
+    rural locality the survey does not record goes with the polygon containing it. The survey's zone is a function of the AGEB code, so every AGEB it records,
     urban or rural, has its code, and census population, in the zone it coded.
     """
     agebs, locs, blocks = _geography(state)
@@ -267,6 +267,9 @@ def assign_units(viv, trips, state=STATE):
             if dwellings_of.reindex(members[in_frame[members].to_numpy()]).sum() >= n:
                 break
             in_frame[c] = True
+    elsewhere = recorded & ~in_frame & rural.polygon_zone.notna()
+    rural.loc[elsewhere, "zone"] = pd.NA
+    rural.loc[elsewhere, "rule"] = "other zone"
     rural.loc[in_frame, "zone"] = rural.loc[in_frame, "rural_ageb"].map(coded)
     rural.loc[in_frame, "rule"] = ["survey" if r in has_dwellings else "trip ends" for r in rural.loc[in_frame, "rural_ageb"]]
 
@@ -365,15 +368,17 @@ def zone_shapes(assignment):
     """The redrawn zones: each polygon with every urban AGEB, and every placed locality, moved.
 
     A zone keeps its polygon's rural land, loses the urban AGEBs assigned elsewhere or left
-    outside and the outlined localities the rules move out of it, and gains the urban AGEBs
-    and the outlined localities assigned to it (a locality recorded only as a point has no
-    ground to move). Indexed by zone code, one (multi)polygon each.
+    outside and the outlined localities the rules move out of it or leave in no zone
+    (``other zone``), and gains the urban AGEBs and the outlined localities assigned to it
+    (a locality recorded only as a point has no ground to move). Indexed by zone code, one
+    (multi)polygon each.
     """
     polys = zone_polygons()
     units = unit_shapes().geometry
     urban = assignment[assignment.unit == "ageb"]
-    locs = assignment[(assignment.unit == "locality") & assignment.zone.notna()
-                      & (assignment.zone != assignment.polygon_zone.fillna(""))]
+    locs = assignment[(assignment.unit == "locality")
+                      & ((assignment.zone.notna() & (assignment.zone != assignment.polygon_zone.fillna("")))
+                         | (assignment.rule == "other zone"))]
     loc_shapes = units.reindex(locs.index)
     outlined = ~loc_shapes.geom_type.isin(["Point", "MultiPoint"]) & loc_shapes.notna()
     moved = gpd.GeoSeries([*units.reindex(urban.index).to_list(), *loc_shapes[outlined].to_list()], crs=polys.crs)

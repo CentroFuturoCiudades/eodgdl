@@ -347,14 +347,14 @@ constraints:
       census: TVIVPARHAB
       conapo: total
       note: >-
-        Total private inhabited dwellings (1,462,883 in the universe). TVIVHAB adds the
+        Total private inhabited dwellings (1,451,483 in the universe). TVIVHAB adds the
         collective ones. Two subsets matter below: VIVPARH_CV, the dwellings whose
         characteristics were captured -- the base of the VPH_* counts, which INEGI
         defines as including the dwellings without occupant information and excluding
-        only mobile homes, shelters and premises not built for housing (1,461,621) --
+        only mobile homes, shelters and premises not built for housing (1,450,228) --
         and VIVPAR_HAB, which excludes the dwellings without occupant information
-        (1,358,946). VPH_* never exceed VIVPARH_CV in any census row, and exceed
-        VIVPAR_HAB in 223.
+        (1,348,031). VPH_* never exceed VIVPARH_CV in any census row, and exceed
+        VIVPAR_HAB in 219.
     Occupants:
       geography: zone
       census: OCUPVIVPAR
