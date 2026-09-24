@@ -720,7 +720,7 @@ u = universe.astype({c_: float for c_ in six_plus + ["POBTOT", "POBCOL", "OCUPVI
 raw6 = u[six_plus].sum(axis=1)
 by_zone = pd.DataFrame({
     "raw": raw6.groupby(u.Zone).sum(),
-    "corrected": (raw6 * ps).groupby(u.Zone).sum(),
+    "corrected": reweight.row_targets(universe, reweight.constraints("persons")["Persons"]).groupby(u.Zone).sum(),
     "occupants": u.OCUPVIVPAR.groupby(u.Zone).sum(),
     "pobtot": u.POBTOT.groupby(u.Zone).sum(),
     "pobcol": u.POBCOL.fillna(0).groupby(u.Zone).sum(),
