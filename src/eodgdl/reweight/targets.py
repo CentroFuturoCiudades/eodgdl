@@ -288,36 +288,54 @@ def _vmrc_ratio(universe, entry, vmrc):
     return universe.Municipality.map(per_mun)
 
 
+def _census_rows(universe, entry, conapo=None, vmrc=None, rates=None):
+    """One census target's columns per census row, corrected and (for a scaled set) grown.
+
+    The row correction (`row_scale`) and the 2023 growth (`conapo`, `vmrc`, `rate`) act on
+    each census row before anything is summed; `conapo` None means the census as is.
+    """
+    if conapo is not None and "vmrc" in entry and vmrc is None:
+        raise ValueError(f"a scaled set needs the VMRC fleets for {entry['vmrc']}")
+    cols = census_columns(entry["census"])
+    missing = [c for c in cols if c not in universe.columns]
+    if missing:
+        raise KeyError(f"census columns not in the census frames: {missing}")
+    sub = universe[cols]
+    if "row_scale" in entry:
+        sub = sub.mul(ROW_SCALES[entry["row_scale"]](universe), axis=0)
+        if entry["row_scale"] == "dwellings":
+            sub = sub.clip(upper=universe["TVIVPARHAB"].astype(float), axis=0)
+    if conapo is not None and "conapo" in entry:
+        growth = _row_ratio(universe, entry, conapo)
+        sub = sub.mul(growth, axis=0)
+        if "rate" in entry:
+            if rates is None or entry["rate"] not in rates:
+                raise ValueError(f"a scaled set needs the rate {entry['rate']}")
+            cap = universe["TVIVPARHAB"].astype(float) * growth
+            sub = sub.mul(rates[entry["rate"]]).clip(upper=cap, axis=0)
+    elif conapo is not None and "vmrc" in entry:
+        sub = sub.mul(_vmrc_ratio(universe, entry, vmrc), axis=0)
+    return sub
+
+
+def row_targets(universe, entry, conapo=None, vmrc=None, rates=None):
+    """One census target's value per census row: what the zone target sums.
+
+    The expression is evaluated on each row with suppressed cells as 0, which is how the
+    zone sum skips them, so these add up to the zone target wherever a zone has any value.
+    """
+    return _census_rows(universe, entry, conapo, vmrc, rates).fillna(0.0).eval(entry["census"])
+
+
 def _target(universe, entry, geography, conapo, shares, vmrc=None, rates=None):
     """The target of one constraint per geography id (a Series indexed by the id)."""
     column = GEOGRAPHY_COLUMN[geography]
     ids = sorted(universe[column].unique())
     scale = conapo is not None and "conapo" in entry
-    if conapo is not None and "vmrc" in entry and vmrc is None:
-        raise ValueError(f"a scaled set needs the VMRC fleets for {entry['vmrc']}")
     if "census" in entry:
-        expr = entry["census"]
-        cols = census_columns(expr)
-        missing = [c for c in cols if c not in universe.columns]
-        if missing:
-            raise KeyError(f"census columns not in the census frames: {missing}")
-        sub = universe[cols]
-        if "row_scale" in entry:
-            sub = sub.mul(ROW_SCALES[entry["row_scale"]](universe), axis=0)
-            if entry["row_scale"] == "dwellings":
-                sub = sub.clip(upper=universe["TVIVPARHAB"].astype(float), axis=0)
-        if scale:
-            growth = _row_ratio(universe, entry, conapo)
-            sub = sub.mul(growth, axis=0)
-            if "rate" in entry:
-                if rates is None or entry["rate"] not in rates:
-                    raise ValueError(f"a scaled set needs the rate {entry['rate']}")
-                cap = universe["TVIVPARHAB"].astype(float) * growth
-                sub = sub.mul(rates[entry["rate"]]).clip(upper=cap, axis=0)
-        elif conapo is not None and "vmrc" in entry:
-            sub = sub.mul(_vmrc_ratio(universe, entry, vmrc), axis=0)
+        sub = _census_rows(universe, entry, conapo, vmrc, rates)
         agg = sub.groupby(universe[column]).sum(min_count=1)
-        return agg.eval(expr).reindex(ids)
+        return agg.eval(entry["census"]).reindex(ids)
     values = pd.Series(entry["constant"], dtype=float)
     if set(values.index) != set(ids):
         raise ValueError(f"constant geography ids {sorted(values.index)} != census {ids}")
@@ -332,6 +350,53 @@ def _target(universe, entry, geography, conapo, shares, vmrc=None, rates=None):
         else:
             values = values * pd.Series({m: conapo.ratio(entry["conapo"], sex, m) for m in ids})
     return values.reindex(ids)
+
+
+SAMPLED_TARGETS = {"Persons": "persons", "Dwellings": "households"}
+
+
+def sampled_agebs(universe, viv, assignment, conapo, vmrc=None, rates=None):
+    """The census targets of every AGEB the survey sampled, per year, as the tool sees them.
+
+    One row per AGEB code in ``viv.ageb``: its municipality, the centralidad the survey coded
+    there, the TAZ (zone x municipality), its sampled dwellings, and ``Persons`` and
+    ``Dwellings`` for the base and target years -- the same census expression, row
+    correction and growth as the zone targets, so an AGEB's values are its share of its
+    zone's. A sampled urban AGEB is its own census row. A sampled rural AGEB is not a census
+    unit: its values sum the localities inside it that the assignment places in the zone the
+    survey coded (``localities``), which is what its dwellings were drawn from.
+    """
+    spec = load_spec()["conapo"]
+    years = {spec["base_year"]: None, spec["target_year"]: conapo}
+    per_row = {
+        f"{name}_{year}": row_targets(universe, constraints(table)[name], scaling, vmrc, rates)
+        for year, scaling in years.items() for name, table in SAMPLED_TARGETS.items()
+    }
+    rows = pd.DataFrame(per_row)
+    code = viv.ageb.astype(str)
+    survey = pd.DataFrame({"code": code, "centralidad": viv.centralidad.astype(str),
+                           "municipio": viv.municipio.astype(str)})
+    sampled = survey.groupby("code").agg(centralidad=("centralidad", "first"), municipio=("municipio", "first"),
+                                         sampled_dwellings=("centralidad", "size"))
+    locs = assignment[(assignment.unit == "locality") & assignment.zone.notna()]
+    out = []
+    for ageb, r in sampled.iterrows():
+        if len(ageb) == 13:
+            members = [ageb]
+        else:
+            members = list(locs.index[(locs.rural_ageb == ageb) & (locs.zone == r.centralidad)])
+        values = rows.reindex(members).sum()
+        out.append({"AGEB": ageb, "unit": "urban" if len(ageb) == 13 else "rural",
+                    "Municipality": int(ageb[2:5]), "municipio": r.municipio,
+                    "centralidad": r.centralidad, "Zone": zone_index()[r.centralidad],
+                    "sampled_dwellings": int(r.sampled_dwellings),
+                    "localities": len(members) if len(ageb) == 9 else 0, **values.to_dict()})
+    out = pd.DataFrame(out)
+    out.insert(out.columns.get_loc("Zone") + 1, "TAZ", out.Zone * 1000 + out.Municipality)
+    names = load_zm_muns()
+    if (out.municipio != out.Municipality.map(names)).any():
+        raise ValueError("a sampled AGEB's key and the survey's municipio disagree")
+    return out
 
 
 def build_constraints(universe, year=None, conapo=None, shares=None, vmrc=None, rates=None):

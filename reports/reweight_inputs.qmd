@@ -102,7 +102,7 @@ for p in sorted(written, key=lambda p: (p.parent != out_dir, str(p))):
     if p.suffix == ".csv":
         df = pd.read_csv(p)
         file_rows.append({"file": rel, "rows": fmt(len(df)), "columns": len(df.columns),
-                          "read by the tool": "no" if rel in ("ZoneLabels.csv", "ZoneAssignment.csv") or rel.startswith(("Constraints/diagnostic", "Constraints/coverage", "Constraints/constraints"))
+                          "read by the tool": "no" if rel in ("ZoneLabels.csv", "ZoneAssignment.csv", "SampledAGEBs.csv") or rel.startswith(("Constraints/diagnostic", "Constraints/coverage", "Constraints/constraints"))
                           else "yes"})
     else:
         file_rows.append({"file": rel, "rows": "", "columns": "", "read by the tool": "no"})

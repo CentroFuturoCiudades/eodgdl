@@ -205,8 +205,8 @@ def test_written_set_checks_clean_and_check_catches_breakage(files, tmp_path):
     reweight.write(files, tmp_path)
     assert reweight.check(tmp_path) == []
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
-        ["ZoneSystem.csv", "ZoneLabels.csv", "ZoneAssignment.csv", "HouseholdRecords.csv",
-         "PersonRecords.csv", "TripRecords.csv", "Constraints", "README.md"])
+        ["ZoneSystem.csv", "ZoneLabels.csv", "ZoneAssignment.csv", "SampledAGEBs.csv",
+         "HouseholdRecords.csv", "PersonRecords.csv", "TripRecords.csv", "Constraints", "README.md"])
 
     # A geography missing from a constraint file: the tool would target 0 there.
     path = tmp_path / "Constraints" / "PersonConstraintsByMunicipality_2020.csv"
@@ -311,3 +311,36 @@ def test_check_spec_requires_conapo_under_a_rate(monkeypatch):
     del spec["constraints"]["households"]["HasInternet"]["conapo"]
     monkeypatch.setattr(eodgdl.reweight._spec, "load_spec", lambda: spec)
     assert any("on top of conapo" in p for p in reweight.check_spec())
+
+
+def test_row_targets_add_up_to_the_zone_targets(files, viv):
+    universe = reweight.census_universe(viv)
+    conapo = reweight.load_conapo(DATA_DIR / "CONAPO_proyecciones_AMG.csv")
+    for year, scaling in ((2020, None), (2023, conapo)):
+        for name, table, file in (("Persons", "persons", "PersonConstraintsByZone"),
+                                  ("Dwellings", "households", "HouseholdConstraintsByZone")):
+            rows = reweight.row_targets(universe, reweight.constraints(table)[name], scaling)
+            zone = files.constraints[f"{file}_{year}.csv"].set_index("Zone")[name]
+            assert (rows.groupby(universe.Zone).sum() - zone).abs().max() < 1e-6
+
+
+def test_sampled_agebs_carry_their_zone_taz_and_targets(files, viv):
+    s = files.sampled_agebs
+    code = viv.ageb.astype(str)
+    assert len(s) == code.nunique() == 1046 and s.AGEB.is_unique
+    assert s.unit.value_counts().to_dict() == {"urban": 1019, "rural": 27}
+    assert set(s.TAZ) <= set(files.zone_system.TAZ) and (s.TAZ == s.Zone * 1000 + s.Municipality).all()
+    assert (s.centralidad == s.AGEB.map(viv.centralidad.astype(str).groupby(code).first())).all()
+    assert (s.sampled_dwellings == s.AGEB.map(code.value_counts())).all()
+    # An urban AGEB's values are its own census row, the zone targets' own arithmetic.
+    universe = reweight.census_universe(viv)
+    urban = s[s.unit == "urban"].set_index("AGEB")
+    persons = reweight.row_targets(universe, reweight.constraints("persons")["Persons"])
+    assert (urban.Persons_2020 - persons.reindex(urban.index)).abs().max() < 1e-6
+    assert (urban.Dwellings_2020 == universe.TVIVPARHAB.reindex(urban.index).astype(float)).all()
+    # No AGEB exceeds its zone's target; a rural one sums its localities in the coded zone.
+    zone = files.constraints["HouseholdConstraintsByZone_2023.csv"].set_index("Zone").Dwellings
+    per_zone = s.groupby("Zone").Dwellings_2023.sum()
+    assert (per_zone <= zone.reindex(per_zone.index) + 1e-6).all()
+    assert (s[s.unit == "rural"].localities > 0).all()
+    assert (s.Persons_2020 == 0).sum() == 1  # 1412000013876: 179 residents, none with a stated age

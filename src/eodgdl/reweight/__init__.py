@@ -45,6 +45,8 @@ from eodgdl.reweight.targets import (
     Vmrc,
     dwelling_scale,
     person_scale,
+    row_targets,
+    sampled_agebs,
 )
 from eodgdl.reweight.zoning import assign_units, check_assignment, unit_shapes, zone_polygons, zone_shapes
 
@@ -54,5 +56,5 @@ __all__ = [
     "check",
     "build_zones", "zone_ids", "build_households", "build_people", "build_trips",
     "assign_units", "check_assignment", "unit_shapes", "zone_polygons", "zone_shapes",
-    "crosswalk", "census_universe", "coverage", "load_conapo", "Conapo", "load_vmrc", "Vmrc", "load_rates", "build_constraints", "person_scale", "dwelling_scale",
+    "crosswalk", "census_universe", "coverage", "row_targets", "sampled_agebs", "load_conapo", "Conapo", "load_vmrc", "Vmrc", "load_rates", "build_constraints", "person_scale", "dwelling_scale",
 ]

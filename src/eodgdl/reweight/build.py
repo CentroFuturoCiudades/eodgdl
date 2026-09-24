@@ -24,6 +24,7 @@ from eodgdl.reweight.targets import (
     load_conapo,
     load_rates,
     load_vmrc,
+    sampled_agebs,
 )
 from eodgdl.reweight.zoning import assign_units
 
@@ -45,6 +46,7 @@ class ReweightFiles(NamedTuple):
     diagnostics: dict[str, pd.DataFrame]  # per year: target vs survey at the design weight
     coverage: pd.DataFrame  # the survey universe as a share of each whole municipality
     zone_assignment: pd.DataFrame = pd.DataFrame()  # every census unit's zone and the rule that set it
+    sampled_agebs: pd.DataFrame = pd.DataFrame()  # every sampled AGEB's zone, TAZ and census targets, by year
 
 
 def years():
@@ -80,8 +82,10 @@ def build(tables, data_dir=None):
     # on `year` must get every constraint (de-duplicating across years once left the
     # 2023 set without BusBoardings).
     index = pd.concat(index, ignore_index=True)
+    assignment = assign_units(viv)
     return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares,
-                            zone_assignment=assign_units(viv).reset_index())
+                            zone_assignment=assignment.reset_index(),
+                            sampled_agebs=sampled_agebs(universe, viv, assignment, conapo, vmrc, rates))
 
 
 def diagnostic(records, constraints, index):
@@ -136,6 +140,7 @@ def write(files, out_dir):
         put(f"Constraints/diagnostic_{year}.csv", df, float_format="%.4f")
     put("Constraints/coverage.csv", files.coverage.reset_index(), float_format="%.4f")
     put("ZoneAssignment.csv", files.zone_assignment, float_format="%.4f")
+    put("SampledAGEBs.csv", files.sampled_agebs, float_format="%.4f")
     readme = resources.files("eodgdl.reweight") / "README.md"
     with resources.as_file(readme) as src:
         shutil.copy(src, out_dir / "README.md")
