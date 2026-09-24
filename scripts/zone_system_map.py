@@ -1,13 +1,15 @@
 """Save the zone-system map of reports/reweight_inputs.qmd (fig-zone-map) and the redrawn zones.
 
 The map is drawn by the report's own chunk, read from the .qmd and run as written with
-``plt.show()`` swapped for a save, so the PNG and the rendered report cannot drift. The
+``plt.show()`` swapped for a save, so the file and the rendered report cannot drift. The
+format follows the file name: a PDF (the default) is vector, so it zooms without losing
+resolution; a PNG is rendered at ``--dpi``. The
 redrawn zones (``reweight.zone_shapes``: each centralidad polygon with every urban AGEB
 moved whole to the zone ``reweight.assign_units`` gives it) go to a GeoPackage, one
 feature per zone, with the assignment beside it as a CSV. Needs the ``reweight`` extra
 (mxcensus fetches INEGI's census and Marco Geoestadístico layers once).
 
-    uv run --extra reweight python scripts/zone_system_map.py [--out output/zone_system_map.png] [--dpi 300]
+    uv run --extra reweight python scripts/zone_system_map.py [--out output/zone_system_map.pdf] [--dpi 300]
         [--shapes output/centralidades_redrawn.gpkg] [--hatch] [--municipalities]
 """
 from __future__ import annotations
@@ -23,8 +25,8 @@ REPORT = ROOT / "reports" / "reweight_inputs.qmd"
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", default="output/zone_system_map.png")
-    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--out", default="output/zone_system_map.pdf", help="a .pdf (vector) or .png file")
+    parser.add_argument("--dpi", type=int, default=300, help="resolution of a PNG")
     parser.add_argument("--shapes", default="output/centralidades_redrawn.gpkg")
     parser.add_argument("--hatch", action="store_true", help="hatch the AGEBs placed against the polygons")
     parser.add_argument("--municipalities", action="store_true", help="draw municipal borders and names")
