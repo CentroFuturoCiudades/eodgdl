@@ -458,16 +458,20 @@ GeoPackage beside the map. @fig-zone-map shows the assignment against the origin
 
 ```{python}
 #| label: fig-zone-map
-#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it (a locality without an outline as a dot); thin dark outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Light grey: urban AGEBs (darker) and rural AGEBs (lighter) outside the universe. Geometry: INEGI's Marco Geoestadístico 2020."
-#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a light grey background, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Thin dark outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
+#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; thin dark outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Light grey: urban AGEBs (darker) and rural AGEBs (lighter) outside the universe. Geometry: INEGI's Marco Geoestadístico 2020."
+#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a light grey background, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and dashed outlines enclose the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Thin dark outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
+import colorsys
+
 import geopandas as gpd
 import matplotlib.patheffects as pe
+from shapely.geometry import MultiPolygon, Polygon
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from mxcensus.data import POOCH
 
 assign_map = reweight.assign_units(viv)
-shapes = reweight.unit_shapes().join(assign_map[["zone", "rule"]])
+shapes = reweight.unit_shapes().join(assign_map[["zone", "rule", "survey_zone"]])
 placed = shapes[shapes.zone.notna()]
 poly_geo = reweight.zone_polygons()
 assert set(placed.zone) == set(poly_geo.index) and len(poly_geo) == n_zones
@@ -481,12 +485,27 @@ def mgn(layer):
 
 mun_geo, rural_geo = mgn("mun"), mgn("ar")
 assert len(mun_geo) == len(MUN_NAME)
+# the survey codes a rural dwelling by its rural AGEB: the finest sampled geometry there
+rural_codes = viv.ageb.astype(str)[viv.ageb.astype(str).str.len() == 9]
+sampled_rural = rural_geo[rural_geo.CVEGEO.isin(set(rural_codes))]
+assert len(sampled_rural) == rural_codes.nunique() == 27
+# a rural AGEB has holes where urban localities sit; outline only its outer edge
 
-# One color per zone, no greys (grey is the background). Sixty-four colors cannot all be
-# told apart, so the labels carry identity; the colors only have to separate neighbours:
-# each zone, most-connected first, takes the free color farthest from its neighbours'.
-palette = [c for cmap in ("tab20", "tab20b", "tab20c", "Set1", "Dark2")
-           for c in plt.get_cmap(cmap).colors if np.ptp(to_rgb(c)) > 0.02]
+
+def outer(g):
+    parts = g.geoms if isinstance(g, MultiPolygon) else [g]
+    return MultiPolygon([Polygon(q.exterior) for q in parts])
+
+
+sampled_rural = sampled_rural.set_geometry(sampled_rural.geometry.map(outer), crs=sampled_rural.crs)
+
+# One color per zone: 32 hues at two mid lightnesses, so every zone's pale tint (its
+# unsampled units) reads as clearly paler, and none is grey (grey is the background).
+# Sixty-four colors cannot all be told apart, so the labels carry identity; the colors only
+# have to separate neighbours: each zone, most-connected first, takes the free color
+# farthest from its neighbours'.
+palette = [colorsys.hls_to_rgb(h, light, 0.62) for light in (0.36, 0.52)
+           for h in np.linspace(0, 1, 32, endpoint=False)]
 assert len(palette) >= n_zones
 touching = {z: set(poly_geo.index[poly_geo.geometry.buffer(50).intersects(g)]) - {z}
             for z, g in poly_geo.geometry.items()}
@@ -497,14 +516,28 @@ for z in sorted(poly_geo.index, key=lambda z: (-len(touching[z]), z)):
     zone_color[z] = palette[pick]
     free.remove(pick)
 
+
+
+def pale(c, keep=0.35):
+    """A zone's color washed toward white: the same zone, not sampled."""
+    return tuple(keep * x + (1 - keep) for x in to_rgb(c))
+
+
 is_point = placed.geom_type.isin(["Point", "MultiPoint"])
 areas, dots = placed[~is_point], placed[is_point]
+sampled = areas[areas.survey_zone.notna()]
+unsampled = areas[(areas.unit == "ageb") & areas.survey_zone.isna()]
+outlined = areas[areas.unit == "locality"]
+assert len(sampled) == int((viv.ageb.astype(str).str.len() == 13).groupby(viv.ageb).any().sum())
 halo = [pe.withStroke(linewidth=2.5, foreground="white")]
 fig, ax = plt.subplots(figsize=(10, 10))
 rural_geo.plot(ax=ax, color="#ededed", edgecolor="white", linewidth=0.3)
 shapes[shapes.unit == "ageb"].plot(ax=ax, color="#d6d6d6", edgecolor="white", linewidth=0.3)
-areas.plot(ax=ax, color=areas.zone.map(zone_color), edgecolor="white", linewidth=0.15)
-dots.plot(ax=ax, color=dots.zone.map(zone_color), markersize=7, edgecolor="#333333", linewidth=0.3, zorder=3)
+unsampled.plot(ax=ax, color=unsampled.zone.map(zone_color).map(pale), edgecolor="white", linewidth=0.15)
+sampled.plot(ax=ax, color=sampled.zone.map(zone_color), edgecolor="white", linewidth=0.15)
+outlined.plot(ax=ax, color=outlined.zone.map(zone_color).map(pale), edgecolor="#1a1a1a", linewidth=0.45)
+dots.plot(ax=ax, color=dots.zone.map(zone_color).map(pale), markersize=7, edgecolor="#1a1a1a", linewidth=0.45, zorder=3)
+sampled_rural.boundary.plot(ax=ax, color="#1a1a1a", linewidth=0.8, linestyle=(0, (3, 2)), zorder=4)
 HATCHES = {"survey over polygon": ("////", "#111111"), "majority": ("\\\\\\", "#666666")}
 for rule, (hatch, ink) in HATCHES.items():
     shapes[shapes.rule == rule].plot(ax=ax, facecolor="none", edgecolor=ink, hatch=hatch, linewidth=0)
@@ -532,10 +565,19 @@ for _, m in mun_geo.iterrows():
     p = (free_land if free_land.area > 5e6 else m.geometry).representative_point()
     ax.annotate(MUN_NAME[int(m.CVE_MUN)], (p.x, p.y), ha="center", va="center", fontsize=9.5,
                 fontweight="bold", path_effects=halo)
-ax.legend(handles=[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
-                   for r, text in (("survey over polygon", "sampled: the survey's zone, against the polygons"),
-                                   ("majority", "unsampled, straddles: whole to its majority polygon"))],
-          loc="lower left", frameon=False, fontsize=8)
+swatch = palette[0]
+ax.legend(handles=[
+    Patch(facecolor=swatch, edgecolor="white", label="urban AGEB, sampled"),
+    Patch(facecolor=pale(swatch), edgecolor="white", label="urban AGEB, not sampled"),
+    Patch(facecolor=pale(swatch), edgecolor="#1a1a1a", linewidth=0.45, label="rural locality (INEGI outline)"),
+    Line2D([], [], marker="o", linestyle="none", markerfacecolor=pale(swatch), markeredgecolor="#1a1a1a",
+           markersize=5, label="rural locality (INEGI point)"),
+    Patch(facecolor="none", edgecolor="#1a1a1a", linewidth=0.8, linestyle=(0, (3, 2)), label="rural AGEB, sampled (outer edge)"),
+    *[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
+      for r, text in (("survey over polygon", "sampled: the survey's zone, against the polygons"),
+                      ("majority", "not sampled, straddles: whole to its majority polygon"))],
+], loc="lower left", frameon=False, fontsize=8, title="the color is the zone", title_fontsize=8,
+    alignment="left")
 x0, y0, x1, y1 = poly_geo.total_bounds
 ax.set_xlim(x0 - 3000, x1 + 3000)
 ax.set_ylim(y0 - 3000, y1 + 3000)
