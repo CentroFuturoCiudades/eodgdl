@@ -128,9 +128,9 @@ def test_targets_are_consistent_and_pinned(files):
     pp20 = c["PersonConstraintsByZone_2020.csv"]
     mun20 = c["PersonConstraintsByMunicipality_2020.csv"]
     assert len(hh20) == len(pp20) == 64 and len(mun20) == 9
-    assert round(hh20.Dwellings.sum()) == 1_462_391
-    assert round(pp20.Persons.sum()) == 4_680_094
-    assert round(mun20.Cyclist.sum()) == 100_870  # 101,907 whole-municipality cyclists, universe share applied
+    assert round(hh20.Dwellings.sum()) == 1_462_883
+    assert round(pp20.Persons.sum()) == 4_681_293
+    assert round(mun20.Cyclist.sum()) == 100_898  # 101,907 whole-municipality cyclists, universe share applied
     assert c["TripConstraintsByRegion.csv"].BusBoardings.iloc[0] == 1_851_750
     ages = ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]
     assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
@@ -156,7 +156,7 @@ def test_targets_are_consistent_and_pinned(files):
     # 2023 keeps the census's partitions: bands sum to Persons, each sex's bands to its
     # total, the two activity targets to the 12+ bands; the sexes fall short of the
     # totals only by INEGI's suppressed cells, as in 2020.
-    assert round(pp23.Persons.sum()) == 4_850_841
+    assert round(pp23.Persons.sum()) == 4_852_117
     for y, p in ((2020, pp20), (2023, pp23)):
         assert (p[ages].sum(axis=1) - p.Persons).abs().max() < 1e-6, y
         for sex in ("Male", "Female"):
@@ -170,7 +170,7 @@ def test_targets_are_consistent_and_pinned(files):
 def test_census_universe_is_the_assigned_units(files, viv, trips):
     # mxcensus is the source of every value; zoning.assign_units says which rows make a zone.
     universe = reweight.census_universe(viv, trips)
-    assert len(universe) == 2308 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
+    assert len(universe) == 2313 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
     assert universe.Zone.nunique() == 64
 
 
@@ -181,8 +181,8 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, tr
         ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
         ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
         ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
-        ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
-        ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
+        ("locality", "survey"): 113, ("locality", "trip ends"): 25, ("locality", "polygon"): 136,
+        ("locality", "outside"): 509, ("rural ageb", "trip ends"): 2,
     }
     # The survey never splits an AGEB, and every sampled one carries the zone it coded.
     code, zone = viv.ageb.astype(str), viv.centralidad.astype(str)
@@ -205,12 +205,16 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, tr
     # La Aurora (Juanacatlán) lies outside every polygon; the survey coded its dwellings 49F.
     aurora = a.loc[["1405100020181", "1405100020196", "1405100020209", "1405100020213"]]
     assert (aurora.zone == "49F").all() and aurora.polygon_zone.isna().all()
-    # A rural AGEB the survey records sits in the zone it coded, one zone per code, with
-    # its localities in the frame (inside a polygon) and those its sample needs.
+    # A rural AGEB the survey records counts in the zone it coded its localities inside that
+    # zone's polygon (and those its sample needs); its localities in another zone's polygon
+    # stay there, like any rural locality.
     locs = a[a.unit == "locality"]
-    recorded = locs[locs.rural_ageb.isin(set(viv.ageb.astype(str)) | set(trips.destino.astype(str)))]
-    assert (recorded.dropna(subset=["zone"]).groupby("rural_ageb").zone.nunique() == 1).all()
-    assert recorded.loc[recorded.polygon_zone.notna(), "zone"].notna().all()
+    coded = reweight.survey_codes(viv, trips).query("code.str.len() == 9").groupby("code").zone.first()
+    recorded = locs[locs.rural_ageb.isin(coded.index)]
+    own = recorded.polygon_zone == recorded.rural_ageb.map(coded)
+    assert (recorded.zone[own] == recorded.polygon_zone[own]).all()
+    elsewhere = recorded[recorded.polygon_zone.notna() & ~own & (recorded.rule == "polygon")]
+    assert (elsewhere.zone == elsewhere.polygon_zone).all() and len(elsewhere) > 0
     # 140970123: 80 dwellings coded 51F, its localities inside polygons hold 26; the
     # nearest left-out ones join until they can hold the sample, Cuexcomatitlán among them
     assert a.loc["140970014", ["zone", "rule"]].tolist() == ["51F", "survey"]
@@ -299,7 +303,7 @@ def test_census_cyclists_reproduce_the_spec_constants():
 
 
 def test_row_corrections_make_zones_consistent(files, viv, trips):
-    # Zone 56 (63F) has 17.5 % of its residents without a stated age (dwellings without
+    # Zone 56 (63F) has 59 % of its residents without a stated age (dwellings without
     # occupant information whose details INEGI did not impute), zone 43 (45) a third of
     # its residents in collective quarters (Puente Grande's prisons). Corrected, persons 6+
     # are 85-96 % of private-dwelling occupants in every zone; the survey has ~93 %.
