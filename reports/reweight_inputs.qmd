@@ -458,8 +458,8 @@ GeoPackage beside the map. @fig-zone-map shows the assignment against the origin
 
 ```{python}
 #| label: fig-zone-map
-#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; thin dark outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Light grey: urban AGEBs (darker) and rural AGEBs (lighter) outside the universe. Geometry: INEGI's Marco Geoestadístico 2020."
-#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a light grey background, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and dashed outlines enclose the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Thin dark outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
+#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point), and the dashed outlines are the rural AGEBs the survey sampled, the geometry it codes a rural dwelling by; thin dark outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Grey: urban AGEBs outside the universe; rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
+#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a white background, with the sampled rural AGEBs in light grey, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and dashed outlines enclose the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Thin dark outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
 import colorsys
 
 import geopandas as gpd
@@ -531,7 +531,8 @@ outlined = areas[areas.unit == "locality"]
 assert len(sampled) == int((viv.ageb.astype(str).str.len() == 13).groupby(viv.ageb).any().sum())
 halo = [pe.withStroke(linewidth=2.5, foreground="white")]
 fig, ax = plt.subplots(figsize=(10, 10))
-rural_geo.plot(ax=ax, color="#ededed", edgecolor="white", linewidth=0.3)
+rural_geo.plot(ax=ax, color="white", edgecolor="#e2e2e2", linewidth=0.3)   # not sampled: empty
+sampled_rural.plot(ax=ax, color="#ededed", edgecolor="none")
 shapes[shapes.unit == "ageb"].plot(ax=ax, color="#d6d6d6", edgecolor="white", linewidth=0.3)
 unsampled.plot(ax=ax, color=unsampled.zone.map(zone_color).map(pale), edgecolor="white", linewidth=0.15)
 sampled.plot(ax=ax, color=sampled.zone.map(zone_color), edgecolor="white", linewidth=0.15)
@@ -572,7 +573,8 @@ ax.legend(handles=[
     Patch(facecolor=pale(swatch), edgecolor="#1a1a1a", linewidth=0.45, label="rural locality (INEGI outline)"),
     Line2D([], [], marker="o", linestyle="none", markerfacecolor=pale(swatch), markeredgecolor="#1a1a1a",
            markersize=5, label="rural locality (INEGI point)"),
-    Patch(facecolor="none", edgecolor="#1a1a1a", linewidth=0.8, linestyle=(0, (3, 2)), label="rural AGEB, sampled (outer edge)"),
+    Patch(facecolor="#ededed", edgecolor="#1a1a1a", linewidth=0.8, linestyle=(0, (3, 2)), label="rural AGEB, sampled (outer edge)"),
+    Patch(facecolor="white", edgecolor="#bdbdbd", linewidth=0.5, label="rural AGEB, not sampled"),
     *[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
       for r, text in (("survey over polygon", "sampled: the survey's zone, against the polygons"),
                       ("majority", "not sampled, straddles: whole to its majority polygon"))],
