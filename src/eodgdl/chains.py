@@ -635,11 +635,14 @@ def _start_from_home_after_return(
     other breaks (a return that did not reach home, an origin at home after a
     trip that went elsewhere) are left and marked ``origen_discontinuo``, since
     either side could be wrong. On the chain without its non-trips 124 of the
-    156 breaks are repaired and 32 left. Returns the trips and the mask of
-    origins repaired.
+    156 breaks are repaired and 32 left. The origin takes the previous trip's
+    destination AGEB and the zone the survey coded for it (``zona_origen`` from
+    that trip's ``zona_destino``), so the AGEB and the zone stay one place.
+    Returns the trips and the mask of origins repaired.
     """
     prev_return = (trips.motivo_viaje == HOME_MOTIVE).groupby(level=PERSON).shift(1)
     prev_dest = trips.destino.astype(str).groupby(level=PERSON).shift(1)
+    zoned = {"zona_origen", "zona_destino"} <= set(trips.columns)
     fix = (
         prev_return.fillna(False).astype(bool).to_numpy()
         & (prev_dest.to_numpy() == home)
@@ -648,6 +651,9 @@ def _start_from_home_after_return(
     if fix.any():
         trips = trips.copy()
         trips.loc[fix, "origen"] = home[fix]
+        if zoned:
+            prev_zone = trips.zona_destino.astype(str).groupby(level=PERSON).shift(1)
+            trips.loc[fix, "zona_origen"] = prev_zone.to_numpy()[fix]
     return trips, fix
 
 
@@ -983,6 +989,8 @@ def clean_trip_chains(
         _add_code(fixes, _expand(edit == name, where, n), f"hora:{name}")
     trips = trips.copy()
     trips.loc[chain.index, "origen"] = chain.origen.to_numpy()
+    if "zona_origen" in chain:
+        trips.loc[chain.index, "zona_origen"] = chain.zona_origen.to_numpy()
     trips.loc[chain.index, "hora_inicio_h"] = chain.hora_inicio_h.to_numpy()
     left = _remaining_issues(chain, home[is_trip], legs)
     for code, mask in left.items():
