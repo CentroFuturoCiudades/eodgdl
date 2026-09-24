@@ -12,7 +12,6 @@ VIAJES_CSV = "IMEPLAN_Base_Viajes_Master.csv"
 
 # Zone-system geometries (parquet)
 ZONIFICACION_PARQUET = "AMG_Zonificacion_para_encuesta.parquet"
-MICROZONAS_PARQUET = "AMG_MicroZONAS2023.parquet"
 
 # CONAPO population projections for the 9 municipalities (municipality x sex x year x 5-year band)
 CONAPO_CSV = "CONAPO_proyecciones_AMG.csv"
@@ -24,6 +23,6 @@ VMRC_CSV = "VMRC_AMG.csv"
 ENDUTIH_CSV = "ENDUTIH_internet_AMG.csv"
 
 SURVEY_FILES = [VIVIENDAS_CSV, HABITANTES_CSV, VIAJES_CSV]
-ZONE_FILES = [ZONIFICACION_PARQUET, MICROZONAS_PARQUET]
+ZONE_FILES = [ZONIFICACION_PARQUET]
 CENSUS_FILES = [CONAPO_CSV, VMRC_CSV, ENDUTIH_CSV]
 FILES = SURVEY_FILES + ZONE_FILES + CENSUS_FILES

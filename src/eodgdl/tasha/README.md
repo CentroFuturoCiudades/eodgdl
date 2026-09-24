@@ -232,8 +232,8 @@ rather than about one column's coding, so nothing surfaces them automatically.
   `eodgdl.chains._impute_untimed_trips`.
 
 - **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
-  `zones.alternatives` offers `ID_ZONAEOD` (71 zones) and `MZONA` (601) as the
-  other choices, but there is no `zones=` selector, and the written tables record
+  `zones.alternatives` offers `ID_ZONAEOD` (64 survey zones plus 7 access points)
+  as the other choice, but there is no `zones=` selector, and the written tables record
   nothing about which system produced them — so the choice is invisible to
   whoever reads the CSVs. 1,701 AGEBs is also likely finer than a model with
   matching networks and skims wants.

@@ -42,8 +42,7 @@ zones:
   alternatives: >-
     centralidad / ID_ZONAEOD (64 survey zones plus the 7 access points,
     string codes like '06A'; eodgdl.reweight.zoning assigns every census AGEB
-    and rural locality to one of them) and MZONA micro-zones (601 integer zones)
-    are also available in the eodgdl package.
+    and rural locality to one of them) is also available in the eodgdl package.
     Whichever is chosen, use it in every *Zone column — the outputs do not
     record which one they used.
 

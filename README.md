@@ -26,11 +26,9 @@ tables:
 ## Zone system
 
 ```python
-from eodgdl import load_eod, load_taz, load_mtaz, load_zm_muns, reweight, zone_system_report
+from eodgdl import load_eod, load_taz, load_zm_muns, reweight
 
 taz = load_taz(drop_ap=True)                       # the centralidad polygons the survey was fielded on
-mtaz = load_mtaz(taz, drop_ap=True)                # micro-zones, aligned to taz CRS
-zone_system_report(taz, mtaz)                       # diagnostics
 
 # every census unit (urban AGEB, rural locality) in at most one zone: the polygons plus the
 # survey's own coding; needs the `reweight` extra (census data through mxcensus)
@@ -129,12 +127,11 @@ above. The 4 MB technical report (`Informe_Tecnico_Final_EOD_2023.pdf`) is inclu
 reference.
 
 A small number of manual data-entry corrections are applied by the loaders (encoded as
-documented constants in `eod.py`, `chains.py`, `taz.py` and `reweight/zoning.py`): three
-trip-mode fixes, two micro-zone population double-count adjustments, and four rural
-localities placed in the zone the survey coded for their rural AGEB.
+documented constants in `eod.py`, `chains.py` and `reweight/zoning.py`): three trip-mode
+fixes and four rural localities placed in the zone the survey coded for their rural AGEB.
 
-IMEPLAN's AGEB-to-zone table (`RELACION_AGEBS-ZONA_con_datos_censales`) is kept under
-`data/` as delivered but no longer loaded: it was not part of the survey design and
-disagreed with the survey's own zone coding (it left La Aurora, Juanacatlán, whose 221
-sampled dwellings the survey coded `49F`, in no zone). Zones are built from the census by
-`reweight.zoning` instead.
+IMEPLAN's AGEB-to-zone table (`RELACION_AGEBS-ZONA_con_datos_censales`) and micro-zones
+(`AMG_MicroZONAS2023`) are kept under `data/` as delivered but no longer loaded: neither was
+part of the survey design, and the table disagreed with the survey's own zone coding (it
+left La Aurora, Juanacatlán, whose 221 sampled dwellings the survey coded `49F`, in no
+zone). Zones are built from the census by `reweight.zoning` instead.

@@ -35,17 +35,4 @@ def test_load_eod_local():
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_load_taz_local():
     taz = eodgdl.load_taz(DATA_DIR / "AMG_Zonificacion_para_encuesta.parquet", drop_ap=True)
-    mtaz = eodgdl.load_mtaz(
-        taz, DATA_DIR / "AMG_MicroZONAS2023.parquet", drop_ap=True
-    )
-    assert len(taz) > 0
-    assert len(mtaz) > 0
-
-
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_microzone_totals_drop_the_double_counted_localities():
-    # IMEPLAN's micro-zone totals count two localities twice; _MTAZ_POBTOT_FIXES takes
-    # them out once (6,637 people), leaving the population of the 601 micro-zones.
-    taz = eodgdl.load_taz(DATA_DIR / "AMG_Zonificacion_para_encuesta.parquet")
-    mtaz = eodgdl.load_mtaz(taz, DATA_DIR / "AMG_MicroZONAS2023.parquet")
-    assert len(mtaz) == 601 and mtaz.POBTOT.sum() == 5_220_592
+    assert len(taz) == 64 and taz.index.is_unique
