@@ -1,11 +1,10 @@
 """The 2020 census as the tool's constraint targets, by zone, municipality or region.
 
 The census values come from INEGI through ``mxcensus`` (``load_census(state=14)``: the
-AGEB and locality frames of the Censo de Población y Vivienda 2020). IMEPLAN's AGEB table
-is used only as the **crosswalk**: which AGEBs and rural localities make up each survey
-zone, and hence the survey universe. The two agree wherever both hold a value
-(``reconcile()`` checks it); ``mxcensus`` keeps suppressed cells blank where IMEPLAN's
-table wrote 0.
+AGEB and locality frames of the Censo de Población y Vivienda 2020). The **crosswalk**,
+which urban AGEBs and rural localities make up each survey zone and hence the survey
+universe, is :mod:`eodgdl.reweight.zoning`'s: the centralidad polygons and the survey's own
+coding, never IMEPLAN's AGEB table.
 
 Every target is read from spec.yaml (``constraints``): an expression over census columns,
 summed by geography first, or a constant with its provenance. A 2023 set multiplies each
@@ -21,7 +20,6 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from eodgdl.data._catalog import AGEBS_ZONA_PARQUET, ZONIFICACION_PARQUET
 from eodgdl.reweight._spec import (
     GEOGRAPHY_COLUMN,
     TABLES,
@@ -32,7 +30,8 @@ from eodgdl.reweight._spec import (
     load_spec,
 )
 from eodgdl.reweight.records import zone_index
-from eodgdl.taz import load_imeplan_agebs, load_taz, load_zm_muns
+from eodgdl.reweight.zoning import assign_units, check_assignment
+from eodgdl.taz import load_zm_muns
 
 SEX = {"HOMBRES": "M", "MUJERES": "F"}
 AGEB_KEY = ["ENTIDAD", "MUN", "LOC", "AGEB"]
@@ -60,85 +59,66 @@ def _census(state=14):
 # ---------------------------------------------------------------- the crosswalk
 
 
-def crosswalk(data_dir=None):
-    """IMEPLAN's AGEB table reduced to the survey universe and the census key of each row.
+def crosswalk(viv, state=14):
+    """The census units of the survey universe with their census key and geography ids.
 
-    One row per AGEB or rural locality with a 2023 survey zone (``EOD2023 != 'NA'``), with
-    the INEGI key parsed from ``CVEGEO`` (13 characters for an AGEB, 9 for a locality;
-    ``AGEB`` is NA on a locality row), the Zone / Municipality / Region ids the records use,
-    and IMEPLAN's own ``POBTOT`` for reconciliation. Rows without a usable key (the access
-    points, one schematic rural AGEB) carry no population and are dropped.
+    One row per urban AGEB or rural locality that :func:`zoning.assign_units` places in a
+    zone, indexed by CVEGEO: the INEGI key (``AGEB`` is NA on a locality row), the rule
+    that placed it, and the Zone / Municipality / Region ids the records use.
     """
-    zones = load_spec()["zones"]
-    taz = load_taz(_local(data_dir, ZONIFICACION_PARQUET))
-    agebs = load_imeplan_agebs(taz, _local(data_dir, AGEBS_ZONA_PARQUET))
-    zcol = zones["census_zone_column"]
-    u = agebs.loc[(agebs[zcol].astype(str) != "NA") & agebs.CVEGEO.notna()]
-    code = u.CVEGEO.astype(str)
+    a = assign_units(viv, state)
+    problems = check_assignment(a, viv)
+    if problems:
+        raise ValueError("the zone assignment disagrees with the survey: " + "; ".join(problems))
+    a = a[a.zone.notna()]
+    code = a.index.to_series()
     cw = pd.DataFrame({
-        "ENTIDAD": pd.to_numeric(code.str[:2], errors="coerce"),
-        "MUN": pd.to_numeric(code.str[2:5], errors="coerce"),
-        "LOC": pd.to_numeric(code.str[5:9], errors="coerce"),
-        "AGEB": code.str[9:13].where(code.str.len() == 13),
-        "CVEGEO": code,
-        "POBTOT_IMEPLAN": u.POBTOT.astype(float),
-    }, index=u.index)
-    unkeyed = cw[LOC_KEY].isna().any(axis=1)
-    if cw.loc[unkeyed, "POBTOT_IMEPLAN"].fillna(0).sum() > 0:
-        raise ValueError(f"rows with population but no census key: {cw.index[unkeyed].tolist()}")
-    cw = cw.loc[~unkeyed].astype({"ENTIDAD": int, "MUN": int, "LOC": int})
+        "ENTIDAD": code.str[:2].astype(int),
+        "MUN": code.str[2:5].astype(int),
+        "LOC": code.str[5:9].astype(int),
+        "AGEB": code.str[9:13].where(a.unit == "ageb"),
+        "unit": a.unit, "rule": a.rule.astype(str),
+    }, index=a.index)
     unknown = set(cw.MUN) - set(load_zm_muns())
     if unknown:
         raise ValueError(f"census municipalities outside the study area: {sorted(unknown)}")
-    zone = u.loc[cw.index, zcol].astype(str).map(zone_index())
+    zone = a.zone.map(zone_index())
     if zone.isna().any():
-        raise ValueError(f"survey zones outside the schema's levels: {sorted(u.loc[zone.isna(), zcol].unique())}")
+        raise ValueError(f"zones outside the schema's levels: {sorted(a.zone[zone.isna()].unique())}")
     cw["Zone"] = zone.astype(int)
     cw["Municipality"] = cw.MUN
     cw["Region"] = 1
     return cw
 
 
-def census_universe(data_dir=None, state=14):
-    """Every numeric census column of every AGEB and locality in the survey universe.
+def census_universe(viv, state=14):
+    """Every numeric census column of every AGEB and rural locality in the survey universe.
 
-    Indexed like the crosswalk (IMEPLAN's row id), with the Zone / Municipality / Region
-    ids appended. An AGEB row joins the census AGEB frame on (ENTIDAD, MUN, LOC, AGEB), a
-    locality row the locality frame on (ENTIDAD, MUN, LOC); a row the census does not have
-    must carry no population in IMEPLAN's table, else this raises. Suppressed cells stay
-    NaN, so sums skip them.
+    Indexed like the crosswalk (CVEGEO), with the Zone / Municipality / Region ids
+    appended. An AGEB row joins the census AGEB frame on (ENTIDAD, MUN, LOC, AGEB), a
+    locality row the locality frame on (ENTIDAD, MUN, LOC); the crosswalk is built from
+    those frames, so every row matches. Suppressed cells stay NaN, so sums skip them.
     """
-    cw = crosswalk(data_dir)
+    cw = crosswalk(viv, state)
     _, _, df_loc, df_ageb = _census(state)
     is_ageb = cw.AGEB.notna()
     from_agebs = df_ageb.reindex(pd.MultiIndex.from_frame(cw.loc[is_ageb, AGEB_KEY]))
     from_locs = df_loc.reindex(pd.MultiIndex.from_frame(cw.loc[~is_ageb, LOC_KEY]))
     from_agebs.index, from_locs.index = cw.index[is_ageb], cw.index[~is_ageb]
-    values = pd.concat([from_agebs, from_locs]).reindex(cw.index).select_dtypes("number")
-    unmatched = values.isna().all(axis=1)
-    populated = cw.POBTOT_IMEPLAN.fillna(0) > 0
-    if (unmatched & populated).any():
-        raise ValueError(f"populated rows the census does not have: {cw.loc[unmatched & populated, 'CVEGEO'].tolist()}")
-    out = values.loc[~unmatched].copy()
+    out = pd.concat([from_agebs, from_locs]).reindex(cw.index).select_dtypes("number")
+    unmatched = out.isna().all(axis=1)
+    if unmatched.any():
+        raise ValueError(f"crosswalk rows the census does not have: {cw.index[unmatched].tolist()}")
     for col in GEOGRAPHY_IDS:
-        out[col] = cw.loc[out.index, col]
+        out[col] = cw[col]
     return out
-
-
-def reconcile(universe, cw=None, data_dir=None):
-    """Zones whose census population differs from IMEPLAN's table; empty when they agree."""
-    cw = crosswalk(data_dir) if cw is None else cw
-    ours = universe.groupby("Zone").POBTOT.sum()
-    theirs = cw.groupby("Zone").POBTOT_IMEPLAN.sum()
-    diff = (ours - theirs.reindex(ours.index)).fillna(0)
-    return [f"zone {z}: census {ours[z]:,.0f} vs IMEPLAN {theirs[z]:,.0f}" for z in diff.index[diff.abs() > 0.5]]
 
 
 def coverage(universe, state=14, columns=("POBTOT", "TVIVPARHAB", "POCUPADA")):
     """The survey universe as a share of each whole municipality, per census column.
 
     Indexed by Municipality: ``<col>_universe``, ``<col>_municipality``, ``<col>_share``.
-    Peripheral municipalities are only partly inside the study area (Juanacatlán a third),
+    Peripheral municipalities are only partly inside the study area (Zapotlanejo three quarters),
     so a whole-municipality figure must be scaled by the share before it can be a target.
     """
     _, df_mun, _, _ = _census(state)

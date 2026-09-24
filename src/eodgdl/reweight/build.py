@@ -24,8 +24,8 @@ from eodgdl.reweight.targets import (
     load_conapo,
     load_rates,
     load_vmrc,
-    reconcile,
 )
+from eodgdl.reweight.zoning import assign_units
 
 RECORD_FILES = {
     "households": "HouseholdRecords.csv",
@@ -44,6 +44,7 @@ class ReweightFiles(NamedTuple):
     index: pd.DataFrame  # one row per (year, target column): Constraints/constraints.csv
     diagnostics: dict[str, pd.DataFrame]  # per year: target vs survey at the design weight
     coverage: pd.DataFrame  # the survey universe as a share of each whole municipality
+    zone_assignment: pd.DataFrame = pd.DataFrame()  # every census unit's zone and the rule that set it
 
 
 def years():
@@ -60,10 +61,7 @@ def build(tables, data_dir=None):
         build_households(viv), build_people(hab, trips, legs), build_trips(trips, legs),
         {}, pd.DataFrame(), {}, pd.DataFrame(),
     )
-    universe = census_universe(data_dir)
-    disagreements = reconcile(universe, data_dir=data_dir)
-    if disagreements:
-        raise ValueError("the census and IMEPLAN's crosswalk disagree: " + "; ".join(disagreements))
+    universe = census_universe(viv)  # raises if the zone assignment disagrees with the survey
     shares = coverage(universe)
     conapo = load_conapo(Path(data_dir) / CONAPO_CSV if data_dir is not None else None)
     vmrc = load_vmrc(Path(data_dir) / VMRC_CSV if data_dir is not None else None)
@@ -82,7 +80,8 @@ def build(tables, data_dir=None):
     # on `year` must get every constraint (de-duplicating across years once left the
     # 2023 set without BusBoardings).
     index = pd.concat(index, ignore_index=True)
-    return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares)
+    return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares,
+                            zone_assignment=assign_units(viv).reset_index())
 
 
 def diagnostic(records, constraints, index):
@@ -136,6 +135,7 @@ def write(files, out_dir):
     for year, df in files.diagnostics.items():
         put(f"Constraints/diagnostic_{year}.csv", df, float_format="%.4f")
     put("Constraints/coverage.csv", files.coverage.reset_index(), float_format="%.4f")
+    put("ZoneAssignment.csv", files.zone_assignment, float_format="%.4f")
     readme = resources.files("eodgdl.reweight") / "README.md"
     with resources.as_file(readme) as src:
         shutil.copy(src, out_dir / "README.md")

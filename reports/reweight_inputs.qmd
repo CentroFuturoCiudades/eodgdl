@@ -102,7 +102,7 @@ for p in sorted(written, key=lambda p: (p.parent != out_dir, str(p))):
     if p.suffix == ".csv":
         df = pd.read_csv(p)
         file_rows.append({"file": rel, "rows": fmt(len(df)), "columns": len(df.columns),
-                          "read by the tool": "no" if rel in ("ZoneLabels.csv",) or rel.startswith(("Constraints/diagnostic", "Constraints/coverage", "Constraints/constraints"))
+                          "read by the tool": "no" if rel in ("ZoneLabels.csv", "ZoneAssignment.csv") or rel.startswith(("Constraints/diagnostic", "Constraints/coverage", "Constraints/constraints"))
                           else "yes"})
     else:
         file_rows.append({"file": rel, "rows": "", "columns": "", "read by the tool": "no"})
@@ -163,8 +163,8 @@ flowchart LR
     A --> Z["zone × municipality<br/>ZoneSystem.csv"]
   end
   subgraph census [Census 2020]
-    C["mxcensus.load_census(14)<br/>AGEB + locality frames"] --> U["census universe<br/>2,154 rows"]
-    X["IMEPLAN AGEB→zone table<br/>(crosswalk only)"] --> U
+    C["mxcensus.load_census(14)<br/>AGEB + locality frames"] --> U["census universe<br/>2,281 AGEBs + localities"]
+    X["centralidad polygons<br/>+ the survey's zone codes"] --> Z2["zoning.assign_units<br/>one zone per AGEB / locality"] --> U
     U --> S["row corrections<br/>persons · dwellings"]
     S --> T20["sum by geography<br/>2020 targets"]
     S --> G["× CONAPO / VMRC / ENDUTIH<br/>per municipality"] --> T23["2023 targets"]
@@ -231,7 +231,8 @@ The TAZ is therefore the **zone × municipality cell**, and every id is an integ
 
 `ZoneSystem.csv` lists the `{python} n_cells` TAZs in column 0 and maps each to its zone,
 municipality and region in columns 1–3; `ZoneLabels.csv` says what each is. A household's
-TAZ comes from its dwelling's `centralidad` and `municipio`.
+TAZ comes from its dwelling's `centralidad` and `municipio`; @fig-zone-map
+(@sec-universe) draws the zones on the census units they are built from.
 
 No constraint targets the TAZ itself: `{python} len(small_cells)` cells hold fewer than 30
 sampled dwellings (@tbl-small-cells). Zone targets see between `{python} fmt(dw_zone.min())`
@@ -362,13 +363,40 @@ A few of these are decisions rather than lookups:
 #| label: universe
 #| include: false
 
-cw = reweight.crosswalk(DATA)
-universe = reweight.census_universe(DATA)
-disagree = reweight.reconcile(universe, cw)
-assert disagree == []
+cw = reweight.crosswalk(viv)
+universe = reweight.census_universe(viv)
+assign = files.zone_assignment.set_index("CVEGEO")
+assert reweight.check_assignment(assign, viv) == []
 n_ageb, n_loc = int(cw.AGEB.notna().sum()), int(cw.AGEB.isna().sum())
-assert (len(cw), n_ageb, n_loc, len(universe)) == (2_164, 2_026, 138, 2_154)
+assert (len(cw), n_ageb, n_loc, len(universe)) == (2_281, 2_019, 262, 2_281)
 assert universe.Zone.nunique() == n_zones
+
+rule_counts = assign.groupby(["unit", "rule"], observed=True).agg(units=("POBTOT", "size"), population=("POBTOT", "sum"))
+assert rule_counts.units.to_dict() == {
+    ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26, ("ageb", "polygon"): 920,
+    ("ageb", "majority"): 80, ("ageb", "outside"): 20,
+    ("locality", "polygon"): 258, ("locality", "override"): 4, ("locality", "outside"): 521,
+}
+RULE_TEXT = {
+    "survey": "sampled; the survey's zone, which is also where most of its population lies",
+    "survey over polygon": "sampled; the survey's zone, against the polygons",
+    "polygon": "unsampled; wholly inside one polygon",
+    "majority": "unsampled; straddles, goes whole to the polygon with most of its population",
+    "override": "placed by _RURAL_LOCALITY_ZONES",
+    "outside": "most of its population outside every polygon; not in the universe",
+}
+rule_tbl = rule_counts.reset_index().assign(
+    unit=lambda d: d.unit.map({"ageb": "urban AGEB", "locality": "rural locality"}),
+    meaning=lambda d: d.rule.astype(str).map(RULE_TEXT),
+    units=lambda d: d.units.map(fmt), population=lambda d: d.population.map(fmt),
+)[["unit", "rule", "meaning", "units", "population"]]
+against = assign[assign.rule == "survey over polygon"]
+against_outside = against[against.polygon_zone.isna()]
+n_straddle_sampled = int((assign.straddles & assign.survey_zone.notna()).sum())
+sampled_rural = viv.ageb.astype(str).str.len() == 9
+prison = assign.loc["1407001161467"]
+assert prison.rule == "outside" and prison.POBTOT > 11_000
+assert assign.loc[(assign.survey_zone == "49F") & (assign.MUN == 51)].sampled_dwellings.sum() == 221
 
 cov = files.coverage
 cov_tbl = pd.DataFrame({
@@ -379,29 +407,142 @@ cov_tbl = pd.DataFrame({
     "population share": cov.POBTOT_share.map(lambda x: pct(x, 1)),
     "dwelling share": cov.TVIVPARHAB_share.map(lambda x: pct(x, 1)),
 }).sort_values("population share", key=lambda s: s.str.rstrip("%").astype(float), ascending=False)
-assert 0.3 < cov.loc[51, "POBTOT_share"] < 0.35
+assert 0.70 < cov.loc[124, "POBTOT_share"] < 0.73
 ```
 
 Every census value comes from INEGI's Censo de Población y Vivienda 2020 through
-`mxcensus.load_census(state=14)`, which returns the AGEB frame (urban blocks) and the
-locality frame (rural localities). IMEPLAN's table `RELACION_AGEBS-ZONA_con_datos_censales`
-is used for one thing only: to say which census rows make up each survey zone.
+`mxcensus.load_census(state=14)`: the AGEB frame (urban AGEBs) and the locality frame
+(localities, the rural ones among them). Which of those rows make up each survey zone is
+decided by `reweight.zoning` from two things only: the centralidad polygons the survey was
+fielded on, and the zone the survey coded for each dwelling. IMEPLAN's AGEB table plays no
+part.
 
-1. **Crosswalk** (`targets.crosswalk`). The rows of IMEPLAN's table with a 2023 survey zone
-   (`EOD2023 != 'NA'`) are kept: `{python} fmt(len(cw))` rows, `{python} fmt(n_ageb)` AGEBs and
-   `{python} fmt(n_loc)` rural localities. Each `CVEGEO` is parsed into the census key
-   (`ENTIDAD, MUN, LOC`, plus `AGEB` when it has 13 characters). Rows without a usable key
-   (the access points, one schematic rural AGEB) carry no population and are dropped; the
-   build raises if one did.
-2. **Join** (`targets.census_universe`). AGEB rows join the AGEB frame on the four-part key,
-   locality rows the locality frame on three. `{python} fmt(len(universe))` rows match; the
-   `{python} len(cw) - len(universe)` that do not have no population in IMEPLAN's table, and
-   the build raises if a populated row goes unmatched. Suppressed census cells (one or two
-   units) stay blank, so sums skip them.
-3. **Reconcile** (`targets.reconcile`). The census `POBTOT` summed by zone must equal
-   IMEPLAN's own population column for the same rows, zone by zone. It does in all
-   `{python} n_zones` zones; if a future census or crosswalk file disagreed, the build would
-   refuse to run.
+The census counts people in two kinds of unit that tile the nine municipalities, and each
+gets at most one zone (`zoning.assign_units`):
+
+- **Urban AGEBs are never split.** The survey does not split them either: every sampled AGEB
+  has all its dwellings in one zone. A sampled AGEB takes the zone the survey coded there. An
+  unsampled one goes whole to the polygon holding most of its population, counted over its
+  census blocks (the blocks only choose; they never divide an AGEB). One whose population
+  lies mostly outside every polygon is left out.
+- **Rural localities** go to the polygon containing them. The survey codes a rural dwelling
+  by its rural AGEB, which spans several zones and localities, so rural AGEBs are not units;
+  the build only checks that each of the `{python} viv.ageb[sampled_rural].nunique()` sampled
+  rural AGEBs holds a locality assigned to the zone the survey coded there
+  (`zoning.check_assignment`, which the build runs and fails on).
+
+@tbl-rules counts the result. Where the survey and the polygons disagree the survey wins,
+because its households are weighted by the zone it coded:
+`{python} len(against)` sampled AGEBs are assigned against the polygons. In
+`{python} len(against) - len(against_outside)` of them the survey's zone holds the smaller
+share of a straddling AGEB (of `{python} n_straddle_sampled` sampled AGEBs that straddle);
+the other `{python} len(against_outside)` lie outside every polygon, among them the four of
+La Aurora (Juanacatlán), whose `{python} int(assign.loc[(assign.survey_zone == "49F") & (assign.MUN == 51)].sampled_dwellings.sum())`
+dwellings the survey coded `49F`, a zone whose polygon lies in Zapotlanejo. Two sampled
+rural AGEBs have no locality inside the zone the survey coded; `_RURAL_LOCALITY_ZONES` places
+their large localities there, with the evidence beside each entry. One exclusion is worth
+knowing: El Salto's AGEB `1467` in locality `0116` (Puente Grande's prisons,
+`{python} fmt(prison.POBTOT)` residents) lies mostly outside every polygon and is not in the
+universe; its residents are collective quarters, which no target counts anyway.
+
+```{python}
+#| label: tbl-rules
+#| tbl-cap: "How every census unit of the nine municipalities was placed (ZoneAssignment.csv has one row per unit, with the rule, the polygon holding most of its population and that share, and the survey's zone and sampled dwellings)."
+show(rule_tbl)
+```
+
+`zoning.zone_shapes` merges the assignment into **redrawn zones**: each polygon keeps its
+rural land, loses the urban AGEBs assigned elsewhere or left out, and gains the ones assigned
+to it, so every boundary follows AGEB edges. `scripts/zone_system_map.py` writes them as a
+GeoPackage beside the map. @fig-zone-map shows the assignment against the original polygons.
+
+```{python}
+#| label: fig-zone-map
+#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it (a locality without an outline as a dot); thin dark outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Hatched AGEBs are where the assignment departs from the polygons: sampled AGEBs placed in the zone the survey coded against the polygons (dark, rising), and unsampled AGEBs that straddle polygons, moved whole to the one with most of their population (grey, falling). Bold lines are municipal borders, so a TAZ is a colored patch between them. Light grey: urban AGEBs (darker) and rural AGEBs (lighter) outside the universe. Geometry: INEGI's Marco Geoestadístico 2020."
+#| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a light grey background, municipal borders in bold black. The survey's 64 zones are colored patches of AGEBs, each labelled with its code: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá, where several zones cross municipal borders, and scattered patches and dots over the peripheral towns. Thin dark outlines, the centralidad polygons, enclose the colored patches almost everywhere; hatched AGEBs mark the places where the assignment crosses an outline, most along the edges between central zones. La Aurora in Juanacatlán is a hatched patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
+import geopandas as gpd
+import matplotlib.patheffects as pe
+from matplotlib.colors import to_rgb
+from matplotlib.patches import Patch
+from mxcensus.data import POOCH
+
+assign_map = reweight.assign_units(viv)
+shapes = reweight.unit_shapes().join(assign_map[["zone", "rule"]])
+placed = shapes[shapes.zone.notna()]
+poly_geo = reweight.zone_polygons()
+assert set(placed.zone) == set(poly_geo.index) and len(poly_geo) == n_zones
+
+
+def mgn(layer):
+    """One Marco Geoestadístico layer (mxcensus mirror), the nine municipalities only."""
+    g = gpd.read_parquet(POOCH.fetch(f"mg_{layer}_14.parquet"))
+    return g[g.CVE_MUN.astype(int).isin(MUN_NAME)].to_crs(poly_geo.crs)
+
+
+mun_geo, rural_geo = mgn("mun"), mgn("ar")
+assert len(mun_geo) == len(MUN_NAME)
+
+# One color per zone, no greys (grey is the background). Sixty-four colors cannot all be
+# told apart, so the labels carry identity; the colors only have to separate neighbours:
+# each zone, most-connected first, takes the free color farthest from its neighbours'.
+palette = [c for cmap in ("tab20", "tab20b", "tab20c", "Set1", "Dark2")
+           for c in plt.get_cmap(cmap).colors if np.ptp(to_rgb(c)) > 0.02]
+assert len(palette) >= n_zones
+touching = {z: set(poly_geo.index[poly_geo.geometry.buffer(50).intersects(g)]) - {z}
+            for z, g in poly_geo.geometry.items()}
+zone_color, free = {}, list(range(len(palette)))
+for z in sorted(poly_geo.index, key=lambda z: (-len(touching[z]), z)):
+    held = [np.array(to_rgb(zone_color[n])) for n in touching[z] if n in zone_color]
+    pick = max(free, key=lambda i: min((np.linalg.norm(np.array(to_rgb(palette[i])) - h) for h in held), default=1.0))
+    zone_color[z] = palette[pick]
+    free.remove(pick)
+
+is_point = placed.geom_type.isin(["Point", "MultiPoint"])
+areas, dots = placed[~is_point], placed[is_point]
+halo = [pe.withStroke(linewidth=2.5, foreground="white")]
+fig, ax = plt.subplots(figsize=(10, 10))
+rural_geo.plot(ax=ax, color="#ededed", edgecolor="white", linewidth=0.3)
+shapes[shapes.unit == "ageb"].plot(ax=ax, color="#d6d6d6", edgecolor="white", linewidth=0.3)
+areas.plot(ax=ax, color=areas.zone.map(zone_color), edgecolor="white", linewidth=0.15)
+dots.plot(ax=ax, color=dots.zone.map(zone_color), markersize=7, edgecolor="#333333", linewidth=0.3, zorder=3)
+HATCHES = {"survey over polygon": ("////", "#111111"), "majority": ("\\\\\\", "#666666")}
+for rule, (hatch, ink) in HATCHES.items():
+    shapes[shapes.rule == rule].plot(ax=ax, facecolor="none", edgecolor=ink, hatch=hatch, linewidth=0)
+poly_geo.boundary.plot(ax=ax, color="#333333", linewidth=0.6)
+mun_geo.boundary.plot(ax=ax, color="black", linewidth=1.6)
+
+
+def label(z, point):
+    ax.annotate(z, (point.x, point.y), ha="center", va="center", fontsize=6.5, color="#111",
+                bbox=dict(boxstyle="round,pad=0.12", fc="white", ec="none", alpha=0.75))
+
+
+zone_geo = areas.dissolve("zone").geometry
+for z, g in poly_geo.geometry.items():
+    label(z, g.representative_point())
+    # units of the zone lying away from its polygon (over 1 km² in one piece) get a label too
+    away = zone_geo[z].difference(g.buffer(200))
+    pieces = [q for q in getattr(away, "geoms", [away]) if q.area > 1e6]
+    if pieces:
+        label(z, max(pieces, key=lambda q: q.area).representative_point())
+# municipality names go on their land outside the zones where there is room (not Guadalajara)
+footprint = zone_geo.union_all().union(poly_geo.union_all()).buffer(500)
+for _, m in mun_geo.iterrows():
+    free_land = max(getattr(g := m.geometry.difference(footprint), "geoms", [g]), key=lambda q: q.area)
+    p = (free_land if free_land.area > 5e6 else m.geometry).representative_point()
+    ax.annotate(MUN_NAME[int(m.CVE_MUN)], (p.x, p.y), ha="center", va="center", fontsize=9.5,
+                fontweight="bold", path_effects=halo)
+ax.legend(handles=[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
+                   for r, text in (("survey over polygon", "sampled: the survey's zone, against the polygons"),
+                                   ("majority", "unsampled, straddles: whole to its majority polygon"))],
+          loc="lower left", frameon=False, fontsize=8)
+x0, y0, x1, y1 = poly_geo.total_bounds
+ax.set_xlim(x0 - 3000, x1 + 3000)
+ax.set_ylim(y0 - 3000, y1 + 3000)
+ax.set_axis_off()
+plt.tight_layout()
+plt.show()
+```
 
 The universe is **not** the nine whole municipalities. The survey covers the urban
 continuum, so peripheral municipalities are only partly inside (@tbl-coverage). Every census
@@ -462,7 +603,7 @@ tgt_tbl = pd.DataFrame(tgt_rows)
 
 hh20 = c[f"HouseholdConstraintsByZone_{BASE}.csv"].set_index("Zone")
 pp20 = c[f"PersonConstraintsByZone_{BASE}.csv"].set_index("Zone")
-assert round(hh20.Dwellings.sum()) == 1_454_608 and round(pp20.Persons.sum()) == 4_653_609
+assert round(hh20.Dwellings.sum()) == 1_459_133 and round(pp20.Persons.sum()) == 4_668_290
 assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
 sex_gap = float(pp20.Persons.sum() - (pp20.Male + pp20.Female).sum())
 sex_gap_max = float((pp20.Persons - pp20.Male - pp20.Female).abs().max())
@@ -521,10 +662,14 @@ svy = pd.DataFrame({"persons": pp.groupby(pp.HouseholdID.map(hh_zone)).size(),
                     "occupants": hh.groupby(hh.HouseholdTAZ // 1000).Occupants.sum()})
 svy_ratio = svy.persons / svy.occupants
 r_raw, r_cor = by_zone.raw / by_zone.occupants, by_zone.corrected / by_zone.occupants
-assert r_cor.between(0.8, 1.0).all() and r_raw.min() < 0.55 and r_raw.max() > 1.4
-z43 = by_zone.loc[43]
-z56_noage = 1 - u.loc[u.Zone == 56, ["P_0A2", "P_3A5", *six_plus]].astype(float).sum().sum() / by_zone.pobtot.loc[56]
-noage_all = 1 - u[["P_0A2", "P_3A5", *six_plus]].astype(float).sum().sum() / u.POBTOT.sum()
+assert r_cor.between(0.8, 1.0).all() and r_raw.min() < 0.4
+zone_code = {i: z for z, i in reweight.records.zone_index().items()}
+aged = u[["P_0A2", "P_3A5", *six_plus]].sum(axis=1).groupby(u.Zone).sum()
+noage = 1 - aged / by_zone.pobtot
+col_share = by_zone.pobcol / by_zone.pobtot
+z_col, z_noage = col_share.idxmax(), noage.idxmax()
+noage_all = 1 - aged.sum() / by_zone.pobtot.sum()
+assert col_share.max() < 0.02 and noage.max() > 0.5
 
 vph = ["VPH_AUTOM", "VPH_MOTO", "VPH_BICI", "VPH_INTER"]
 vph_names = dict(zip(vph, ["HasCar", "HasMoto", "HasBike", "HasInternet"]))
@@ -554,15 +699,16 @@ both are uneven across zones, so both are corrected per census row before summin
 
 - **Collective quarters.** `POBCOL` counts residents of prisons, barracks, care homes and
   dormitories, whom the survey never samples. They are `{python} fmt(by_zone.pobcol.sum())`
-  people in the universe, but `{python} fmt(z43.pobcol)` of zone 43's
-  `{python} fmt(z43.pobtot)`, a third.
+  people in the universe, at most `{python} pct(col_share.max())` of a zone
+  (`{python} zone_code[z_col]`); the largest block of them, Puente Grande's prisons, lies
+  outside the universe (@sec-universe).
 - **Residents without an age.** INEGI counts the occupants of dwellings without occupant
   information in `POBTOT` and usually imputes their characteristics, but not everywhere:
   `{python} pct(noage_all)` of the universe's residents have no age, and so no band, sex or
-  activity, but `{python} pct(z56_noage, 0)` of zone 56's.
+  activity, but `{python} pct(noage.max(), 0)` of zone `{python} zone_code[z_noage]`'s.
 
 The factor restricts a row to private dwellings and spreads the unknown ages over the known
-bands in proportion. The census publishes neither group's composition, so both are assumed
+bands in proportion; here the second part does nearly all the work. The census publishes neither group's composition, so both are assumed
 to share the row's known mix. @fig-row-scale shows the effect: uncorrected, persons 6+ run
 from `{python} pct(r_raw.min(), 0)` to `{python} pct(r_raw.max(), 0)` of occupants across
 zones; corrected, from `{python} pct(r_cor.min(), 0)` to `{python} pct(r_cor.max(), 0)`, the
@@ -570,18 +716,17 @@ band where the survey's own ratio (interviewed persons over listed occupants) si
 
 ```{python}
 #| label: fig-row-scale
-#| fig-cap: "Persons aged 6+ as a share of private-dwelling occupants, by zone, sorted by the uncorrected census ratio. The correction brings the census into the survey's band; the two outliers are zone 43 (collective quarters) at the right and zone 56 (unstated ages) at the left."
-#| fig-alt: "Dot plot over the 64 survey zones. Grey dots, the uncorrected census ratio of persons 6+ to occupants, rise from about 0.5 at the left to about 1.4 at the right, with most zones near 0.9. Blue dots, the corrected census ratio, lie in a flat band between 0.85 and 0.95 for every zone. Orange dots, the survey's own ratio, lie in the same band, slightly above the blue."
+#| fig-cap: "Persons aged 6+ as a share of private-dwelling occupants, by zone, sorted by the uncorrected census ratio. The correction brings the census into the survey's band; the outlier at the left is the zone where most residents have no stated age."
+#| fig-alt: "Dot plot over the 64 survey zones. Grey dots, the uncorrected census ratio of persons 6+ to occupants, rise from about 0.35 at the far left, one zone well below the rest, through about 0.8 to about 0.95, with most zones near 0.9. Blue dots, the corrected census ratio, lie in a flat band between 0.85 and 0.95 for every zone. Orange dots, the survey's own ratio, lie in the same band, slightly above the blue."
 order = r_raw.sort_values().index
 x = np.arange(len(order))
 fig, ax = plt.subplots(figsize=(9, 3.6))
 ax.scatter(x, r_raw.loc[order], s=18, color=GREY, label="census, uncorrected", zorder=2)
 ax.scatter(x, r_cor.loc[order], s=18, color=BLUE, label="census, corrected", zorder=3)
 ax.scatter(x, svy_ratio.reindex(order), s=18, color=ORANGE, label="survey", zorder=3, marker="D")
-for z in (56, 43):
-    i = list(order).index(z)
-    ax.annotate(f"zone {z}", (i, r_raw.loc[z]), textcoords="offset points",
-                xytext=(8 if z == 56 else -8, 0), ha="left" if z == 56 else "right", va="center", fontsize=9)
+i = list(order).index(z_noage)
+ax.annotate(f"zone {zone_code[z_noage]}", (i, r_raw.loc[z_noage]), textcoords="offset points",
+            xytext=(8, 0), ha="left", va="center", fontsize=9)
 ax.set_xticks([])
 ax.set_xlabel("survey zones, sorted by the uncorrected ratio")
 ax.set_ylabel("persons 6+ / occupants")
@@ -620,7 +765,7 @@ show(vph_tbl)
 cyc = reweight.constraints("persons")["Cyclist"]
 cyc_whole = sum(cyc["constant"].values())
 mun20 = c[f"PersonConstraintsByMunicipality_{BASE}.csv"].set_index("Municipality")
-assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_453
+assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_402
 cyc_tbl = pd.DataFrame({
     "municipality": [MUN_NAME[m] for m in mun20.index],
     "whole municipality": [fmt(cyc["constant"][m]) for m in mun20.index],
@@ -770,7 +915,8 @@ reports a problem. All three report none for the set described here.
   each constraint names existing attributes and exactly one of `census` / `constant`,
   constants have integer geography ids and a provenance, growth sources and band groups
   exist, and no target has two growth sources.
-- **`reconcile()`** compares census and IMEPLAN populations zone by zone (@sec-universe).
+- **`check_assignment()`** requires every sampled AGEB to be in the zone the survey coded
+  and every sampled rural AGEB to hold a locality assigned there (@sec-universe).
 - **`check(out_dir)`** reads the written files back the way the tool's loaders do, and
   imports nothing else from the package: every key an integer, ids unique, every person and
   trip joined to its household, every household TAZ in `ZoneSystem.csv`, no empty cell, the
@@ -863,6 +1009,14 @@ plt.show()
   asked for; treat it as optional and watch `HasCar` in the constraint report.
 - **No income target.** The census has no income variable, and most households did not
   report theirs.
+- **Zones the survey found larger than the census.** In `63F` the survey interviewed
+  `{python} fmt((viv.centralidad.astype(str) == "63F").sum())` dwellings against
+  `{python} fmt(hh20.Dwellings.loc[reweight.records.zone_index()["63F"]])` census dwellings in
+  its units, a third of them; its design weights put it at
+  ×`{python} f"{d20.loc[(d20.target_column == 'Dwellings') & (d20.Zone == reweight.records.zone_index()['63F']), 'ratio'].iat[0]:.1f}"`
+  its dwelling target. Housing built after March 2020, or dwellings in localities outside
+  the polygon, would both do it; the assignment cannot tell which, and the tool will pull
+  those households' weights down hard.
 - **2023 is a municipal scaling.** CONAPO ratios, the motorcycle fleet and ENDUTIH's
   state-level internet share are applied uniformly within each municipality. The internet
   growth moves the target past the survey (×`{python} f"{r23['HasInternet']:.2f}"`); whether

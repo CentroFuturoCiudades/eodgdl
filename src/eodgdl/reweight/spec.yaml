@@ -49,8 +49,8 @@ meta:
   survey: IMEPLAN Encuesta Origen-Destino 2023, via eodgdl.load_eod (chains cleaned)
   census: >-
     INEGI Censo de Población y Vivienda 2020 through mxcensus.load_census(state=14), the
-    AGEB and locality frames; IMEPLAN's AGEB table (RELACION_AGEBS-ZONA_con_datos_censales)
-    is the crosswalk from those to the survey zones, rows with EOD2023 != 'NA'
+    AGEB and locality frames; eodgdl.reweight.zoning is the crosswalk from those to the
+    survey zones (the centralidad polygons and the survey's own coding, not IMEPLAN's table)
   tool: TMG.SurveyReweight (github.com/TravelModellingGroup/TMG.SurveyReweight)
 
 # ===========================================================================
@@ -63,8 +63,10 @@ zones:
   zone: 1-based position of the centralidad code in the survey's ordered categorical (71 levels)
   municipality: INEGI CVE_MUN (eodgdl.load_zm_muns)
   region: 1 for every TAZ (the whole study area)
-  census_zone_column: EOD2023
-  census_municipality_column: CVE_MUN
+  # The census side of a zone is the urban AGEBs and rural localities that
+  # eodgdl.reweight.zoning.assign_units places in it: a sampled AGEB takes the zone the
+  # survey coded there, an unsampled one goes whole to the polygon holding most of its
+  # population, a rural locality to the polygon containing it (ZoneAssignment.csv).
 
 # ===========================================================================
 attributes:
@@ -334,7 +336,7 @@ constraints:
       census: TVIVPARHAB
       conapo: total
       note: >-
-        Total private inhabited dwellings (1,454,608 in the universe). TVIVHAB adds the
+        Total private inhabited dwellings (1,463,580 in the universe). TVIVHAB adds the
         collective ones. Two subsets matter below: VIVPARH_CV, the dwellings whose
         characteristics were captured -- the base of the VPH_* counts, which INEGI
         defines as including the dwellings without occupant information and excluding
@@ -579,9 +581,9 @@ constraints:
         p. 16). tests/test_reweight.py recomputes the nine values.
       note: >-
         The microdata has no AGEB, so these count whole municipalities, and the survey
-        covers only part of the peripheral ones (Juanacatlán a third). universe_share
+        covers only part of the peripheral ones (Zapotlanejo three quarters). universe_share
         scales each by the universe's share of the municipality's population, which
-        brings the total to 100,453. The 2023 file then scales them like any other
+        brings the total to 100,853. The 2023 file then scales them like any other
         5+ person count.
 
   trips:

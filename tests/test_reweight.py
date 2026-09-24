@@ -58,6 +58,13 @@ def files():
     return reweight.build(eodgdl.load_eod(DATA_DIR), data_dir=DATA_DIR)
 
 
+@pytest.fixture(scope="module")
+def viv():
+    if not HAS_DATA:
+        pytest.skip("in-repo data/ not present")
+    return eodgdl.load_eod(DATA_DIR).viv
+
+
 def test_records_have_the_survey_s_rows_and_integer_keys(files):
     hh, pp, tt = files.households, files.persons, files.trips
     assert len(hh) == 17_901
@@ -111,9 +118,9 @@ def test_targets_are_consistent_and_pinned(files):
     pp20 = c["PersonConstraintsByZone_2020.csv"]
     mun20 = c["PersonConstraintsByMunicipality_2020.csv"]
     assert len(hh20) == len(pp20) == 64 and len(mun20) == 9
-    assert round(hh20.Dwellings.sum()) == 1_454_608
-    assert round(pp20.Persons.sum()) == 4_653_609  # 4,635,931 with a stated age as published
-    assert round(mun20.Cyclist.sum()) == 100_453  # 101,907 whole-municipality cyclists, universe share applied
+    assert round(hh20.Dwellings.sum()) == 1_459_133
+    assert round(pp20.Persons.sum()) == 4_668_290
+    assert round(mun20.Cyclist.sum()) == 100_402  # 101,907 whole-municipality cyclists, universe share applied
     assert c["TripConstraintsByRegion.csv"].BusBoardings.iloc[0] == 1_851_750
     ages = ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]
     assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
@@ -138,18 +145,59 @@ def test_targets_are_consistent_and_pinned(files):
     assert (pp23.Age60p / pp20.Age60p).mean() > (pp23.Age6_11 / pp20.Age6_11).mean()
 
 
-def test_census_reconciles_with_imeplan_s_crosswalk(files):
-    # mxcensus is the source of every value; IMEPLAN's table only says which rows make a zone.
-    universe = reweight.census_universe(DATA_DIR)
-    assert reweight.reconcile(universe, data_dir=DATA_DIR) == []
-    assert len(universe) == 2154 and set(universe.Zone) == set(files.zone_system.Zone) - set()  # 64 zones
+def test_census_universe_is_the_assigned_units(files, viv):
+    # mxcensus is the source of every value; zoning.assign_units says which rows make a zone.
+    universe = reweight.census_universe(viv)
+    assert len(universe) == 2281 and set(universe.Zone) == set(files.zone_system.Zone)  # 64 zones
     assert universe.Zone.nunique() == 64
+
+
+def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv):
+    a = files.zone_assignment.set_index("CVEGEO")
+    assert a.index.is_unique and reweight.check_assignment(a, viv) == []
+    assert a.groupby(["unit", "rule"], observed=True).size().to_dict() == {
+        ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26, ("ageb", "polygon"): 920,
+        ("ageb", "majority"): 80, ("ageb", "outside"): 20,
+        ("locality", "polygon"): 258, ("locality", "override"): 4, ("locality", "outside"): 521,
+    }
+    # The survey never splits an AGEB, and every sampled one carries the zone it coded.
+    code, zone = viv.ageb.astype(str), viv.centralidad.astype(str)
+    assert (zone.groupby(code).nunique() == 1).all()
+    urban = code.str.len() == 13
+    assert (code[urban].map(a.zone) == zone[urban]).all()
+    # An unsampled AGEB goes whole to the polygon holding most of its population.
+    unsampled = a[(a.unit == "ageb") & a.survey_zone.isna() & a.polygon_zone.notna()]
+    assert (unsampled.zone == unsampled.polygon_zone).all() and (unsampled.polygon_share > 0.4).all()
+    # La Aurora (Juanacatlán) lies outside every polygon; the survey coded its dwellings 49F.
+    aurora = a.loc[["1405100020181", "1405100020196", "1405100020209", "1405100020213"]]
+    assert (aurora.zone == "49F").all() and aurora.polygon_zone.isna().all()
+    # A sampled rural AGEB that no polygon places is resolved by _RURAL_LOCALITY_ZONES.
+    overrides = a[a.rule == "override"]
+    assert set(overrides.rural_ageb) == {"140970123", "140973679"}
+
+
+def test_check_assignment_catches_a_misplaced_rural_ageb(files, viv):
+    a = files.zone_assignment.set_index("CVEGEO")
+    a.loc[a.rule == "override", "zone"] = None
+    problems = reweight.check_assignment(a, viv)
+    assert len(problems) == 2 and all("rural AGEB" in p for p in problems)
+
+
+def test_redrawn_zones_follow_the_assignment(files):
+    a = files.zone_assignment.set_index("CVEGEO")
+    shapes = reweight.zone_shapes(a)
+    assert len(shapes) == 64 and shapes.is_valid.all()
+    units = reweight.unit_shapes()
+    for code in ["1405100020196", "1412000010640"]:  # La Aurora; 93 % in 21A's polygon, surveyed 24B
+        inside = shapes.geometry.intersection(units.geometry[code]).area / units.geometry[code].area
+        assert inside.idxmax() == a.zone[code] and inside.max() > 0.99
 
 
 def test_coverage_says_which_municipalities_are_whole(files):
     share = files.coverage.POBTOT_share
     assert share.loc[39] > 0.999 and share.loc[98] > 0.998  # Guadalajara, Tlaquepaque
-    assert 0.3 < share.loc[51] < 0.35  # Juanacatlán: a third
+    assert 0.84 < share.loc[51] < 0.87  # Juanacatlán, with La Aurora in 49F
+    assert 0.70 < share.loc[124] < 0.73  # Zapotlanejo: the least covered
     assert (share <= 1.0001).all()
 
 
@@ -157,8 +205,8 @@ def test_written_set_checks_clean_and_check_catches_breakage(files, tmp_path):
     reweight.write(files, tmp_path)
     assert reweight.check(tmp_path) == []
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
-        ["ZoneSystem.csv", "ZoneLabels.csv", "HouseholdRecords.csv", "PersonRecords.csv",
-         "TripRecords.csv", "Constraints", "README.md"])
+        ["ZoneSystem.csv", "ZoneLabels.csv", "ZoneAssignment.csv", "HouseholdRecords.csv",
+         "PersonRecords.csv", "TripRecords.csv", "Constraints", "README.md"])
 
     # A geography missing from a constraint file: the tool would target 0 there.
     path = tmp_path / "Constraints" / "PersonConstraintsByMunicipality_2020.csv"
@@ -192,25 +240,26 @@ def test_census_cyclists_reproduce_the_spec_constants():
     assert counts.to_dict() == {int(k): float(v) for k, v in entry["constant"].items()}
 
 
-def test_row_corrections_make_zones_consistent(files):
-    # Zone 43 houses a third of its population in collective quarters; zone 56 has 43 % of
-    # its residents without a stated age (dwellings without occupant information whose
-    # details INEGI did not impute). Uncorrected, persons 6+ ran from 24 % to 141 % of
-    # private-dwelling occupants across zones; the survey has ~93 % everywhere.
+def test_row_corrections_make_zones_consistent(files, viv):
+    # Zone 56 (63F) has 59 % of its residents without a stated age (dwellings without
+    # occupant information whose details INEGI did not impute), zone 43 (45) almost no
+    # collective quarters since Puente Grande's prisons fell outside the universe.
+    # Uncorrected, persons 6+ run from 35 % to 96 % of private-dwelling occupants across
+    # zones; the survey has ~93 % everywhere.
     pp = files.constraints["PersonConstraintsByZone_2020.csv"].set_index("Zone")
     hh = files.constraints["HouseholdConstraintsByZone_2020.csv"].set_index("Zone")
     assert (pp.Persons / hh.Occupants).between(0.8, 1.0).all()
     assert (hh[["HasCar", "HasMoto", "HasBike", "HasInternet"]].max(axis=1) <= hh.Dwellings).all()
-    universe = reweight.census_universe(DATA_DIR)
+    universe = reweight.census_universe(viv)
     ps, ds = reweight.person_scale(universe), reweight.dwelling_scale(universe)
     assert ps.notna().all() and (ps >= 0).all() and ds.notna().all() and (ds >= 1).all()
     six_plus = ["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]
     z43 = universe.Zone == 43
     raw = universe.loc[z43, six_plus].astype(float).sum(axis=1)
     assert pp.Persons.loc[43] == pytest.approx((raw * ps[z43]).sum())
-    assert pp.Persons.loc[43] / raw.sum() == pytest.approx(0.632, abs=0.005)
+    assert pp.Persons.loc[43] / raw.sum() == pytest.approx(1.0, abs=0.005)
     z56 = universe.Zone == 56
-    assert pp.Persons.loc[56] / universe.loc[z56, six_plus].astype(float).sum().sum() > 1.6
+    assert pp.Persons.loc[56] / universe.loc[z56, six_plus].astype(float).sum().sum() > 2.4
 
 
 def test_motorcycles_grow_with_the_registered_fleet(files):
