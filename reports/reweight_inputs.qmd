@@ -378,8 +378,8 @@ assert rule_counts.units.to_dict() == {
     ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
     ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
     ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
-    ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
-    ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
+    ("locality", "survey"): 113, ("locality", "trip ends"): 25, ("locality", "polygon"): 136,
+    ("locality", "outside"): 509, ("rural ageb", "trip ends"): 2,
 }
 RULE_TEXT = {
     "survey": "sampled (for a locality: its rural AGEB); the zone the survey coded for the dwellings",
@@ -573,7 +573,7 @@ if SHOW_HATCH:
         rules = AGAINST if rule == "survey over polygon" else ["majority", "nearest polygon"]
         shapes[shapes.rule.isin(rules)].plot(ax=ax, facecolor="none", edgecolor=ink, hatch=hatch, linewidth=0)
 POLYGON_RED = "#ff1a1a"
-poly_geo.boundary.plot(ax=ax, color=POLYGON_RED, linewidth=1.1, zorder=5)
+poly_geo.boundary.plot(ax=ax, color=POLYGON_RED, linewidth=0.6, zorder=5)   # thin: rural AGEB edges show under it
 # Municipal borders and names; off by default (scripts/zone_system_map.py --municipalities).
 SHOW_MUNICIPALITIES = globals().get("SHOW_MUNICIPALITIES", False)
 if SHOW_MUNICIPALITIES:
@@ -619,7 +619,7 @@ for _, m in (mun_geo.iterrows() if SHOW_MUNICIPALITIES else ()):
                 fontweight="bold", path_effects=halo)
 swatch = palette[0]
 ax.legend(handles=[
-    Line2D([], [], color=POLYGON_RED, linewidth=1.5, label="centralidad polygon"),
+    Line2D([], [], color=POLYGON_RED, linewidth=0.9, label="centralidad polygon"),
     *([Line2D([], [], color="black", linewidth=1.6, label="municipal border")] if SHOW_MUNICIPALITIES else []),
     Patch(facecolor=swatch, edgecolor="white", label="urban AGEB, sampled"),
     Patch(facecolor=pale(swatch), edgecolor="white", label="urban AGEB, not sampled"),
