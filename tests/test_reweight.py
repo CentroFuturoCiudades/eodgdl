@@ -143,6 +143,18 @@ def test_targets_are_consistent_and_pinned(files):
     shrinking = [zone_of[z] for z, only in guadalajara_only.items() if only]
     assert (hh23.set_index("Zone").Dwellings.loc[shrinking] < hh20.set_index("Zone").Dwellings.loc[shrinking]).all()
     assert (pp23.Age60p / pp20.Age60p).mean() > (pp23.Age6_11 / pp20.Age6_11).mean()
+    # 2023 keeps the census's partitions: bands sum to Persons, each sex's bands to its
+    # total, the two activity targets to the 12+ bands; the sexes fall short of the
+    # totals only by INEGI's suppressed cells, as in 2020.
+    assert round(pp23.Persons.sum()) == 4_840_939
+    for y, p in ((2020, pp20), (2023, pp23)):
+        assert (p[ages].sum(axis=1) - p.Persons).abs().max() < 1e-6, y
+        for sex in ("Male", "Female"):
+            assert (p[[f"{sex}_{b}" for b in ages]].sum(axis=1) - p[sex]).abs().max() < 1e-6, (y, sex)
+        assert (p.Employed + p.NotEmployed - p[ages[1:]].sum(axis=1)).abs().max() < 1e-6, y
+        assert (p.Male + p.Female - p.Persons).abs().max() < 50, y
+        for b in ages:
+            assert (p[f"Male_{b}"] + p[f"Female_{b}"] - p[b]).abs().max() < 50, (y, b)
 
 
 def test_census_universe_is_the_assigned_units(files, viv):
@@ -256,7 +268,7 @@ def test_row_corrections_make_zones_consistent(files, viv):
     six_plus = ["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]
     z43 = universe.Zone == 43
     raw = universe.loc[z43, six_plus].astype(float).sum(axis=1)
-    persons = reweight.row_targets(universe, reweight.constraints("persons")["Persons"])
+    persons = reweight.row_targets(universe, "persons", "Persons")
     assert pp.Persons.loc[43] == pytest.approx(persons[z43].sum())
     # where every row states ages the target is just the corrected census
     aged = raw > 0
@@ -322,7 +334,7 @@ def test_row_targets_add_up_to_the_zone_targets(files, viv):
     for year, scaling in ((2020, None), (2023, conapo)):
         for name, table, file in (("Persons", "persons", "PersonConstraintsByZone"),
                                   ("Dwellings", "households", "HouseholdConstraintsByZone")):
-            rows = reweight.row_targets(universe, reweight.constraints(table)[name], scaling)
+            rows = reweight.row_targets(universe, table, name, scaling)
             zone = files.constraints[f"{file}_{year}.csv"].set_index("Zone")[name]
             assert (rows.groupby(universe.Zone).sum() - zone).abs().max() < 1e-6
 
@@ -338,22 +350,25 @@ def test_sampled_agebs_carry_their_zone_taz_and_targets(files, viv):
     # An urban AGEB's values are its own census row, the zone targets' own arithmetic.
     universe = reweight.census_universe(viv)
     urban = s[s.unit == "urban"].set_index("AGEB")
-    persons = reweight.row_targets(universe, reweight.constraints("persons")["Persons"])
-    assert (urban.Persons_2020 - persons.reindex(urban.index)).abs().max() < 1e-6
+    persons = reweight.row_targets(universe, "persons", "Persons")
+    assert (urban.Persons6plus_2020 - persons.reindex(urban.index)).abs().max() < 1e-6
     assert (urban.Dwellings_2020 == universe.TVIVPARHAB.reindex(urban.index).astype(float)).all()
     # No AGEB exceeds its zone's target; a rural one sums its localities in the coded zone.
     zone = files.constraints["HouseholdConstraintsByZone_2023.csv"].set_index("Zone").Dwellings
     per_zone = s.groupby("Zone").Dwellings_2023.sum()
     assert (per_zone <= zone.reindex(per_zone.index) + 1e-6).all()
     assert (s[s.unit == "rural"].localities > 0).all()
-    assert (s.Persons_2020 > 0).all()
+    assert (s.Persons6plus_2020 > 0).all()
+    assert list(s.columns[-6:]) == [f"{t}_{y}" for y in (2020, 2023) for t in ("Persons6plus", "Occupants", "Dwellings")]
+    occupants = universe.OCUPVIVPAR.reindex(urban.index).astype(float).fillna(0)
+    assert (urban.Occupants_2020 == occupants).all() and (urban.Occupants_2020 >= urban.Persons6plus_2020 - 1e-6).mean() > 0.95
 
 
 def test_rows_without_a_stated_age_take_their_zone_s_mix(viv):
     # AGEB 1412000013876 (centralidad 16) has 179 residents and no stated age: its person
     # counts are its zone's per private-dwelling resident, not 0.
     universe = reweight.census_universe(viv)
-    persons = reweight.row_targets(universe, reweight.constraints("persons")["Persons"])
+    persons = reweight.row_targets(universe, "persons", "Persons")
     row = universe.loc["1412000013876"]
     assert float(row[["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]].astype(float).sum()) == 0
     zone = universe.Zone == row.Zone
@@ -363,6 +378,6 @@ def test_rows_without_a_stated_age_take_their_zone_s_mix(viv):
     assert persons.loc["1412000013876"] == pytest.approx(mix * private.loc["1412000013876"])
     # every age band, sex and activity count of the row comes from the same mix, so the
     # bands still partition the persons and the sexes add up to them
-    bands = [reweight.row_targets(universe, reweight.constraints("persons")[b]).loc["1412000013876"]
+    bands = [reweight.row_targets(universe, "persons", b).loc["1412000013876"]
              for b in ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]]
     assert sum(bands) == pytest.approx(persons.loc["1412000013876"])

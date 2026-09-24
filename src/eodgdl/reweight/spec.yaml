@@ -44,6 +44,16 @@
 #                multiplies the value on top of population growth, capped per census row
 #                at its dwellings (see `rates`)
 #   sex          F | M when the target is one sex (also selects the CONAPO sex)
+#   sum_of       instead of a growth source: in a grown year the target is the sum of these
+#                targets' grown values, so a total keeps adding up to its parts (the 2020
+#                value is the census expression, which equals that sum)
+#   grow_with    with conapo: in a grown year the target grows, row by row, at the combined
+#                rate of these targets (its sex x age crosses), falling back to its own
+#                CONAPO rate where they are empty; so a band stays the sum of its crosses,
+#                up to the cells INEGI suppressed
+#   grow_within  {group, total} with conapo: after growing, the group's targets are
+#                rescaled row by row so they sum to the grown total's targets, as they do
+#                in the census
 #   note, status as above
 
 meta:
@@ -402,61 +412,69 @@ constraints:
       geography: zone
       row_scale: persons
       census: P_6A11 + P_12A14 + P_15A17 + P_18YMAS
-      conapo: age5p
+      sum_of: [Age6_11, Age12_14, Age15_17, Age18_24, Age25_59, Age60p]
       note: >-
         Population aged 6+ with a stated age, so that the six age bands partition it
-        exactly. Like every zone person target it is scaled row by row (row_scale:
-        persons, targets.person_scale) to the residents of private dwellings, with the
-        residents whose age INEGI did not record spread over the stated bands: the census
-        counts residents of collective quarters (POBCOL -- 11,396 of zone 43's 33,344, a
-        third), whom a household survey never samples, and in a few AGEBs leaves the
-        occupants of dwellings without occupant information without an age (43 % of zone
-        56's residents, 0.9 % of the universe). INEGI
-        suppresses some sex-split cells but not the totals, so Male + Female falls short
-        of this by up to 41 persons in a zone (469 over the study area); the sex x
-        age crosses fall short of their bands the same way.
+        exactly; in 2023 it is the sum of the grown bands, so they still do. Like every
+        zone person target it is scaled row by row (row_scale: persons,
+        targets.person_scale) to the residents of private dwellings, with the residents
+        whose age INEGI did not record spread over the stated bands: the census counts
+        residents of collective quarters (POBCOL, at most 1.4 % of a zone), whom a
+        household survey never samples, and in a few AGEBs leaves the occupants of
+        dwellings without occupant information without an age (59 % of 63F's residents,
+        0.9 % of the universe); a row with residents but no stated age at all takes its
+        zone's mix (targets.fill_unaged). INEGI suppresses some sex-split cells but not
+        the totals, so Male + Female falls short of this by up to 41 persons in a zone
+        (466 over the study area); the sex x age crosses fall short of their bands the
+        same way.
     Male:
       geography: zone
       row_scale: persons
       census: P_6A11_M + P_12A14_M + P_15A17_M + P_18YMAS_M
-      conapo: age5p
+      sum_of: [Male_Age6_11, Male_Age12_14, Male_Age15_17, Male_Age18_24, Male_Age25_59, Male_Age60p]
       sex: M
     Female:
       geography: zone
       row_scale: persons
       census: P_6A11_F + P_12A14_F + P_15A17_F + P_18YMAS_F
-      conapo: age5p
+      sum_of: [Female_Age6_11, Female_Age12_14, Female_Age15_17, Female_Age18_24, Female_Age25_59, Female_Age60p]
       sex: F
 
     Age6_11:
       geography: zone
       row_scale: persons
       census: P_6A11
+      grow_with: [Male_Age6_11, Female_Age6_11]
       conapo: age6_11
     Age12_14:
       geography: zone
       row_scale: persons
       census: P_12A14
+      grow_with: [Male_Age12_14, Female_Age12_14]
       conapo: age12_14
     Age15_17:
       geography: zone
       row_scale: persons
       census: P_15A17
+      grow_with: [Male_Age15_17, Female_Age15_17]
       conapo: age15_17
     Age18_24:
       geography: zone
       row_scale: persons
       census: P_18A24
+      grow_with: [Male_Age18_24, Female_Age18_24]
       conapo: age18_24
     Age25_59:
       geography: zone
       row_scale: persons
       census: P_18YMAS - P_18A24 - P_60YMAS
+      grow_with: [Male_Age25_59, Female_Age25_59]
       conapo: age25_59
     Age60p:
       geography: zone
       row_scale: persons
       census: P_60YMAS
+      grow_with: [Male_Age60p, Female_Age60p]
       conapo: age60p
 
     Male_Age6_11:
@@ -549,12 +567,17 @@ constraints:
       row_scale: persons
       census: POCUPADA
       conapo: age10p
-      note: Occupied population, 12+.
+      grow_within: {group: [Employed, NotEmployed], total: [Age12_14, Age15_17, Age18_24, Age25_59, Age60p]}
+      note: >-
+        Occupied population, 12+. In 2023 it grows with the 10+ population, then it and
+        NotEmployed are rescaled together to the grown 12+ bands, which they partition in
+        the census: the employment rate of 2020 is kept.
     NotEmployed:
       geography: zone
       row_scale: persons
       census: P_12A14 + P_15A17 + P_18YMAS - POCUPADA
       conapo: age10p
+      grow_within: {group: [Employed, NotEmployed], total: [Age12_14, Age15_17, Age18_24, Age25_59, Age60p]}
       note: >-
         The 12+ population with a stated age less the occupied: the unemployed, the
         inactive and those whose activity is not specified. PE_INAC alone is not used as a

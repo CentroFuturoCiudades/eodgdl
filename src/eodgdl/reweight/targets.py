@@ -346,20 +346,49 @@ def _census_rows(universe, entry, conapo=None, vmrc=None, rates=None):
     return sub
 
 
-def row_targets(universe, entry, conapo=None, vmrc=None, rates=None):
-    """One census target's value per census row: what the zone target sums.
-
-    The expression is evaluated on each row with suppressed cells as 0, which is how the
-    zone sum skips them, so these add up to the zone target wherever a zone has any value.
-    """
+def _grown_rows(universe, entry, conapo=None, vmrc=None, rates=None):
+    """A census target's value per row, corrected and grown by its own source only."""
     return _census_rows(universe, entry, conapo, vmrc, rates).fillna(0.0).eval(entry["census"])
 
 
-def _target(universe, entry, geography, conapo, shares, vmrc=None, rates=None):
+def row_targets(universe, table, name, conapo=None, vmrc=None, rates=None):
+    """One census target's value per census row: what its zone target sums.
+
+    The expression is evaluated on each row with suppressed cells as 0, which is how the
+    zone sum skips them, so these add up to the zone target wherever a zone has any value.
+    In a grown set (``conapo`` given) a ``sum_of`` target is the sum of its parts' rows, a
+    ``grow_with`` target grows at its parts' combined rate on each row (its own CONAPO rate
+    where they are empty), and a ``grow_within`` group is rescaled, row by row, to sum to
+    its grown total -- so the targets that partition the same people in the census still
+    partition them in 2023.
+    """
+    entry = constraints(table)[name]
+    if conapo is not None and "sum_of" in entry:
+        return sum(row_targets(universe, table, part, conapo, vmrc, rates) for part in entry["sum_of"])
+    if conapo is not None and "grow_with" in entry:
+        parts = [constraints(table)[p] for p in entry["grow_with"]]
+        before = sum(_grown_rows(universe, p) for p in parts)
+        after = sum(_grown_rows(universe, p, conapo, vmrc, rates) for p in parts)
+        rate = (after / before.where(before > 0)).fillna(_row_ratio(universe, entry, conapo))
+        return _grown_rows(universe, entry) * rate
+    rows = _grown_rows(universe, entry, conapo, vmrc, rates)
+    if conapo is not None and "grow_within" in entry:
+        g = entry["grow_within"]
+        group = sum(_grown_rows(universe, constraints(table)[p], conapo, vmrc, rates) for p in g["group"])
+        total = sum(row_targets(universe, table, t, conapo, vmrc, rates) for t in g["total"])
+        rows = rows * (total / group.where(group > 0)).fillna(1.0)
+    return rows
+
+
+def _target(universe, table, name, geography, conapo, shares, vmrc=None, rates=None):
     """The target of one constraint per geography id (a Series indexed by the id)."""
+    entry = constraints(table)[name]
     column = GEOGRAPHY_COLUMN[geography]
     ids = sorted(universe[column].unique())
     scale = conapo is not None and "conapo" in entry
+    if conapo is not None and any(k in entry for k in ("sum_of", "grow_with", "grow_within")):
+        rows = row_targets(universe, table, name, conapo, vmrc, rates)
+        return rows.groupby(universe[column]).sum().reindex(ids)
     if "census" in entry:
         sub = _census_rows(universe, entry, conapo, vmrc, rates)
         agg = sub.groupby(universe[column]).sum(min_count=1)
@@ -380,25 +409,31 @@ def _target(universe, entry, geography, conapo, shares, vmrc=None, rates=None):
     return values.reindex(ids)
 
 
-SAMPLED_TARGETS = {"Persons": "persons", "Dwellings": "households"}
+# target -> (table, column label in SampledAGEBs.csv)
+SAMPLED_TARGETS = {
+    "Persons": ("persons", "Persons6plus"),      # residents aged 6+, the tool's person target
+    "Occupants": ("households", "Occupants"),    # residents of private dwellings, all ages
+    "Dwellings": ("households", "Dwellings"),    # private inhabited dwellings
+}
 
 
 def sampled_agebs(universe, viv, assignment, conapo, vmrc=None, rates=None):
     """The census targets of every AGEB the survey sampled, per year, as the tool sees them.
 
     One row per AGEB code in ``viv.ageb``: its municipality, the centralidad the survey coded
-    there, the TAZ (zone x municipality), its sampled dwellings, and ``Persons`` and
-    ``Dwellings`` for the base and target years -- the same census expression, row
-    correction and growth as the zone targets, so an AGEB's values are its share of its
-    zone's. A sampled urban AGEB is its own census row. A sampled rural AGEB is not a census
+    there, the TAZ (zone x municipality), its sampled dwellings, and three targets for the
+    base and target years: ``Persons6plus`` (residents aged 6+, the tool's ``Persons``),
+    ``Occupants`` (residents of private dwellings, all ages) and ``Dwellings`` -- the same
+    census expression, row correction and growth as the zone targets, so an AGEB's values
+    are its share of its zone's. A sampled urban AGEB is its own census row. A sampled rural AGEB is not a census
     unit: its values sum the localities inside it that the assignment places in the zone the
     survey coded (``localities``), which is what its dwellings were drawn from.
     """
     spec = load_spec()["conapo"]
     years = {spec["base_year"]: None, spec["target_year"]: conapo}
     per_row = {
-        f"{name}_{year}": row_targets(universe, constraints(table)[name], scaling, vmrc, rates)
-        for year, scaling in years.items() for name, table in SAMPLED_TARGETS.items()
+        f"{label}_{year}": row_targets(universe, table, name, scaling, vmrc, rates)
+        for year, scaling in years.items() for name, (table, label) in SAMPLED_TARGETS.items()
     }
     rows = pd.DataFrame(per_row)
     code = viv.ageb.astype(str)
@@ -446,7 +481,7 @@ def build_constraints(universe, year=None, conapo=None, shares=None, vmrc=None, 
             geography = entry["geography"]
             suffix = year if (year is not None and is_scaled(table, geography)) else None
             name = constraint_file(table, geography, suffix)
-            series = _target(universe, entry, geography, scaling, shares, vmrc, rates)
+            series = _target(universe, table, target, geography, scaling, shares, vmrc, rates)
             if name not in files:
                 files[name] = pd.DataFrame({GEOGRAPHY_COLUMN[geography]: series.index.astype(int)})
             files[name][target] = series.to_numpy()

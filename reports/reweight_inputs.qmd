@@ -645,6 +645,12 @@ def target_total(file, col):
 
 
 def growth_label(entry):
+    if "sum_of" in entry:
+        return "sum of its grown bands"
+    if "grow_with" in entry:
+        return f"its sex crosses' rate (CONAPO {entry['conapo']} where empty)"
+    if "grow_within" in entry:
+        return f"CONAPO {entry['conapo']}, rescaled to the grown 12+ bands"
     if "vmrc" in entry:
         return f"VMRC {entry['vmrc']}"
     if "rate" in entry:
@@ -720,7 +726,7 @@ u = universe.astype({c_: float for c_ in six_plus + ["POBTOT", "POBCOL", "OCUPVI
 raw6 = u[six_plus].sum(axis=1)
 by_zone = pd.DataFrame({
     "raw": raw6.groupby(u.Zone).sum(),
-    "corrected": reweight.row_targets(universe, reweight.constraints("persons")["Persons"]).groupby(u.Zone).sum(),
+    "corrected": reweight.row_targets(universe, "persons", "Persons").groupby(u.Zone).sum(),
     "occupants": u.OCUPVIVPAR.groupby(u.Zone).sum(),
     "pobtot": u.POBTOT.groupby(u.Zone).sum(),
     "pobcol": u.POBCOL.fillna(0).groupby(u.Zone).sum(),
@@ -912,8 +918,12 @@ census target names exactly one (`check_spec` enforces it):
 
 - **Population (`conapo:`).** CONAPO's municipal projections by sex and five-year band
   (`data/CONAPO_proyecciones_AMG.csv`). Each target names a band group, pooled over the
-  five-year bands it overlaps (6–11 uses 5–14, 18–24 uses 15–24, persons 6+ use 5+,
-  economic activity 10+, dwellings all ages), and its sex when it has one. Over the study
+  five-year bands it overlaps (6–11 uses 5–14, 18–24 uses 15–24, economic activity 10+,
+  dwellings all ages), and its sex when it has one. Targets that partition the same people
+  keep partitioning them: an age band grows, row by row, at the combined rate of its two sex
+  crosses (`grow_with`); persons and each sex are the sums of their grown bands (`sum_of`);
+  and employed and not employed are rescaled together to the grown 12+ bands
+  (`grow_within`), keeping 2020's employment rate. Over the study
   area, population grows `{python} pct(area["total"] - 1)`, the 60+ `{python} pct(area["age60p"] - 1)`,
   while the 6–11 shrink `{python} pct(1 - area["age6_11"])`; Guadalajara as a whole shrinks.
 - **Registered motorcycles (`vmrc:`), for `HasMoto` only.** INEGI's registered-vehicle series

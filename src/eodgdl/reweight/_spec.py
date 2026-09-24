@@ -58,7 +58,7 @@ def constraint_file(table, geography, year=None):
     return f"{name}_{year}.csv" if year is not None else f"{name}.csv"
 
 
-GROWTH_KEYS = ("conapo", "vmrc")
+GROWTH_KEYS = ("conapo", "vmrc", "sum_of")
 
 
 def is_scaled(table, geography):
@@ -148,6 +148,38 @@ def check_spec():
                     problems.append(f"{table}.{target}: vmrc column {entry['vmrc']!r} is not listed")
             if entry.get("sex") not in (None, "F", "M"):
                 problems.append(f"{table}.{target}: sex must be F or M")
+            peers = spec["constraints"][table]
+            if "sum_of" in entry:
+                if "conapo" in entry or "vmrc" in entry or "census" not in entry:
+                    problems.append(f"{table}.{target}: sum_of grows a census target from its parts, with no growth of its own")
+                for part in entry["sum_of"]:
+                    p = peers.get(part)
+                    if p is None or p.get("geography") != entry.get("geography") or "census" not in p:
+                        problems.append(f"{table}.{target}: sum_of names {part!r}, not a census target of its geography")
+                    elif "sum_of" in p or "grow_within" in p:
+                        problems.append(f"{table}.{target}: sum_of part {part!r} is itself derived")
+            if "grow_with" in entry:
+                if "conapo" not in entry or "census" not in entry:
+                    problems.append(f"{table}.{target}: grow_with regrows a census target grown by conapo")
+                for part in entry["grow_with"]:
+                    p = peers.get(part)
+                    if p is None or p.get("geography") != entry.get("geography") or "census" not in p:
+                        problems.append(f"{table}.{target}: grow_with names {part!r}, not a census target of its geography")
+                    elif any(k in p for k in ("sum_of", "grow_within", "grow_with")):
+                        problems.append(f"{table}.{target}: grow_with part {part!r} is itself derived")
+            if "grow_within" in entry:
+                g = entry["grow_within"]
+                if "conapo" not in entry or "census" not in entry:
+                    problems.append(f"{table}.{target}: grow_within rescales a census target grown by conapo")
+                if target not in g.get("group", []):
+                    problems.append(f"{table}.{target}: grow_within's group must include the target itself")
+                for part in [*g.get("group", []), *g.get("total", [])]:
+                    p = peers.get(part)
+                    if p is None or p.get("geography") != entry.get("geography") or "census" not in p:
+                        problems.append(f"{table}.{target}: grow_within names {part!r}, not a census target of its geography")
+                for part in g.get("group", []):
+                    if part in peers and peers[part].get("grow_within") != g:
+                        problems.append(f"{table}.{target}: {part!r} must carry the same grow_within")
     for name in spec["attributes"]:
         if name not in TABLES:
             problems.append(f"attributes.{name}: not one of {TABLES}")
