@@ -483,7 +483,7 @@ GeoPackage beside the map. @fig-zone-map shows the assignment against the origin
 
 ```{python}
 #| label: fig-zone-map
-#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point); and the solid dark outlines are the rural AGEBs, light grey where the survey sampled them (the geometry it codes a rural dwelling by); bright red outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Where the assignment departs from the polygons can be hatched, and municipal borders and names drawn (scripts/zone_system_map.py --hatch, --municipalities). Every urban AGEB is in a zone; rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
+#| fig-cap: "The zone system as the targets see it. Each color is one survey zone (centralidad), painted on the urban AGEBs and rural localities `zoning.assign_units` places in it: full color for the AGEBs the survey sampled, a pale tint for the rest; rural localities carry a dark edge (a dot where INEGI records only a point); and the solid dark outlines are the rural AGEBs, light grey where the survey sampled them (the geometry it codes a rural dwelling by); bright red outlines are the centralidad polygons the survey was fielded on, each labelled with its code, and a zone's units away from its polygon carry a second label. Where the assignment departs from the polygons can be hatched, municipal borders and names drawn, and each rural AGEB the survey records drawn whole in its zone's color with its part outside the zone's polygon hatched (scripts/zone_system_map.py --hatch, --municipalities, --municipality-names, --rural-agebs). Every urban AGEB is in a zone; rural land is light grey inside the rural AGEBs the survey sampled and white in the rest. Geometry: INEGI's Marco Geoestadístico 2020."
 #| fig-alt: "Map of the nine municipalities of the Guadalajara metropolitan area on a white background, with every rural AGEB outlined in solid black and the sampled ones filled light grey. The survey's 64 zones are colored patches of AGEBs, each labelled with its code, strong where the survey sampled the AGEB and pale where it did not; rural localities are pale patches with dark edges or dark-edged dots, and light grey fills the 27 sampled rural AGEBs: a contiguous mass over Guadalajara, Zapopan, Tlaquepaque and Tonalá and scattered patches and dots over the peripheral towns. Bright red outlines, the centralidad polygons, enclose the colored patches almost everywhere; colored AGEBs cross an outline where the assignment follows the survey. La Aurora in Juanacatlán is a patch labelled 49F outside every outline; 49F's own polygon lies in Zapotlanejo."
 import colorsys
 
@@ -548,6 +548,18 @@ def pale(c, keep=0.35):
     return tuple(keep * x + (1 - keep) for x in to_rgb(c))
 
 
+# A rural AGEB the survey records can be drawn whole, in its zone's color, instead of its
+# localities, with the part outside its zone's polygon hatched; off by default
+# (scripts/zone_system_map.py --rural-agebs).
+RURAL_AS_AGEB = globals().get("RURAL_AS_AGEB", False)
+rural_zone = (assign_map[assign_map.unit.isin(["locality", "rural ageb"]) & assign_map.rule.isin(["survey", "trip ends"])]
+              .groupby("rural_ageb").zone.first())
+if RURAL_AS_AGEB:
+    placed = placed[~placed.index.isin(assign_map.index[assign_map.rural_ageb.isin(rural_zone.index)])]
+    whole = rural_geo.set_index("CVEGEO").geometry.reindex(rural_zone.index)
+    whole = gpd.GeoDataFrame({"zone": rural_zone, "sampled": rural_zone.index.isin(set(rural_codes))},
+                             geometry=whole.difference(shapes[shapes.unit == "ageb"].geometry.union_all()), crs=poly_geo.crs)
+    away_part = whole.geometry.difference(whole.zone.map(poly_geo.geometry))
 is_point = placed.geom_type.isin(["Point", "MultiPoint"])
 areas, dots = placed[~is_point], placed[is_point]
 sampled = areas[areas.survey_zone.notna()]
@@ -557,7 +569,13 @@ assert len(sampled) == int((viv.ageb.astype(str).str.len() == 13).groupby(viv.ag
 halo = [pe.withStroke(linewidth=2.5, foreground="white")]
 fig, ax = plt.subplots(figsize=(10, 10))
 rural_geo.plot(ax=ax, color="white", edgecolor="none")   # not sampled: empty
-sampled_rural.plot(ax=ax, color="#ededed", edgecolor="none")
+if RURAL_AS_AGEB:
+    whole.plot(ax=ax, color=[zone_color[z] if s else pale(zone_color[z]) for z, s in zip(whole.zone, whole.sampled)],
+               edgecolor="none")
+    gpd.GeoSeries(away_part, crs=poly_geo.crs).plot(ax=ax, facecolor="none", edgecolor="#333333", hatch="////",
+                                                     linewidth=0, zorder=2)
+else:
+    sampled_rural.plot(ax=ax, color="#ededed", edgecolor="none")
 assert shapes[shapes.unit == "ageb"].zone.notna().all()   # every urban AGEB is in a zone
 unsampled.plot(ax=ax, color=unsampled.zone.map(zone_color).map(pale), edgecolor="white", linewidth=0.15)
 sampled.plot(ax=ax, color=sampled.zone.map(zone_color), edgecolor="white", linewidth=0.15)
@@ -577,6 +595,7 @@ POLYGON_RED = "#ff1a1a"
 poly_geo.boundary.plot(ax=ax, color=POLYGON_RED, linewidth=0.6, zorder=5)   # thin: rural AGEB edges show under it
 # Municipal borders and names; off by default (scripts/zone_system_map.py --municipalities).
 SHOW_MUNICIPALITIES = globals().get("SHOW_MUNICIPALITIES", False)
+SHOW_MUN_NAMES = globals().get("SHOW_MUN_NAMES", False)
 if SHOW_MUNICIPALITIES:
     mun_geo.boundary.plot(ax=ax, color="black", linewidth=1.6, zorder=6)
 
@@ -594,6 +613,8 @@ zone_geo = areas.dissolve("zone").geometry
 for z, g in poly_geo.geometry.items():
     label(z, g.representative_point())
     # units of the zone lying away from its polygon (over 1 km² in one piece) get a label too
+    if z not in zone_geo.index:
+        continue
     away = zone_geo[z].difference(g.buffer(200))
     pieces = [q for q in getattr(away, "geoms", [away]) if q.area > 1e6]
     if pieces:
@@ -613,7 +634,7 @@ def clear_spot(geom, step=250):
     return inner.iloc[int(gap.argmax())]
 
 
-for _, m in (mun_geo.iterrows() if SHOW_MUNICIPALITIES else ()):
+for _, m in (mun_geo.iterrows() if SHOW_MUN_NAMES else ()):
     free_land = max(getattr(g := m.geometry.difference(footprint), "geoms", [g]), key=lambda q: q.area)
     p = free_land.representative_point() if free_land.area > 5e6 else clear_spot(m.geometry)
     ax.annotate(MUN_NAME[int(m.CVE_MUN)], (p.x, p.y), ha="center", va="center", fontsize=9.5,
@@ -627,8 +648,13 @@ ax.legend(handles=[
     Patch(facecolor=pale(swatch), edgecolor="#1a1a1a", linewidth=0.45, label="rural locality (INEGI outline)"),
     Line2D([], [], marker="o", linestyle="none", markerfacecolor=pale(swatch), markeredgecolor="#1a1a1a",
            markersize=5, label="rural locality (INEGI point)"),
-    Patch(facecolor="#ededed", edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB, sampled (outer edge)"),
-    Patch(facecolor="white", edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB, not sampled (outer edge)"),
+    *([Patch(facecolor=swatch, edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB the survey sampled, whole in its zone"),
+       Patch(facecolor=pale(swatch), edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB with trip ends only, whole in its zone"),
+       Patch(facecolor="white", edgecolor="#333333", hatch="////", label="its part outside its zone's polygon"),
+       Patch(facecolor="white", edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB the survey does not record")]
+      if RURAL_AS_AGEB else
+      [Patch(facecolor="#ededed", edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB, sampled (outer edge)"),
+       Patch(facecolor="white", edgecolor="#1a1a1a", linewidth=1.1, label="rural AGEB, not sampled (outer edge)")]),
     *[Patch(facecolor="white", edgecolor=HATCHES[r][1], hatch=HATCHES[r][0], label=text)
       for r, text in (("survey over polygon", "the zone the survey coded (dwellings or trip ends), against the polygons"),
                       ("majority", "no survey record: whole to the polygon holding most of it, or the nearest"))

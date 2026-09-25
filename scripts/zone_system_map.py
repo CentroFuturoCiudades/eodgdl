@@ -10,7 +10,8 @@ feature per zone, with the assignment beside it as a CSV. Needs the ``reweight``
 (mxcensus fetches INEGI's census and Marco Geoestadístico layers once).
 
     uv run --extra reweight python scripts/zone_system_map.py [--out output/zone_system_map.pdf] [--dpi 300]
-        [--shapes output/centralidades_redrawn.gpkg] [--hatch] [--municipalities]
+        [--shapes output/centralidades_redrawn.gpkg] [--hatch] [--municipalities] [--municipality-names]
+        [--rural-agebs]
 """
 from __future__ import annotations
 
@@ -29,7 +30,10 @@ def main():
     parser.add_argument("--dpi", type=int, default=300, help="resolution of a PNG")
     parser.add_argument("--shapes", default="output/centralidades_redrawn.gpkg")
     parser.add_argument("--hatch", action="store_true", help="hatch the AGEBs placed against the polygons")
-    parser.add_argument("--municipalities", action="store_true", help="draw municipal borders and names")
+    parser.add_argument("--municipalities", action="store_true", help="draw municipal borders")
+    parser.add_argument("--municipality-names", action="store_true", help="write the municipality names")
+    parser.add_argument("--rural-agebs", action="store_true",
+                        help="draw each rural AGEB the survey records whole in its zone's color, its part outside the zone hatched")
     args = parser.parse_args()
 
     os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
@@ -53,7 +57,8 @@ def main():
         f'plt.savefig({str(out)!r}, dpi={args.dpi}, bbox_inches="tight", facecolor="white")')
     # the names the chunk takes from the report's setup, build and zones chunks
     names = {"plt": plt, "np": np, "MUN_NAME": load_zm_muns(), "n_zones": 64, "viv": viv, "trips": trips, "reweight": reweight,
-             "SHOW_HATCH": args.hatch, "SHOW_MUNICIPALITIES": args.municipalities}
+             "SHOW_HATCH": args.hatch, "SHOW_MUNICIPALITIES": args.municipalities,
+             "SHOW_MUN_NAMES": args.municipality_names, "RURAL_AS_AGEB": args.rural_agebs}
     exec(compile(code, f"{REPORT.name}:fig-zone-map", "exec"), names)
     print(f"wrote {out}")
 
