@@ -85,7 +85,7 @@ def show(df):
 #| include: false
 
 raw = load_eod(clean_chains=False)     # the survey as shipped
-clean = load_eod()                     # what load_eod() returns by default
+clean = load_eod(revise_chains=False)  # the chain rules; load_eod() then applies the hand revisions (eodgdl/revisions/)
 
 
 def with_helpers(trips, viv, legs):
@@ -1581,7 +1581,8 @@ weakens any segmentation the scheduler needs.
 from eodgdl import load_eod, clean_trip_chains, tasha
 
 raw = load_eod(clean_chains=False)          # the survey as shipped
-clean = load_eod()                           # the five rules applied; trips gains ajustes and problemas
+clean = load_eod(revise_chains=False)        # the five rules applied; trips gains ajustes and problemas
+revised = load_eod()                         # ...then the hand revisions under eodgdl/revisions/
 trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)   # the rules on their own
 od = tasha.build(clean)                      # the model tables, without the marked non-trips
 tasha.validate_all(*od)                      # [] — the contract holds

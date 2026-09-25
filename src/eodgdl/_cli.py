@@ -44,7 +44,8 @@ def main() -> None:
     exp_p.add_argument("--out", default="chain_review.csv", help="Where to write (default: chain_review.csv)")
     exp_p.add_argument(
         "--codes", default=None,
-        help="Comma-separated problemas codes; a person is exported if a row carries one (default: any code)",
+        help="Comma-separated problemas codes, or a group: breaking (the chain is inconsistent, "
+        "fix by hand) or tolerated; a person is exported if a row carries one (default: any code)",
     )
     exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
     ver_p = review_sub.add_parser("verify", help="Read an edited sheet: recover the edits, apply them, recompute problemas")
@@ -169,7 +170,7 @@ def _review(args) -> int:
     import pandas as pd
 
     from eodgdl import load_eod, review
-    from eodgdl.chains import ISSUE_CODES, PERSON, has_code
+    from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, has_code
 
     shipped = load_eod(args.data, clean_chains=False)
     cleaned = load_eod(args.data)
@@ -187,6 +188,7 @@ def _review(args) -> int:
             "rows": {c: int(has_code(selected.problemas, c).sum()) for c in ISSUE_CODES},
             "persons": {c: int(has_code(selected.problemas, c).groupby(level=PERSON).any().sum()) for c in ISSUE_CODES},
         }).rename_axis("problemas")
+        counts["group"] = ["breaking" if c in BREAKING_ISSUES else "tolerated" for c in counts.index]
         print(counts.loc[counts["rows"] > 0].to_string())
         return 0
 

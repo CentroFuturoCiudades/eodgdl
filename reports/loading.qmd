@@ -95,7 +95,7 @@ indexed = {t: renamed[t].set_index(INDEX[t]) for t in FILES}
 cleaned = {t: clean_eod(indexed[t], t) for t in FILES}
 typed = {t: SCHEMA[t](cleaned[t]).sort_index() for t in FILES}
 shipped = load_eod(clean_chains=False)       # everything in this note, no chain rules
-clean = load_eod()                           # what load_eod() returns by default
+clean = load_eod(revise_chains=False)        # plus the chain rules, without the hand revisions
 viv_s, hab_s, trips_s, legs_s = shipped
 
 assert {t: df.shape for t, df in raw.items()} == {"viviendas": (17_901, 18), "habitantes": (58_061, 59), "viajes": (154_662, 58)}
@@ -991,7 +991,7 @@ from eodgdl import load_eod, rename_imeplan, clean_eod, imeplan_rename_map
 from eodgdl.schemas import viv_schema, hab_schema, trips_schema
 
 shipped = load_eod(clean_chains=False)   # every step in this note, no chain rules
-clean = load_eod()                        # ...plus the five chain rules
+clean = load_eod(revise_chains=False)     # ...plus the five chain rules (load_eod() adds the hand revisions)
 
 # the steps one at a time, for the trips file
 import pandas as pd

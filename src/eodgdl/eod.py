@@ -237,8 +237,43 @@ def _resolve_csv(eod_path: Path | None, filename: str) -> Path:
     return resolve(filename)
 
 
+def _split_legs(trips: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The trips without their ``traslado{1..5}_*`` columns, and those columns unpivoted into legs."""
+    legs = (
+        pd.concat(
+            [
+                trips[
+                    [
+                        f"traslado{n_leg}_medio",
+                        f"traslado{n_leg}_min",
+                        f"traslado{n_leg}_pago",
+                    ]
+                ]
+                .rename(
+                    columns={
+                        f"traslado{n_leg}_medio": "traslado_medio",
+                        f"traslado{n_leg}_min": "traslado_min",
+                        f"traslado{n_leg}_pago": "traslado_pago",
+                    }
+                )
+                .dropna(subset="traslado_medio")
+                .assign(folio_traslado=n_leg)
+                for n_leg in range(1, 6)
+            ]
+        )
+        .set_index("folio_traslado", append=True)
+        .sort_index()
+    )
+    trips = trips.drop(columns=[c for c in trips.columns if c.startswith("traslado")])
+    return trips, legs
+
+
 def load_eod(
-    eod_path: Path | None = None, *, verbose: bool = False, clean_chains: bool = True
+    eod_path: Path | None = None,
+    *,
+    verbose: bool = False,
+    clean_chains: bool = True,
+    revise_chains: bool = True,
 ) -> EODTables:
     """Load and clean the EOD survey at four linked levels.
 
@@ -263,6 +298,14 @@ def load_eod(
     model build leaves out). Pass ``clean_chains=False`` for the survey as
     shipped, on which the expansion factors reconcile to the published
     totals; the cleaned table is short the 38 duplicates' weight.
+
+    After the rules come the hand revisions (``revise_chains``, on by
+    default, ignored without ``clean_chains``): the passes frozen under
+    ``eodgdl/revisions/``, each the edits of one review sheet
+    (:mod:`eodgdl.review`), are applied in order. An edited field carries a
+    ``<field>:revision`` code in ``ajustes``, a row dropped by hand is gone
+    (its legs too, ``viajes_contados`` kept in step), and ``problemas`` is
+    recomputed. Pass ``revise_chains=False`` for the rules' output alone.
 
     Either way ``hab`` carries a boolean ``diario_repetido`` column
     (:func:`flag_repeated_diaries`): True for the persons whose whole diary is
@@ -337,6 +380,7 @@ def load_eod(
     df_hab[DIARY_FLAG] = flag_repeated_diaries(df_trips, df_hab, df_viv)
     log.info("repeated diaries flagged: %d persons", int(df_hab[DIARY_FLAG].sum()))
 
+    shipped_trips, shipped_hab = df_trips, df_hab.copy()
     if clean_chains:
         shipped = df_trips.index
         df_trips, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab)
@@ -349,35 +393,17 @@ def load_eod(
         if verbose:
             print("Trip chains cleaned:", counts)
 
-    # Create legs df
-    df_legs = (
-        pd.concat(
-            [
-                df_trips[
-                    [
-                        f"traslado{n_leg}_medio",
-                        f"traslado{n_leg}_min",
-                        f"traslado{n_leg}_pago",
-                    ]
-                ]
-                .rename(
-                    columns={
-                        f"traslado{n_leg}_medio": "traslado_medio",
-                        f"traslado{n_leg}_min": "traslado_min",
-                        f"traslado{n_leg}_pago": "traslado_pago",
-                    }
-                )
-                .dropna(subset="traslado_medio")
-                .assign(folio_traslado=n_leg)
-                for n_leg in range(1, 6)
-            ]
-        )
-        .set_index("folio_traslado", append=True)
-        .sort_index()
-    )
-    df_trips = df_trips.drop(
-        columns=[c for c in df_trips.columns if c.startswith("traslado")]
-    )
+    df_trips, df_legs = _split_legs(df_trips)
+    tables = EODTables(df_viv, df_hab, df_trips, df_legs)
+
+    if clean_chains and revise_chains:
+        # imported here: eodgdl.review builds on EODTables
+        from eodgdl.review import apply_revisions
+
+        shipped_tables = EODTables(df_viv, shipped_hab, *_split_legs(shipped_trips))
+        tables = apply_revisions(tables, shipped_tables)
+        df_hab, df_trips, df_legs = tables.hab, tables.trips, tables.legs
+        log.info("hand revisions applied: %d trips", len(df_trips))
 
     if verbose:
         print(
@@ -388,4 +414,4 @@ def load_eod(
             df_legs.shape,
         )
 
-    return EODTables(df_viv, df_hab, df_trips, df_legs)
+    return tables

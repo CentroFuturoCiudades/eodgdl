@@ -79,7 +79,7 @@ def test_records_have_the_survey_s_rows_and_integer_keys(files):
     hh, pp, tt = files.households, files.persons, files.trips
     assert len(hh) == 17_901
     assert len(pp) == 58_061
-    assert len(tt) == 154_662 - 38 - 491  # load_eod drops the duplicates, build leaves out the non-trips
+    assert len(tt) == 154_662 - 38 - 512 - 51  # load_eod drops the duplicates and the rows dropped by hand, build leaves out the non-trips
     for df, key in ((hh, "HouseholdID"), (pp, "PersonID")):
         assert pd.api.types.is_integer_dtype(df[key]) and not df[key].duplicated().any()
     assert tt.PersonID.isin(pp.PersonID).all()
@@ -116,7 +116,7 @@ def test_dummies_partition(files):
     assert (pp[ages].sum(axis=1) == pp.Persons).all()
     assert (pp.Employed + pp.Unemployed + pp.Inactive <= pp.Persons).all()
     assert ((pp.Employed + pp.NotEmployed) == (pp.Age6_11 == 0).astype(float)).all()  # partitions the 12+
-    assert pp.Cyclist.sum() == 561
+    assert pp.Cyclist.sum() == 560   # 561 before the hand revisions made one bicycle commute a return from home
     boardings = ["BusBoardings", "RailBoardings", "BRTBoardings", "SitrenBoardings", "OtherTransitBoardings"]
     assert (tt[boardings].sum(axis=1) == tt.TransitBoardings).all()
     assert tt.BicycleTrip.isin([0, 1]).all()
@@ -179,8 +179,8 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, tr
     assert a.index.is_unique and reweight.check_assignment(a, viv, trips) == []
     assert a.groupby(["unit", "rule"], observed=True).size().to_dict() == {
         ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
-        ("ageb", "trip ends"): 616, ("ageb", "trip ends over polygon"): 15,
-        ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
+        ("ageb", "trip ends"): 613, ("ageb", "trip ends over polygon"): 15,
+        ("ageb", "polygon"): 359, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
         ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
         ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
     }
@@ -232,11 +232,12 @@ def test_every_trip_end_is_in_its_ageb_s_zone(files, viv, trips):
     # localities). Only the access points, the airport and six road gateways, are not.
     a = files.zone_assignment.set_index("CVEGEO")
     agreement = reweight.trip_end_agreement(a, viv, trips)
-    assert agreement.to_dict() == {"in zone": 305_172, "access point": 3_094}
+    assert agreement.to_dict() == {"in zone": 305_045, "access point": 3_077}
     # the survey's zone is a function of the AGEB code: one zone per code, across its
     # dwellings, origins and destinations
     codes = reweight.survey_codes(viv, trips)
-    assert (codes.groupby("code").zone.nunique() == 1).all() and codes.code.nunique() == 1694
+    # (1,691 codes: 1,694 on the rules' output; three AGEBs' only trip ends were origins moved home by hand)
+    assert (codes.groupby("code").zone.nunique() == 1).all() and codes.code.nunique() == 1_691
     # the chain rule that moves an origin home moves its zone too
     moved = trips[trips.ajustes.astype(str).str.contains("origen:casa")].reset_index()
     home = viv.centralidad.astype(str)

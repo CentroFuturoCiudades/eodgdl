@@ -47,6 +47,7 @@ import pandas as pd
 from eodgdl.chains import (
     FIX_FLAG,
     ISSUE_CODES,
+    ISSUE_GROUPS,
     ISSUE_FLAG,
     PERSON,
     _home_zone,
@@ -64,6 +65,7 @@ HOME = "home"
 DROPPED = "dropped"
 STATUS = "status"
 NOTE = "note"
+NOTE_ALIASES = ("comments", "comment", "notes")  # read as note: the first pass came back with "comments"
 
 
 class Field(NamedTuple):
@@ -104,7 +106,7 @@ COLUMNS = (
 )
 
 _ARROW_SPLIT = re.compile(r"\s*(?:→|->)\s*")
-_HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
+_HHMM = re.compile(r"^(\d{1,2}):(\d{2})(?::00)?$")  # spreadsheets add :00 seconds
 
 
 # ------------------------------------------------------------------ building
@@ -156,8 +158,12 @@ def code_columns(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def pending_persons(rows: pd.DataFrame, codes=None) -> pd.MultiIndex:
-    """The persons with a row carrying any of ``codes`` (default: every ``problemas`` code), in chain order."""
+    """The persons with a row carrying any of ``codes`` (default: every ``problemas`` code), in chain order.
+
+    A group name from ``ISSUE_GROUPS`` (``breaking``, ``tolerated``) stands for its codes.
+    """
     codes = list(ISSUE_CODES) if codes is None else list(codes)
+    codes = [c for code in codes for c in ISSUE_GROUPS.get(code, (code,))]
     unknown = set(codes) - set(ISSUE_CODES)
     if unknown:
         raise ValueError(f"not a problemas code: {sorted(unknown)}")
@@ -265,8 +271,14 @@ def write_sheet(sheet: pd.DataFrame, path) -> Path:
 
 
 def read_sheet(path) -> pd.DataFrame:
-    """Read a review sheet back: every column as text, blanks as empty strings, the keys as integers."""
+    """Read a review sheet back: every column as text, blanks as empty strings, the keys as integers.
+
+    A sheet with no ``note`` column but one of ``NOTE_ALIASES`` has that column read as the note.
+    """
     sheet = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    alias = next((c for c in NOTE_ALIASES if c in sheet.columns), None)
+    if NOTE not in sheet.columns and alias:
+        sheet = sheet.rename(columns={alias: NOTE})
     missing = [c for c in KEYS if c not in sheet.columns]
     if missing:
         raise ValueError(f"{path}: not a review sheet, missing column(s) {missing}")
@@ -389,15 +401,19 @@ def apply_edits(
     ``restored`` on a row ``load_eod`` dropped brings the shipped row back
     (so ``shipped`` is required then) under ``fila:revision``. An edit whose
     value already holds is skipped, so a sheet exported before a rule change
-    still applies cleanly. ``problemas`` is then recomputed over the whole
+    still applies cleanly, and so is a field of a row the edits also drop, so
+    applying the same edits twice changes nothing the second time; a label is matched regardless of case and a time
+    may carry ``:00`` seconds, as spreadsheets write them. A code the row
+    already carries is not repeated in ``ajustes``, so a second pass over a
+    field reads as the first. ``problemas`` is then recomputed over the whole
     table (:func:`eodgdl.chains.mark_issues`). Notes are not applied. Raises
     ``ValueError`` listing every edit that cannot be applied — an unknown
     label, zone or time, a trip the table lacks, a status other than the two
     — and applies nothing in that case.
     """
     trips = cleaned.trips.copy()
-    levels = {
-        f.column: set(trips[f.column].cat.categories)
+    levels = {  # lower-cased label -> the level, so a label's case is not held against it
+        f.column: {str(c).lower(): c for c in trips[f.column].cat.categories}
         if hasattr(trips[f.column], "cat")
         else None
         for f in FIELDS.values()
@@ -408,12 +424,17 @@ def apply_edits(
     home = cleaned.viv.ageb.astype(str)
     shipped_index = shipped.trips.index if shipped is not None else pd.Index([])
 
+    is_drop = (edits.field == STATUS) & (edits.after.astype(str).str.strip().str.lower() == DROPPED)
+    dropping = set(map(tuple, edits.loc[is_drop, KEYS].astype(int).to_numpy().tolist()))
+
     problems, plan = [], []  # plan: (key, action, column, value, code)
     for r in edits.itertuples(index=False):
         key = (int(r.household), int(r.person), int(r.trip))
         where = f"household {key[0]}, person {key[1]}, trip {key[2]}, {r.field}"
         value = str(r.after).strip()
         if r.field == NOTE:
+            continue
+        if r.field != STATUS and key in dropping:  # a field of a row the edits drop is moot
             continue
         if r.field == STATUS:
             status = value.lower()
@@ -461,10 +482,12 @@ def apply_edits(
                 continue
             current = str(trips.at[key, f.column])
         else:
-            if levels[f.column] is not None and value not in levels[f.column]:
-                problems.append(f"{where}: '{value}' is not a level of {f.column}")
-                continue
             new_value = value
+            if levels[f.column] is not None:
+                if value.lower() not in levels[f.column]:
+                    problems.append(f"{where}: '{value}' is not a level of {f.column}")
+                    continue
+                new_value = levels[f.column][value.lower()]
             current = str(trips.at[key, f.column])
         if new_value != current:  # a value that already holds is not a change
             plan.append((key, "set", f.column, new_value, f.code))
@@ -474,17 +497,26 @@ def apply_edits(
     hab, legs = cleaned.hab.copy(), cleaned.legs
     dropped = [key for key, action, *_ in plan if action == "drop"]
     restored = [key for key, action, *_ in plan if action == "restore"]
-    for key, action, column, value, code in plan:
-        if action != "set":
-            continue
-        if isinstance(column, tuple):
-            trips.loc[key, column[0]], trips.loc[key, column[1]] = value
-        else:
-            trips.loc[key, column] = value
-        if zone_of is not None and column in _ZONE_OF:
-            trips.loc[key, _ZONE_OF[column]] = zone_of[value]
-        flags = trips.at[key, FIX_FLAG]
-        trips.loc[key, FIX_FLAG] = code if not flags else flags + ";" + code
+    sets = [(key, column, value, code) for key, action, column, value, code in plan if action == "set"]
+    if sets:
+        pos = trips.index.get_indexer([key for key, *_ in sets])
+        by_column, codes = {}, {}
+        for i, (_, column, value, code) in zip(pos, sets):
+            if isinstance(column, tuple):
+                for c, v in zip(column, value):
+                    by_column.setdefault(c, {})[i] = v
+            else:
+                by_column.setdefault(column, {})[i] = value
+                if zone_of is not None and column in _ZONE_OF:
+                    by_column.setdefault(_ZONE_OF[column], {})[i] = zone_of[value]
+            codes.setdefault(i, []).append(code)
+        for column, values in by_column.items():
+            trips.iloc[list(values), trips.columns.get_loc(column)] = list(values.values())
+        flags = trips[FIX_FLAG].to_numpy(dtype=object, copy=True)
+        for i, new in codes.items():  # a code the row already carries (an earlier pass) is not repeated
+            have = [c for c in flags[i].split(";") if c] if isinstance(flags[i], str) else []
+            flags[i] = ";".join(have + [c for c in dict.fromkeys(new) if c not in have])
+        trips[FIX_FLAG] = flags
     if dropped:
         trips = trips.drop(index=dropped)
         if legs is not None:
@@ -513,6 +545,25 @@ def apply_edits(
     trips, legs = trips.sort_index(), (legs.sort_index() if legs is not None else None)
     trips[ISSUE_FLAG] = mark_issues(trips, cleaned.viv, legs)
     return EODTables(cleaned.viv, hab, trips, legs)
+
+
+def apply_revisions(
+    cleaned: EODTables, shipped: EODTables, passes=None
+) -> EODTables:
+    """The cleaned tables with the frozen hand passes applied in order (:func:`apply_edits` each).
+
+    ``passes`` is a list of ``(name, edits)``; by default the ones that ship
+    under ``eodgdl/revisions/`` (:func:`eodgdl._resources.chain_revisions`),
+    which is what ``load_eod`` applies.
+    """
+    from eodgdl._resources import chain_revisions
+
+    for name, edits in chain_revisions() if passes is None else passes:
+        try:
+            cleaned = apply_edits(cleaned, edits, shipped)
+        except ValueError as err:
+            raise ValueError(f"revision pass {name}: {err}") from None
+    return cleaned
 
 
 class Verification(NamedTuple):

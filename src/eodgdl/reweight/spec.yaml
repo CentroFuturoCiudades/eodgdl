@@ -221,7 +221,8 @@ attributes:
       modes: [Bicicleta, Mi Bici]
       motives: [Trabajar, Estudiar]
       note: >-
-        561 persons. 852 made any bicycle trip; IMEPLAN reweighted a narrower set that the
+        560 persons (561 on the rules' output, before the hand revisions). 846 made any
+        bicycle trip (852 as shipped); IMEPLAN reweighted a narrower set that the
         shipped columns cannot reproduce (reports/expansion_factors.qmd, "Which cyclists
         were reweighted"). The census target uses the same commute definition.
       status: assumed

@@ -138,6 +138,23 @@ ISSUE_CODES = {
     "motivo_guarderia": "a 'Guardería' motive, which the model maps to school; most are adults escorting a child",
 }
 NON_TRIP_ISSUES = ("regreso_en_casa",)  # rows kept in trips that are not trips
+# ISSUE_CODES in two halves, for the hand review. A breaking issue leaves the
+# chain inconsistent — a trip starts before the one it follows, a trip end sits
+# in two places, a return home never reaches home, home is named where the home
+# zone is not — and is resolved by hand before the chain is modelled. A
+# tolerated issue leaves a consistent chain: a day that starts or ends away from
+# home, a start off by minutes, an overnight trip read as such, a motive and a
+# place type that disagree while the zones agree, a return from home the model
+# build leaves out.
+BREAKING_ISSUES = (
+    "hora_invertida",
+    "hora_anterior",
+    "origen_discontinuo",
+    "regreso_sin_llegar",
+    "inicio_zona_ajena",
+)
+TOLERATED_ISSUES = tuple(c for c in ISSUE_CODES if c not in BREAKING_ISSUES)
+ISSUE_GROUPS = {"breaking": BREAKING_ISSUES, "tolerated": TOLERATED_ISSUES}
 # The five hora_* codes are mutually exclusive: a row carries at most one of them.
 
 # Nearest-neighbour imputation of the lost questionnaire block (motive,

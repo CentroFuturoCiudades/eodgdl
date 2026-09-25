@@ -262,7 +262,7 @@ def test_every_residual_defect_is_a_code():
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns():
-    viv, hab, trips, legs = load_eod(DATA_DIR)
+    viv, hab, trips, legs = load_eod(DATA_DIR, revise_chains=False)   # the rules alone
     assert (len(hab), len(trips), len(legs)) == (58_061, 154_662 - 38, 170_509 - 38)
     assert not trips.hora_inicio_h.isna().any() and not trips.motivo_viaje.isna().any()
     # every change and every defect left is on the row, in the documented vocabulary

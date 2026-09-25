@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from eodgdl import EODTables, clean_trip_chains, load_eod, review
-from eodgdl.chains import PERSON, mark_issues, non_trips
+from eodgdl._resources import chain_revisions
+from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, TOLERATED_ISSUES, has_code, mark_issues, non_trips
 from test_eod import AGEB, CAR, ELSEWHERE, SHOP, VIV, _trips
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -177,9 +178,38 @@ def test_verify_edits_says_what_the_edits_cleared_left_and_made():
     assert v.tables.trips.problemas.equals(mark_issues(v.tables.trips, VIV))
 
 
+def test_a_spreadsheet_s_habits_are_not_edits_that_fail(tmp_path):
+    shipped, cleaned = _survey(_fixture())
+    motives = sorted(set(cleaned.trips.motivo_viaje.dropna()))
+    cleaned.trips["motivo_viaje"] = cleaned.trips.motivo_viaje.astype(pd.CategoricalDtype(motives))   # levels, as load_eod's
+    # a time with :00 seconds, a label in another case, notes under "comments"
+    edits = pd.DataFrame([
+        (1, 4, 2, "start", "07:00", "12:00:00", ""),
+        (1, 5, 1, "motive", "Trabajar", "regresar a casa", ""),
+    ], columns=EDIT_COLUMNS)
+    once = review.apply_edits(cleaned, edits, shipped)
+    t = once.trips
+    assert (t.loc[(1, 4, 2), "hora_inicio_h"], t.loc[(1, 4, 2), "hora_inicio_m"]) == (12, 0)
+    assert t.loc[(1, 5, 1), "motivo_viaje"] == "Regresar a Casa"                # the level, not the text typed
+    with pytest.raises(ValueError, match="not a time"):
+        review.apply_edits(cleaned, edits.assign(after=["12:00:30", "Trabajar"]), shipped)
+    # a second pass over a field leaves its code once
+    twice = review.apply_edits(once, edits.assign(after=["12:30", "Trabajar"]), shipped)
+    assert twice.trips.loc[(1, 4, 2), "ajustes"] == "hora:revision" and twice.trips.loc[(1, 4, 2), "hora_inicio_m"] == 30
+    sheet = review.chain_sheet(review.chain_rows(cleaned, shipped), cleaned.hab).rename(columns={"note": "comments"})
+    sheet.loc[0, "comments"] = "seen"
+    back = review.read_sheet(review.write_sheet(sheet, tmp_path / "s.csv"))
+    assert "note" in back and review.sheet_edits(back).note.tolist() == ["seen"]
+    # the issue groups split the codes, and select persons by name
+    assert set(BREAKING_ISSUES) | set(TOLERATED_ISSUES) == set(ISSUE_CODES) and not set(BREAKING_ISSUES) & set(TOLERATED_ISSUES)
+    rows = review.chain_rows(cleaned, shipped)
+    assert list(review.pending_persons(rows, ["breaking"])) == [(1, 4)]          # hora_invertida
+    assert list(review.pending_persons(rows, ["tolerated"])) == [(1, 5)]         # fin_fuera_de_casa
+
+
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_the_pending_sheet_round_trips_on_the_survey(tmp_path):
-    shipped, cleaned = load_eod(DATA_DIR, clean_chains=False), load_eod(DATA_DIR)
+    shipped, cleaned = load_eod(DATA_DIR, clean_chains=False), load_eod(DATA_DIR, revise_chains=False)   # what pass 1 was exported from
     assert mark_issues(cleaned.trips, cleaned.viv, cleaned.legs).equals(cleaned.trips.problemas)
     rows = review.chain_rows(cleaned, shipped)
     assert len(rows) == 154_662 and int(rows.dropped.sum()) == 38
@@ -215,5 +245,35 @@ def test_an_edited_trip_end_takes_the_zone_coded_for_its_ageb():
     coded = t.zona_destino.astype(str)[t.destino.astype(str) == other].iloc[0]
     assert revised.zona_destino.astype(str).iloc[0] == coded
     ends = pd.concat([pd.DataFrame({"ageb": revised[p].astype(str), "zone": revised[z].astype(str)})
+                      for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])
+    assert (ends.groupby("ageb").zone.nunique() == 1).all()
+
+
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_load_eod_applies_the_frozen_hand_passes():
+    shipped = load_eod(DATA_DIR, clean_chains=False)
+    rules, revised = load_eod(DATA_DIR, revise_chains=False), load_eod(DATA_DIR)
+    t = revised.trips
+    (name, edits), = chain_revisions()
+    assert name == "chains_1.csv.gz" and len(edits) == 11_669
+    # every frozen value holds, every row dropped by hand is gone with its legs, the counts follow
+    dropped = edits[edits.field == "status"]
+    assert (dropped.after == "dropped").all() and len(dropped) == 512
+    assert not t.index.isin(pd.MultiIndex.from_frame(dropped[review.KEYS])).any()
+    assert len(t) == len(rules.trips) - 512 == 154_112 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
+    assert (revised.hab.viajes_contados == t.groupby(level=PERSON).size().reindex(revised.hab.index).fillna(0)).all()
+    assert review.sheet_edits(review.chain_sheet(review.chain_rows(revised, shipped))).empty
+    again = review.apply_revisions(revised, shipped)
+    assert again.trips.equals(t)                                            # the values already hold: a pass is idempotent
+    assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
+    assert has_code(t.ajustes, "origen:revision").sum() == 1_361 and non_trips(t).sum() == 51
+    # what is left: few breaking chains, the tolerated codes left alone
+    breaking = {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES}
+    assert breaking == {"hora_invertida": 68, "hora_anterior": 1, "origen_discontinuo": 1,
+                        "regreso_sin_llegar": 2, "inicio_zona_ajena": 0}
+    assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 71
+    # the zone follows the AGEB on every revised trip end
+    ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
                       for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])
     assert (ends.groupby("ageb").zone.nunique() == 1).all()

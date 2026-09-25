@@ -129,7 +129,7 @@ def survey_codes(viv, trips):
     ``source`` is ``dwellings`` (``viv.ageb`` / ``centralidad``) or ``trip ends`` (every
     trip's ``origen`` / ``zona_origen`` and ``destino`` / ``zona_destino``, the non-trips
     left out). The survey's zone is a function of the AGEB code, not of where a dwelling or
-    trip end lies: each of the 1,694 codes it records carries exactly one zone across its
+    trip end lies: each of the 1,691 codes it records (on ``load_eod()``'s tables) carries exactly one zone across its
     dwellings, origins and destinations -- also the 157 urban AGEBs with trip ends that
     straddle two polygons and the rural AGEBs whose localities span several zones. Access
     points (``99999...``) are left out: they are no census unit.
