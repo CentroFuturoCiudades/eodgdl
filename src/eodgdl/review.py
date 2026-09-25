@@ -351,6 +351,29 @@ def _known_zones(cleaned: EODTables, shipped: EODTables | None) -> set:
     return zones
 
 
+# The zone column that goes with each place column. The survey codes one zone
+# per AGEB (dwellings, origins and destinations agree), so an edit that moves
+# a trip end moves its zone too, as the chain rules do (_start_from_home_after_return).
+_ZONE_OF = {"origen": "zona_origen", "destino": "zona_destino"}
+
+
+def _ageb_zones(cleaned: EODTables, shipped: EODTables | None) -> dict | None:
+    """AGEB id → the zone the survey coded for it, over the dwellings and every trip end; None without zone columns."""
+    if not set(_ZONE_OF.values()) <= set(cleaned.trips.columns):
+        return None
+    pairs = []
+    if "centralidad" in cleaned.viv:
+        pairs.append((cleaned.viv.ageb, cleaned.viv.centralidad))
+    for t in [cleaned] + ([shipped] if shipped is not None else []):
+        pairs += [(t.trips[place], t.trips[zone]) for place, zone in _ZONE_OF.items()]
+    out = {}
+    for place, zone in pairs:
+        known = zone.notna().to_numpy()
+        for p, z in zip(place.astype(str)[known], zone.astype(str)[known]):
+            out.setdefault(p, z)
+    return out
+
+
 def apply_edits(
     cleaned: EODTables, edits: pd.DataFrame, shipped: EODTables | None = None
 ) -> EODTables:
@@ -358,7 +381,10 @@ def apply_edits(
 
     Every field edit is written to the trips column ``FIELDS`` names and
     leaves its ``<field>:revision`` code in ``ajustes``; a zone reads
-    ``home`` as the household's zone. A ``status`` of ``dropped`` removes the
+    ``home`` as the household's zone, and a new origin or destination takes
+    the ``zona_origen`` / ``zona_destino`` the survey coded for that AGEB, so
+    the AGEB and the zone stay one place (tables without zone columns are
+    left as they are). A ``status`` of ``dropped`` removes the
     row and its legs and lowers the person's ``viajes_contados``; one of
     ``restored`` on a row ``load_eod`` dropped brings the shipped row back
     (so ``shipped`` is required then) under ``fila:revision``. An edit whose
@@ -378,6 +404,7 @@ def apply_edits(
         if not isinstance(f.column, tuple)
     }
     zones = _known_zones(cleaned, shipped)
+    zone_of = _ageb_zones(cleaned, shipped)
     home = cleaned.viv.ageb.astype(str)
     shipped_index = shipped.trips.index if shipped is not None else pd.Index([])
 
@@ -429,6 +456,9 @@ def apply_edits(
             if new_value not in zones:
                 problems.append(f"{where}: '{value}' is not a zone the survey uses")
                 continue
+            if zone_of is not None and new_value not in zone_of:
+                problems.append(f"{where}: no zone is coded for '{value}'")
+                continue
             current = str(trips.at[key, f.column])
         else:
             if levels[f.column] is not None and value not in levels[f.column]:
@@ -451,6 +481,8 @@ def apply_edits(
             trips.loc[key, column[0]], trips.loc[key, column[1]] = value
         else:
             trips.loc[key, column] = value
+        if zone_of is not None and column in _ZONE_OF:
+            trips.loc[key, _ZONE_OF[column]] = zone_of[value]
         flags = trips.at[key, FIX_FLAG]
         trips.loc[key, FIX_FLAG] = code if not flags else flags + ";" + code
     if dropped:

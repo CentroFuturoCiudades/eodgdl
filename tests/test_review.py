@@ -195,3 +195,25 @@ def test_the_pending_sheet_round_trips_on_the_survey(tmp_path):
     assert review.sheet_edits(back).empty
     same = review.apply_edits(cleaned, review.sheet_edits(back), shipped)
     assert same.trips.equals(cleaned.trips) and same.legs.equals(cleaned.legs) and same.hab.equals(cleaned.hab)
+
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_an_edited_trip_end_takes_the_zone_coded_for_its_ageb():
+    shipped, cleaned = load_eod(DATA_DIR, clean_chains=False), load_eod(DATA_DIR)
+    t, viv = cleaned.trips, cleaned.viv
+    home = viv.ageb.astype(str).reindex(t.index.get_level_values("folio_vivienda")).to_numpy()
+    away = t[(t.origen.astype(str).to_numpy() != home) & (t.destino.astype(str).to_numpy() != home)].head(50)
+    other = t.destino.astype(str).loc[lambda s: s != away.destino.astype(str).iloc[0]].iloc[0]
+    edits = pd.DataFrame(
+        [(*k, "origin", "", "home", "") for k in away.index]
+        + [(*away.index[0], "destination", "", other, "")],
+        columns=EDIT_COLUMNS,
+    )
+    revised = review.apply_edits(cleaned, edits, shipped).trips.loc[away.index]
+    assert (revised.zona_origen.astype(str).to_numpy()
+            == viv.centralidad.astype(str).reindex(away.index.get_level_values("folio_vivienda")).to_numpy()).all()
+    coded = t.zona_destino.astype(str)[t.destino.astype(str) == other].iloc[0]
+    assert revised.zona_destino.astype(str).iloc[0] == coded
+    ends = pd.concat([pd.DataFrame({"ageb": revised[p].astype(str), "zone": revised[z].astype(str)})
+                      for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])
+    assert (ends.groupby("ageb").zone.nunique() == 1).all()
