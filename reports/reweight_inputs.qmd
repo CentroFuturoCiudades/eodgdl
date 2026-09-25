@@ -562,9 +562,10 @@ if RURAL_AS_AGEB:
     # the part of a rural AGEB its zone actually counts: each piece of it inside a polygon that
     # holds one of its localities assigned to that zone (whichever polygon it is), plus the
     # outlines of assigned localities outside every polygon; the rest is hatched
-    assigned = assign_map[(assign_map.unit == "locality") & assign_map.zone.notna()
-                          & assign_map.rural_ageb.isin(rural_zone.index)]
-    held = set(zip(assigned.rural_ageb, assigned.polygon_zone.dropna()))
+    assigned = assign_map[(assign_map.unit == "locality") & assign_map.rural_ageb.isin(rural_zone.index)]
+    assigned = assigned[assigned.zone == assigned.rural_ageb.map(rural_zone)]
+    inside = assigned[assigned.polygon_zone.notna()]
+    held = set(zip(inside.rural_ageb, inside.polygon_zone))
     outside_outlines = shapes.geometry.reindex(assigned.index[assigned.polygon_zone.isna()])
     outside_outlines = outside_outlines[~outside_outlines.geom_type.isin(["Point", "MultiPoint"])]
     counted = {}
