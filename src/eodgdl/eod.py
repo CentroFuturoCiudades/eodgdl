@@ -284,10 +284,10 @@ def load_eod(
     325 trips with no start time (and no motive) are imputed — 37 from the
     home-to-home return that duplicates them, the rest from their nearest
     timed trips — as are the 7 timed trips with no motive; 84 mislabelled
-    'Regresar a Casa' trips take their destination type's motive; 491
+    'Regresar a Casa' trips take their destination type's motive; 416
     returns home made from home are kept and marked as non-trips; 124 trips
-    that follow a return home start in the home zone; and 2,032 mistyped
-    start hours in 1,552 chains are repaired. One kind of row is dropped: the
+    that follow a return home start in the home zone; and 2,033 mistyped
+    start hours in 1,553 chains are repaired. One kind of row is dropped: the
     38 home-to-home returns that duplicate an imputed return, whose time and
     motive now sit on the return they repeat; ``hab.viajes_contados`` is
     reduced by one for those persons so it still counts the person's trip

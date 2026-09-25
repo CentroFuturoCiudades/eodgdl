@@ -109,7 +109,7 @@ Person (`hab`, ages 6+ only): `Persons` = 1 · `Male`/`Female` from `sexo_nacimi
 12+ who is not `Employed`, the 4,370 with no answer included) · `Cyclist` = at least one
 bicycle leg (Bicicleta, Mi Bici) on a trip whose motive is Trabajar or Estudiar.
 
-Trip (`trips` after `load_eod`'s cleaning, without the 491 rows it marks as non-trips):
+Trip (`trips` as `load_eod` returns them, without the 51 rows it marks as non-trips):
 `Trips` = 1 · boardings = the number of the trip's legs by `Bus` (CAMIÓN O AUTOBÚS), `Rail`
 (TREN LIGERO), `BRT` (MI MACRO), `Sitren` (lines 1–3), `OtherTransit` (Servicio suburbano,
 Taxi colectivo, Transporte informal), and their sum `TransitBoardings` · `BicycleTrip` = any

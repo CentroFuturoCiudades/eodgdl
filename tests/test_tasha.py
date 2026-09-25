@@ -219,6 +219,16 @@ def test_build_conforms():
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home():
+    # the rules alone, before the hand passes: 714 first trips answer 'Su casa' but leave another
+    # zone, 75 of them returns home; read as H they would put home in the wrong zone, or go H to H
+    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR, revise_chains=False))
+    assert tasha.validate_all(*od) == []
+    first = od.trips[od.trips.TripNumber == 1].merge(od.households[["HouseholdId", "HouseholdZone"]], on="HouseholdId")
+    away = first.ZoneOrigin != first.HouseholdZone
+    assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) >= 714
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_build_round_trips_through_csv(tmp_path):
     od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
     path = tmp_path / "od_households.csv"

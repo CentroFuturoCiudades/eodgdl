@@ -595,27 +595,38 @@ def _recode_returns_by_destination(
 
 
 def _home_to_home_returns(
-    trips: pd.DataFrame, skip: np.ndarray | None = None
+    trips: pd.DataFrame, home: np.ndarray, skip: np.ndarray | None = None
 ) -> np.ndarray:
     """Mark the 'return home' trips made by a person who is already at home.
 
     Walk each chain with an at-home flag: it starts as whether the first trip
-    left from 'Su casa', and after each trip it is whether that trip was a
-    'Regresar a Casa'. A return home while the flag is set is not a trip; the
-    flag stays set, so a run of such rows is marked whole. Rows in ``skip``
-    (the duplicates of ``_duplicate_returns``) are stepped over as if absent.
-    491 rows in the shipped survey once the untimed trips are imputed: 158
-    first trips coded 'Regresar a Casa' from 'Su casa' and 333 second and
-    later members of consecutive returns. 314 start and end in the home zone
-    and their leg minutes usually differ from the return they follow, so they
-    are not literal duplicates — a within-zone errand coded as 'return home'
-    is the likeliest reading. They are kept and marked ``regreso_en_casa``;
-    the model build leaves them out, and without them and the 38 duplicates
-    the survey's 178 zone-continuity breaks fall to 156. Returns the mask of
-    the rows marked.
+    leaves from 'Su casa' and from the household's zone (``home``), and after
+    each trip it is whether that trip was a 'Regresar a Casa'. A return home
+    while the flag is set is not a trip; the flag stays set, so a run of such
+    rows is marked whole. Rows in ``skip`` (the duplicates of
+    ``_duplicate_returns``) are stepped over as if absent.
+
+    The origin type is one answer per person — the survey asks where the day
+    started and repeats the answer on every row, so it is constant within all
+    52,758 persons with trips — which is why the first row needs the zone as
+    well: a first trip that leaves another zone was made away from home,
+    whatever the answer says. Until 2026-09-25 the type alone started the
+    flag, and 75 such first trips were marked; they are trips (66 start after
+    noon, 30 by students: most are the return of a day whose trip out was not
+    recorded) and now carry ``inicio_zona_ajena`` instead.
+
+    416 rows in the shipped survey once the untimed trips are imputed: 83
+    first trips coded 'Regresar a Casa' from home and 333 second and later
+    members of consecutive returns. 314 start and end in the home zone and
+    their leg minutes usually differ from the return they follow, so they are
+    not literal duplicates — a within-zone errand coded as 'return home' is
+    the likeliest reading. They are kept and marked ``regreso_en_casa``; the
+    model build leaves them out. Returns the mask of the rows marked.
     """
     to_home = (trips.motivo_viaje == HOME_MOTIVE).to_numpy()
-    from_home = (trips.tipo_lugar_origen == HOME_PLACE).to_numpy()
+    from_home = (trips.tipo_lugar_origen == HOME_PLACE).to_numpy() & (
+        trips.origen.astype(str).to_numpy() == np.asarray(home, dtype=object)
+    )
     skip = (
         np.zeros(len(trips), dtype=bool)
         if skip is None
@@ -785,8 +796,8 @@ def _repair_start_times(
     treat it as uncertain; ``locked`` rows (imputed start times) are never edited.
 
     On the survey, with the untimed trips imputed and the non-trips set
-    aside, 2,319 chains are infeasible; 1,552 get a unique reading and 2,032
-    rows change (+12h 662, an extra leading 1 431, both 787, a missing
+    aside, 2,320 chains are infeasible; 1,553 get a unique reading and 2,033
+    rows change (+12h 662, an extra leading 1 432, both 787, a missing
     leading 1 152), none of them to an hour before 05:00. The strict 12-hour
     rule this replaced moved 579 rows; the search moves 536 of them
     identically, reads 5 differently because the arrival constraint rules out
@@ -851,8 +862,9 @@ def _remaining_issues(
     and 221 of them follow a leg of more than an hour), 32
     ``origen_discontinuo``, 163 ``regreso_sin_llegar``,
     16 ``tipo_destino_dudoso``; 906 days start from somewhere other than 'Su
-    casa' (``inicio_fuera_de_casa``), 639 from 'Su casa' in a zone that is
-    not the household's (``inicio_zona_ajena``) and 514 do not end with a
+    casa' (``inicio_fuera_de_casa``), 714 from 'Su casa' in a zone that is
+    not the household's (``inicio_zona_ajena``; 75 of them a return home
+    from another zone, most the only trip recorded that day) and 514 do not end with a
     return to the home zone (``fin_fuera_de_casa``) — second homes, nights
     spent elsewhere and geocoding slips all look alike here; 787 activity
     trips end at 'Su casa' (``actividad_en_casa``), 705 of them in the home
@@ -930,7 +942,7 @@ def mark_issues(
     n = len(trips)
     issues = np.full(n, "", dtype=object)
     home = _home_zone(trips, viv)
-    at_home = _home_to_home_returns(trips)
+    at_home = _home_to_home_returns(trips, home)
     _add_code(issues, at_home, "regreso_en_casa")
     where = np.flatnonzero(~at_home)
     for code, mask in _remaining_issues(trips[~at_home], home[~at_home], legs).items():
@@ -992,7 +1004,7 @@ def clean_trip_chains(
 
     trips, recoded = _recode_returns_by_destination(trips, home)
     _add_code(fixes, recoded, "motivo:tipo_destino")
-    at_home = _home_to_home_returns(trips, skip=imputed["duplicate"])
+    at_home = _home_to_home_returns(trips, home, skip=imputed["duplicate"])
     _add_code(issues, at_home, "regreso_en_casa")
 
     is_trip = ~(at_home | imputed["duplicate"])

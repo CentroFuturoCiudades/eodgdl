@@ -127,14 +127,23 @@ def test_a_return_home_made_from_home_is_not_a_trip():
         (1, 19, 0, "Regresar a Casa"), (1, 20, 0, "Regresar a Casa"),   # a run: both marked
         (2, 8, 0, "Trabajar"), (2, 12, 0, "Regresar a Casa"),
         (2, 15, 0, "Compras (comida)"), (2, 16, 0, "Regresar a Casa"),  # intact
+        (3, 14, 0, "Regresar a Casa"), (3, 16, 0, "Compras (comida)"), (3, 17, 0, "Regresar a Casa"),
+        (4, 14, 0, "Regresar a Casa"),
     ])
+    # the day's answer is 'Su casa' but the first return leaves another zone: made away from home, a trip
+    trips.loc[(1, 3, 1), "origen"] = ELSEWHERE
+    # the first return leaves the home zone but the day started at another dwelling: a trip too
+    trips.loc[(1, 4), "tipo_lugar_origen"] = "Otra vivienda"
     cleaned, counts = clean_trip_chains(trips, VIV)
     assert counts["home_to_home"] == 3
+    assert cleaned.loc[(1, 3, 1), "problemas"] == "inicio_zona_ajena"       # the answer and the zone disagree
+    assert cleaned.loc[(1, 4, 1), "problemas"] == "inicio_fuera_de_casa"
     # nothing is dropped: the rows stay, marked, and the model build leaves them out
     assert len(cleaned) == len(trips)
     assert cleaned.loc[(1, 1)].problemas.tolist() == ["regreso_en_casa", "", "", "regreso_en_casa", "regreso_en_casa"]
     assert non_trips(cleaned).sum() == 3
     assert (cleaned.loc[(1, 2)].problemas == "").all() and (cleaned.ajustes == "").all()
+    assert (cleaned.loc[(1, 3)].problemas.tolist()[1:] == ["", ""])
 
 
 def test_a_return_that_did_not_reach_home_takes_its_destination_type():
@@ -271,16 +280,16 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns():
     assert fixes <= set(FIX_CODES) and issues <= set(ISSUE_CODES)
     assert has_code(trips.ajustes, "hora:duplicado").sum() == 37 and has_code(trips.ajustes, "hora:vecinos").sum() == 288
     assert has_code(trips.ajustes, "motivo:vecinos").sum() == 294 and has_code(trips.ajustes, "motivo:duplicado").sum() == 38
-    assert non_trips(trips).sum() == 491
+    assert non_trips(trips).sum() == 416
     # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
     assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
-        "regreso_en_casa": 491, "hora_invertida": 885, "hora_nocturna": 93,
-        "hora_anterior": 25, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
-        "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 639,
+        "regreso_en_casa": 416, "hora_invertida": 885, "hora_nocturna": 93,
+        "hora_anterior": 26, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
+        "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 714,
         "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217}
     hora = sum(has_code(trips.problemas, c)
                for c in ("hora_invertida", "hora_nocturna", "hora_anterior", "hora_repetida", "hora_traslapada"))
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_660 + 491
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_735 + 416
     # hab and trips stay in step: viajes_contados follows the 38 dropped duplicates and the legs follow the trips
     counted = trips.groupby(level=PERSON).size()
     assert (hab.viajes_contados == counted.reindex(hab.index).fillna(0)).all()

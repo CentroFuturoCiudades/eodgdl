@@ -260,12 +260,12 @@ cleaned_trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)
 assert counts == {"untimed_trips": 325, "untimed_persons": 281,
                   "times_from_duplicate": 37, "times_from_neighbours": 288,
                   "motives_from_duplicate": 38, "motives_from_neighbours": 294,
-                  "recoded_returns": 84, "home_to_home": 491, "duplicate_returns": 38,
-                  "origins_repaired": 124, "start_times_edited": 2_032, "chains_repaired": 1_552,
-                  "left_hora_invertida": 885, "left_hora_nocturna": 93, "left_hora_anterior": 25,
+                  "recoded_returns": 84, "home_to_home": 416, "duplicate_returns": 38,
+                  "origins_repaired": 124, "start_times_edited": 2_033, "chains_repaired": 1_553,
+                  "left_hora_invertida": 885, "left_hora_nocturna": 93, "left_hora_anterior": 26,
                   "left_hora_repetida": 101, "left_hora_traslapada": 569, "left_origen_discontinuo": 32,
                   "left_regreso_sin_llegar": 163, "left_tipo_destino_dudoso": 16,
-                  "left_inicio_fuera_de_casa": 906, "left_inicio_zona_ajena": 639, "left_fin_fuera_de_casa": 514,
+                  "left_inicio_fuera_de_casa": 906, "left_inicio_zona_ajena": 714, "left_fin_fuera_de_casa": 514,
                   "left_actividad_en_casa": 787, "left_motivo_guarderia": 217}
 assert len(clean.trips) == len(cleaned_trips) == n_trips - counts["duplicate_returns"]
 assert len(clean.hab) == n_hab
@@ -376,11 +376,15 @@ t1_filled, imp_masks = _impute_untimed_trips(raw.trips.sort_index(), home_R, raw
 t1 = with_helpers(t1_filled, raw.viv, raw.legs)
 assert t1.start.notna().all()
 first_return_from_home = int(((R.pos == 1) & R.is_return & (R.tipo_lugar_origen == HOME)).sum())
+first_return_from_away = int(((R.pos == 1) & R.is_return & (R.tipo_lugar_origen == HOME) & (R.origen.astype(str) != R.home)).sum())
+first_return_only_trip = int(((R.pos == 1) & (R.n == 1) & R.is_return & (R.tipo_lugar_origen == HOME) & (R.origen.astype(str) != R.home)).sum())
+n_origin_types = int(raw.trips.tipo_lugar_origen.astype(str).groupby(level=P).nunique().max())
+assert n_origin_types == 1                           # one answer per person, repeated on every row
 consecutive_returns = int((R.is_return & (R.prev_motivo == RETURN)).sum())
-hh_no_recode = int(_home_to_home_returns(t1, skip=imp_masks["duplicate"]).sum())
+hh_no_recode = int(_home_to_home_returns(t1, t1.home.to_numpy(), skip=imp_masks["duplicate"]).sum())
 t1r, rec_mask = _recode_returns_by_destination(t1, t1.home.to_numpy())
 n_rec = int(rec_mask.sum())
-hh_mask = _home_to_home_returns(t1r, skip=imp_masks["duplicate"])
+hh_mask = _home_to_home_returns(t1r, t1r.home.to_numpy(), skip=imp_masks["duplicate"])
 t2 = t1r[~(hh_mask | imp_masks["duplicate"])]        # the chain without its non-trips
 hh_rows = t1r[hh_mask]
 hh_first = int((hh_rows.pos == 1).sum())
@@ -612,7 +616,7 @@ ties_c = (C.start == C.prev_start).fillna(False)
 hidden_c = (~inv_c) & C.prev_start.notna() & C.hora_inicio_h.between(1, 6) & C.is_return
 left_early_c = ((gap >= 0) & (gap < C.prev_leg)).fillna(False)
 inv_people = int(persons_C[inv_c].nunique())
-assert int(inv_c.sum()) == 839
+assert int(inv_c.sum()) == 840      # 839 before 2026-09-25: a first-trip return kept as a trip, its trip out recorded one row late
 
 flags = pd.DataFrame({
     "start before the previous trip": inv_c,
@@ -803,7 +807,7 @@ codes_for = {
     "Guardería motive, mapped to school": ["motivo_guarderia"],
 }
 assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
-masks_R = error_masks(R, pd.Series(_home_to_home_returns(R), index=R.index))
+masks_R = error_masks(R, pd.Series(_home_to_home_returns(R, R.home.to_numpy()), index=R.index))
 masks_C = error_masks(C, pd.Series(False, index=C.index))
 counts_R = {k: int(v.sum()) for k, v in masks_R.items()}
 counts_C = {k: int(v.sum()) for k, v in masks_C.items()}
@@ -1178,14 +1182,23 @@ show(im)
 
 In the shipped table, `{python} first_return_from_home` first trips are *Regresar a Casa*
 leaving from *Su casa*, and `{python} consecutive_returns` trips are a *Regresar a Casa*
-immediately after another. Walking each chain with an at-home flag — set from the first
-trip's origin type, then from each kept trip's motive — flags
+immediately after another. Walking each chain with an at-home flag — set when the first trip
+leaves from *Su casa* in the household's zone, then from each kept trip's motive — flags
 `{python} counts["home_to_home"]` rows after the imputation of @sec-untimed and the recode
 of @sec-mislabel (`{python} hh_first` first trips, `{python} len(hh_rows) - hh_first` later
 ones). `{python} hh_home_zone` of them start and end in the home zone and `{python} hh_last`
 are the person's last trip. Their leg minutes usually differ from the return they follow, so
 they are not literal duplicates: a within-zone errand coded as "return home" is the
 likeliest reading, and in the model such a row is unschedulable either way.
+
+The first trip needs the zone as well as the type because the origin type is one answer per
+person: the survey asks where the day started and repeats the answer on every row (no person
+carries two origin types). `{python} first_return_from_away` of the first-trip returns answer
+*Su casa* but leave another zone, so they were made away from home, and they are trips
+(`{python} first_return_only_trip` of them the person's only trip). The answer and the zone
+disagree there, so they carry `inicio_zona_ajena`. Most start after noon, so the likeliest
+reading is a day that did start at home with its trip out missing. Until 2026-09-25 the answer
+alone set the flag and these rows were marked too.
 
 ```{python}
 #| label: tbl-ex-hh1

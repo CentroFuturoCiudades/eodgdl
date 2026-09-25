@@ -46,11 +46,11 @@ changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
 `eodgdl.chains.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
 imputed, 84 mislabelled returns recoded, 124 trips after a return home made
-to start at home, 2,032 mistyped start hours repaired — and refuses a trip
+to start at home, 2,033 mistyped start hours repaired — and refuses a trip
 table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
-non-trips there (491 returns home made while already at home,
-`eodgdl.chains.non_trips`), since the contract
+non-trips there (returns home made while already at home: 416 after the rules, 51 once
+the hand passes under `eodgdl/revisions/` have dropped most of them; `eodgdl.chains.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
 another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: a

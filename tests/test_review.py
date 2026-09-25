@@ -156,6 +156,29 @@ def test_apply_edits_writes_the_fields_with_a_code_and_recomputes_problemas():
     assert same.trips.equals(cleaned.trips) and same.hab.equals(cleaned.hab)
 
 
+def test_a_row_a_pass_dropped_comes_back_as_the_rules_left_it():
+    shipped, rules = _survey(_fixture())
+    drop = pd.DataFrame([(1, 1, 2, "status", "", "dropped", ""), (1, 3, 2, "status", "", "dropped", "")], columns=EDIT_COLUMNS)
+    first = review.apply_edits(rules, drop, shipped, rules)
+    assert (1, 1, 2) not in first.trips.index and first.hab.viajes_contados.tolist() == [1, 2, 1, 4, 1]
+    back = pd.DataFrame([
+        (1, 1, 2, "status", "dropped", "restored", ""),
+        (1, 3, 2, "status", "dropped", "restored", ""),
+        (1, 3, 2, "start", "09:00", "09:30", "restored and edited in one pass"),
+    ], columns=EDIT_COLUMNS)
+    second = review.apply_edits(first, back, shipped, rules)
+    t = second.trips
+    # the rules' version: the repaired 17:30, its code kept, the restore added
+    assert (t.loc[(1, 1, 2), "hora_inicio_h"], t.loc[(1, 1, 2), "ajustes"]) == (17, "hora:+12h;fila:revision")
+    assert (t.loc[(1, 3, 2), "hora_inicio_m"], t.loc[(1, 3, 2), "ajustes"]) == (30, "fila:revision;hora:revision")
+    assert second.hab.viajes_contados.equals(rules.hab.viajes_contados)
+    assert t.problemas.equals(mark_issues(t, VIV))
+    # without the rules' tables the row comes back as shipped
+    assert review.apply_edits(first, back.iloc[:1], shipped).trips.loc[(1, 1, 2), "hora_inicio_h"] == 5
+    # the passes in a row, as load_eod applies them: the rules' tables are where a restore comes from
+    both = review.apply_revisions(rules, shipped, [("a", drop), ("b", back)])
+    assert both.trips.equals(t)
+
 def test_verify_edits_says_what_the_edits_cleared_left_and_made():
     shipped, cleaned = _survey(_fixture())
     edits = pd.DataFrame([
@@ -216,7 +239,7 @@ def test_the_pending_sheet_round_trips_on_the_survey(tmp_path):
     pending = review.pending_persons(rows)
     sheet = review.chain_sheet(rows, cleaned.hab, pending)
     assert (len(pending), len(sheet)) == (4_435, 14_557)
-    assert sheet.status.value_counts().to_dict() == {"": 14_081, "changed": 474, "dropped": 2}
+    assert sheet.status.value_counts().to_dict() == {"": 14_080, "changed": 475, "dropped": 2}
     back = review.read_sheet(review.write_sheet(sheet, tmp_path / "chain_review.csv"))
     assert set(back.destination.str.len()) <= {4, 9, 13}                # zone ids as strings, home as home
     sel = rows[rows.index.droplevel("folio_viaje").isin(pending)]

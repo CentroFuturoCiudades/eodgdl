@@ -204,8 +204,9 @@ def _review(args) -> int:
         print(f"wrote {args.edits}")
     if edits.empty:
         return 0
+    rules = load_eod(args.data, revise_chains=False)  # a restored row comes back as the rules left it
     try:
-        verified = review.verify_edits(cleaned, shipped, edits)
+        verified = review.verify_edits(cleaned, shipped, edits, rules)
     except ValueError as err:
         print(err)
         return 1

@@ -48,12 +48,18 @@ def _household_ids(viv: pd.DataFrame) -> pd.Series:
     return pd.Series(range(len(viv)), index=viv.index, name="HouseholdId")
 
 
-def _purposes(trips: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """(destination purpose, first-trip origin purpose), before the R/C demotion."""
+def _purposes(trips: pd.DataFrame, viv: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """(destination purpose, first-trip origin purpose), before the R/C demotion.
+
+    The origin purpose is H only where the reported place maps to H and the trip
+    leaves the household's zone (see PurposeOrigin's derivation).
+    """
     destination = (trips.motivo_viaje.map(build_map("PurposeDestination"))
                         .fillna(mapping("PurposeDestination")["default"]))
     origin = (trips.tipo_lugar_origen.map(build_map("PurposeOrigin"))
                    .fillna(mapping("PurposeOrigin")["default"]))
+    home = viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
+    origin = origin.mask((origin == "H") & (trips.origen.astype(str).to_numpy() != home), "O")
     return destination, origin
 
 
@@ -145,7 +151,7 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
 
     # Purpose: the motivo_viaje lookup, then demote repeat work/school trips,
     # ranked in chain order.
-    purpose, first_trip = _purposes(trips)
+    purpose, first_trip = _purposes(trips, viv)
     repeat = trips.assign(_p=purpose).groupby(PERSON + ["_p"]).cumcount() > 0
     destination = (purpose.mask((purpose == "W") & repeat, "R")
                           .mask((purpose == "S") & repeat, "C"))

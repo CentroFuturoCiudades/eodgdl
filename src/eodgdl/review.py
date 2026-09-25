@@ -386,8 +386,34 @@ def _ageb_zones(cleaned: EODTables, shipped: EODTables | None) -> dict | None:
     return out
 
 
+def _restore(trips, legs, keys, rules, shipped):
+    """``trips`` and ``legs`` with the rows ``keys`` brought back: the rules' version where the rules kept the row, else the shipped one."""
+    parts, leg_parts = [trips], [legs]
+    from_rules = [k for k in keys if rules is not None and k in rules.trips.index]
+    from_shipped = [k for k in keys if k not in set(from_rules)]
+    for source, picked in ((rules, from_rules), (shipped, from_shipped)):
+        if not picked:
+            continue
+        rows = source.trips.loc[picked].reindex(columns=trips.columns)
+        kept = source.trips[FIX_FLAG].reindex(rows.index) if FIX_FLAG in source.trips else None
+        rows[FIX_FLAG] = [
+            RESTORED_CODE if not isinstance(f, str) or not f else f + ";" + RESTORED_CODE
+            for f in (kept if kept is not None else [""] * len(rows))
+        ]
+        rows[ISSUE_FLAG] = ""
+        parts.append(rows)
+        if legs is not None and source.legs is not None:
+            leg_parts.append(source.legs[source.legs.index.droplevel("folio_traslado").isin(picked)])
+    trips = pd.concat(parts).sort_index()
+    legs = pd.concat(leg_parts).sort_index() if legs is not None else None
+    return trips, legs
+
+
 def apply_edits(
-    cleaned: EODTables, edits: pd.DataFrame, shipped: EODTables | None = None
+    cleaned: EODTables,
+    edits: pd.DataFrame,
+    shipped: EODTables | None = None,
+    rules: EODTables | None = None,
 ) -> EODTables:
     """The cleaned tables with the sheet's edits applied and ``problemas`` recomputed.
 
@@ -396,22 +422,60 @@ def apply_edits(
     ``home`` as the household's zone, and a new origin or destination takes
     the ``zona_origen`` / ``zona_destino`` the survey coded for that AGEB, so
     the AGEB and the zone stay one place (tables without zone columns are
-    left as they are). A ``status`` of ``dropped`` removes the
-    row and its legs and lowers the person's ``viajes_contados``; one of
-    ``restored`` on a row ``load_eod`` dropped brings the shipped row back
-    (so ``shipped`` is required then) under ``fila:revision``. An edit whose
-    value already holds is skipped, so a sheet exported before a rule change
-    still applies cleanly, and so is a field of a row the edits also drop, so
-    applying the same edits twice changes nothing the second time; a label is matched regardless of case and a time
-    may carry ``:00`` seconds, as spreadsheets write them. A code the row
-    already carries is not repeated in ``ajustes``, so a second pass over a
-    field reads as the first. ``problemas`` is then recomputed over the whole
-    table (:func:`eodgdl.chains.mark_issues`). Notes are not applied. Raises
-    ``ValueError`` listing every edit that cannot be applied — an unknown
-    label, zone or time, a trip the table lacks, a status other than the two
-    — and applies nothing in that case.
+    left as they are). A ``status`` of ``dropped`` removes the row and its
+    legs and lowers the person's ``viajes_contados``; one of ``restored``
+    brings back a row the table lacks, under ``fila:revision``: from
+    ``rules`` (the chain rules' output, ``load_eod(revise_chains=False)``)
+    when it holds the row, so a row an earlier pass dropped comes back with
+    the rules' fixes and their ``ajustes``, else from ``shipped`` (a row the
+    rules dropped). Restores come first, so the same edits may change a
+    restored row's fields. An edit whose value already holds is skipped, so
+    a sheet exported before a rule change still applies cleanly, and so is a
+    field of a row the edits also drop, so applying the same edits twice
+    changes nothing the second time; a label is matched regardless of case
+    and a time may carry ``:00`` seconds, as spreadsheets write them. A code
+    the row already carries is not repeated in ``ajustes``, so a second pass
+    over a field reads as the first. ``problemas`` is then recomputed over
+    the whole table (:func:`eodgdl.chains.mark_issues`). Notes are not
+    applied. Raises ``ValueError`` listing every edit that cannot be applied
+    — an unknown label, zone or time, a trip the table lacks, a status other
+    than the two — and applies nothing in that case.
     """
-    trips = cleaned.trips.copy()
+    trips, legs, hab = cleaned.trips.copy(), cleaned.legs, cleaned.hab.copy()
+    zones = _known_zones(cleaned, shipped)
+    zone_of = _ageb_zones(cleaned, shipped)
+    home = cleaned.viv.ageb.astype(str)
+    restorable = pd.MultiIndex.from_tuples([], names=trips.index.names)  # the rows a restore can bring back
+    for source in (rules, shipped):
+        if source is not None:
+            restorable = restorable.union(source.trips.index)
+
+    problems, dropped, restored = [], [], []
+    where_of = lambda key, field: f"household {key[0]}, person {key[1]}, trip {key[2]}, {field}"
+    for r in edits[edits.field == STATUS].itertuples(index=False):
+        key = (int(r.household), int(r.person), int(r.trip))
+        value = str(r.after).strip()
+        status = value.lower()
+        if status == DROPPED:
+            if key in trips.index:
+                dropped.append(key)
+            elif key not in restorable:
+                problems.append(f"{where_of(key, r.field)}: no such trip")
+        elif status == RESTORED:
+            if key in trips.index:
+                continue  # a kept row: nothing to restore
+            if key in restorable:
+                restored.append(key)
+            elif shipped is None and rules is None:
+                problems.append(f"{where_of(key, r.field)}: restoring a dropped row needs the rules' or the shipped tables")
+            else:
+                problems.append(f"{where_of(key, r.field)}: no such trip to restore")
+        else:
+            problems.append(
+                f"{where_of(key, r.field)}: new status must be '{DROPPED}' or '{RESTORED}', not '{value}'"
+            )
+    if restored:  # first, so the same edits may set a restored row's fields
+        trips, legs = _restore(trips, legs, restored, rules, shipped)
     levels = {  # lower-cased label -> the level, so a label's case is not held against it
         f.column: {str(c).lower(): c for c in trips[f.column].cat.categories}
         if hasattr(trips[f.column], "cat")
@@ -419,44 +483,15 @@ def apply_edits(
         for f in FIELDS.values()
         if not isinstance(f.column, tuple)
     }
-    zones = _known_zones(cleaned, shipped)
-    zone_of = _ageb_zones(cleaned, shipped)
-    home = cleaned.viv.ageb.astype(str)
-    shipped_index = shipped.trips.index if shipped is not None else pd.Index([])
-
     is_drop = (edits.field == STATUS) & (edits.after.astype(str).str.strip().str.lower() == DROPPED)
-    dropping = set(map(tuple, edits.loc[is_drop, KEYS].astype(int).to_numpy().tolist()))
+    dropping = set(map(tuple, edits.loc[is_drop, KEYS].astype(int).to_numpy().tolist()))  # also rows already gone
 
-    problems, plan = [], []  # plan: (key, action, column, value, code)
-    for r in edits.itertuples(index=False):
+    sets = []  # (key, column, value, code)
+    for r in edits[~edits.field.isin([STATUS, NOTE])].itertuples(index=False):
         key = (int(r.household), int(r.person), int(r.trip))
-        where = f"household {key[0]}, person {key[1]}, trip {key[2]}, {r.field}"
+        where = where_of(key, r.field)
         value = str(r.after).strip()
-        if r.field == NOTE:
-            continue
-        if r.field != STATUS and key in dropping:  # a field of a row the edits drop is moot
-            continue
-        if r.field == STATUS:
-            status = value.lower()
-            if status == DROPPED:
-                if key in trips.index:
-                    plan.append((key, "drop", None, None, None))
-                elif key not in shipped_index:
-                    problems.append(f"{where}: no such trip")
-            elif status == RESTORED:
-                if key in trips.index or key in shipped_index:
-                    if key not in trips.index:
-                        plan.append((key, "restore", None, None, None))
-                elif shipped is None:
-                    problems.append(
-                        f"{where}: restoring a dropped row needs the shipped tables"
-                    )
-                else:
-                    problems.append(f"{where}: no such trip to restore")
-            else:
-                problems.append(
-                    f"{where}: new status must be '{DROPPED}' or '{RESTORED}', not '{value}'"
-                )
+        if key in dropping:  # a field of a row the edits drop is moot
             continue
         if r.field not in FIELDS:
             problems.append(f"{where}: not a column that takes a new value")
@@ -490,14 +525,10 @@ def apply_edits(
                 new_value = levels[f.column][value.lower()]
             current = str(trips.at[key, f.column])
         if new_value != current:  # a value that already holds is not a change
-            plan.append((key, "set", f.column, new_value, f.code))
+            sets.append((key, f.column, new_value, f.code))
     if problems:
         raise ValueError("edits that cannot be applied:\n  " + "\n  ".join(problems))
 
-    hab, legs = cleaned.hab.copy(), cleaned.legs
-    dropped = [key for key, action, *_ in plan if action == "drop"]
-    restored = [key for key, action, *_ in plan if action == "restore"]
-    sets = [(key, column, value, code) for key, action, column, value, code in plan if action == "set"]
     if sets:
         pos = trips.index.get_indexer([key for key, *_ in sets])
         by_column, codes = {}, {}
@@ -521,19 +552,6 @@ def apply_edits(
         trips = trips.drop(index=dropped)
         if legs is not None:
             legs = legs[~legs.index.droplevel("folio_traslado").isin(dropped)]
-    if restored:
-        rows = shipped.trips.loc[restored].reindex(columns=trips.columns)
-        rows[FIX_FLAG], rows[ISSUE_FLAG] = RESTORED_CODE, ""
-        trips = pd.concat([trips, rows])
-        if legs is not None:
-            legs = pd.concat(
-                [
-                    legs,
-                    shipped.legs[
-                        shipped.legs.index.droplevel("folio_traslado").isin(restored)
-                    ],
-                ]
-            )
     for keys, sign in ((dropped, -1), (restored, 1)):
         for hh, person in (
             pd.MultiIndex.from_tuples([k[:2] for k in keys], names=PERSON).unique()
@@ -550,17 +568,20 @@ def apply_edits(
 def apply_revisions(
     cleaned: EODTables, shipped: EODTables, passes=None
 ) -> EODTables:
-    """The cleaned tables with the frozen hand passes applied in order (:func:`apply_edits` each).
+    """The chain rules' tables with the frozen hand passes applied in order (:func:`apply_edits` each).
 
+    ``cleaned`` is the rules' output (``load_eod(revise_chains=False)``) and
+    is also where a later pass restores a row an earlier one dropped from.
     ``passes`` is a list of ``(name, edits)``; by default the ones that ship
     under ``eodgdl/revisions/`` (:func:`eodgdl._resources.chain_revisions`),
     which is what ``load_eod`` applies.
     """
     from eodgdl._resources import chain_revisions
 
+    rules = cleaned
     for name, edits in chain_revisions() if passes is None else passes:
         try:
-            cleaned = apply_edits(cleaned, edits, shipped)
+            cleaned = apply_edits(cleaned, edits, shipped, rules)
         except ValueError as err:
             raise ValueError(f"revision pass {name}: {err}") from None
     return cleaned
@@ -587,7 +608,10 @@ def _codes_of(flags: pd.Series) -> pd.Series:
 
 
 def verify_edits(
-    cleaned: EODTables, shipped: EODTables, edits: pd.DataFrame
+    cleaned: EODTables,
+    shipped: EODTables,
+    edits: pd.DataFrame,
+    rules: EODTables | None = None,
 ) -> Verification:
     """Apply the edits and say what they did to the defects of the persons they touch.
 
@@ -598,8 +622,10 @@ def verify_edits(
     restored, rows with a defect before and after, persons cleared and
     persons with a defect the edits made (a code absent before). ``sheet``
     is the review sheet of those persons rebuilt from the revised tables.
+    ``rules`` (the rules' output) is where a restored row comes from when
+    the rules kept it (see :func:`apply_edits`).
     """
-    revised = apply_edits(cleaned, edits, shipped)
+    revised = apply_edits(cleaned, edits, shipped, rules)
     status = edits.after.astype(str).str.strip().str.lower()
     persons = (
         edits.assign(
