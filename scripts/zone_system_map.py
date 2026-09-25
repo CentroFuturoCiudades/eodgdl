@@ -33,7 +33,8 @@ def main():
     parser.add_argument("--municipalities", action="store_true", help="draw municipal borders")
     parser.add_argument("--municipality-names", action="store_true", help="write the municipality names")
     parser.add_argument("--rural-agebs", action="store_true",
-                        help="draw each rural AGEB the survey records whole in its zone's color, its part outside the zone hatched")
+                        help="draw each rural AGEB the survey records whole in its zone's color, hatching the part "
+                             "that holds none of the localities its zone counts")
     args = parser.parse_args()
 
     os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
