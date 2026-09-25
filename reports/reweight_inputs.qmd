@@ -1145,6 +1145,41 @@ plt.show()
 - **Suppression.** INEGI blanks cells of one or two units; sums skip them, which is why the
   sexed targets fall a few hundred short of the unsexed ones.
 
+## Rural AGEBs: the options {#sec-rural-options}
+
+The survey codes every rural AGEB, like every urban one, to a single zone, while the
+centralidad polygons follow its localities and split 20 of the rural AGEBs it records
+between zones. Five ways of reconciling the two were built and measured (2026-09-24, against
+the zones' dwelling counts implied by IMEPLAN's design weights; 64 zones):
+
+| rule for a rural AGEB the survey records | residents in the targets | zones within 10 % | ratio range | what it costs |
+|---|---|---|---|---|
+| polygons: each locality with the zone containing it | 5,186,250 | 50 | 0.62–2.91 | the rural AGEB's census splits across zones while its survey records sit in one |
+| own polygon only: localities inside the survey zone's polygon, the rest in no zone (**current**) | 5,152,008 | 49 | 0.62–2.91 | 127 localities, 39,161 residents, in no zone |
+| hybrid: every locality inside any polygon goes to the survey zone | ≈5,190,000 | 52 | 0.62–1.15 | 39,161 residents counted where the survey puts their AGEB rather than where the polygons do |
+| whole: every locality of the rural AGEB, inside a polygon or not | ≈5,240,000 | 49 | 0.30–1.15 | ~50,000 residents outside the survey's frame; the peripheral municipalities ~100 % covered |
+| split: each rural AGEB cut into pieces, one per zone polygon, the survey's records in the piece of its zone | 5,186,250 | 50 | 0.62–2.91 | a new partition for trip assignment (below) |
+
+All but the whole rule add, for a sampled rural AGEB whose counted localities cannot hold its
+sample, its nearest other localities until they can.
+
+**The split option**, recorded for the trip-assignment partition rather than the weights.
+Every in-frame rural locality goes to the zone containing it, and every rural AGEB that
+straddles polygons becomes one piece per zone (the rural AGEB clipped to the polygon), so
+the partition is 2,039 urban AGEBs and 83 rural pieces from 50 rural AGEBs (20 split, into up
+to five). Each rural AGEB the survey records maps to its piece in the zone the survey coded
+(44 survey pieces), on the assumption that its homes and trip ends lie there or very near:
+the sampling rates bear that out for most pieces (median 11 %, the highest in the small zones
+the fixed per-zone sample over-samples by design, 30–36 %), and the proximity rules supply
+the rest (`140970123` and `140973679` hold no locality inside their zone; `140510016` has
+fewer dwellings there than it sampled; `141200123` is sampled at 75 %). Its costs: 39 pieces
+hold population but no survey record and 11 survey pieces hold no census locality; the TASHA
+outputs would write piece ids (longer than an AGEB code) for rural trip ends; and, for the
+weights, the survey's rural households would expand only into the piece of their zone, so the
+pieces without a survey record would be starved of households. For reweighting, a rural AGEB
+kept whole and matched to its rural population as a whole lets its sampled dwellings expand
+into all of it, which is what makes the hybrid the natural choice for the targets.
+
 # Reproducing {#sec-reproduce}
 
 ```bash
