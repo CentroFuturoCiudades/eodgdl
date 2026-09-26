@@ -44,6 +44,22 @@ chain keeps the script that wrote its sheet under `scripts/revisions/`.
   one decided by hand carries `<field>:revision`, and one that is the shipped value again
   carries nothing; `fila:revision` marks a row the rules dropped and a decision restored.
 
+## Review rounds
+
+Each round merged with `eodgdl review freeze` since the passes were folded into the table.
+
+| source | sheet | persons | decisions |
+|---|---|---|---|
+| `chain_review_8` | `notebooks/chain_review_8.csv` (one night shift that is a split shift; 2026-09-25) | 1 | 2 added |
+
+Round 8 (Claude, 2026-09-25): household 8992, person 1, read 21:00 to work, 02:00 home, 16:00
+to work, 19:00 home, which the rules read as a night shift followed by a 22-hour day. It is a
+split shift with lunch at home, 09:00–14:00 and 16:00–19:00: the first start was entered with
+12 hours too many and the return with 12 too few, and the overnight reading kept the typo search
+from trying either. None of the other 26 work trips to that AGEB starts at night (24 start
+between 05:00 and 11:00), and the 02:00 return is the only one of 60 from there between 22:00
+and 06:59.
+
 ## History: seven passes, folded into one table
 
 Until 2026-09-25 the review was seven passes frozen one after another (`chains_<n>.csv.gz`),

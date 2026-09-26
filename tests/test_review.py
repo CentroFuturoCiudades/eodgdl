@@ -416,10 +416,10 @@ def test_load_eod_applies_the_hand_decisions(stages):
     t = revised.trips
     decisions = chain_decisions()
     # one decision per trip and field, every one with its reason and the review sheet it came from
-    assert len(decisions) == 5_262 and not decisions.duplicated(review.KEYS + ["field"]).any()
+    assert len(decisions) == 5_264 and not decisions.duplicated(review.KEYS + ["field"]).any()
     assert decisions.field.value_counts().to_dict() == {
-        "start": 1_894, "origin": 1_365, "orig. type": 697, "status": 488, "motive": 461, "dest. type": 215, "destination": 142}
-    assert (decisions.note != "").all() and set(decisions.source) <= {"chain_review"} | {f"chain_review_{n}" for n in range(2, 8)}
+        "start": 1_896, "origin": 1_365, "orig. type": 697, "status": 488, "motive": 461, "dest. type": 215, "destination": 142}
+    assert (decisions.note != "").all() and decisions.source.str.fullmatch(r"chain_review(_\d+)?").all()
     gone = pd.MultiIndex.from_frame(decisions.loc[decisions.after == "dropped", review.KEYS])
     assert len(gone) == 488 and not t.index.isin(gone).any() and not (decisions.after == "restored").any()
     assert len(t) == len(rules.trips) - 488 == 154_136 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
@@ -434,7 +434,7 @@ def test_load_eod_applies_the_hand_decisions(stages):
     # what is left: no breaking chain, the tolerated codes left alone
     assert {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES} == dict.fromkeys(BREAKING_ISSUES, 0)
     assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0
-    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 160 and int(has_code(t.problemas, "hora_2301").sum()) == 90
+    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 159 and int(has_code(t.problemas, "hora_2301").sum()) == 90
     # the zone follows the AGEB on every revised trip end
     ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
                       for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])
