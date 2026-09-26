@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 import eodgdl
+from eodgdl.chains import non_trips
 from eodgdl import tasha
 from eodgdl.tasha import _schema
 
@@ -204,9 +205,9 @@ def test_build_conforms():
     assert len(od.households) == 17_901
     # load_eod drops the 38 duplicate returns and the 511 rows the hand passes drop (512 by the first,
     # 77 of them restored and 34 more dropped by the second, 42 by the third); the build leaves out the
-    # 51 non-trips left.
+    # 47 non-trips left.
     assert len(od.people) == 58_061
-    assert len(od.trips) == 154_662 - 38 - 511 - 51
+    assert len(od.trips) == 154_662 - 38 - 511 - 47
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
@@ -229,6 +230,25 @@ def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home():
     first = od.trips[od.trips.TripNumber == 1].merge(od.households[["HouseholdId", "HouseholdZone"]], on="HouseholdId")
     away = first.ZoneOrigin != first.HouseholdZone
     assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) >= 714
+
+@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
+def test_a_daycare_trip_from_age_12_is_an_escort():
+    tables = eodgdl.load_eod(DATA_DIR)
+    od = eodgdl.tasha.build(tables)
+    trips = tables.trips[~non_trips(tables.trips)]
+    daycare = (trips.motivo_viaje == "Guardería").to_numpy()
+    age = tables.hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
+    purpose = od.trips.PurposeDestination.to_numpy()
+    assert (purpose[daycare & (age >= 12)] == "F").all() and int((daycare & (age >= 12)).sum()) == 54
+    assert set(purpose[daycare & (age < 12)]) <= {"S", "C"} and int((daycare & (age < 12)).sum()) == 7
+    # an adult's daycare trip does not make them a student
+    people = od.people.set_axis(tables.hab.index)            # build_people keeps hab's row order
+    persons = trips.index.droplevel("folio_viaje")
+    hab = tables.hab
+    declared = hab.index[(hab.ocupacion == "Estudiante") | (hab.trabajo_semana_pasada == "Es estudiante")]
+    studied = persons[(trips.motivo_viaje == "Estudiar").to_numpy()].unique()
+    plain = persons[daycare & (age >= 12)].unique().difference(declared).difference(studied)
+    assert len(plain) > 30 and (people.loc[plain, "StudentStatus"] == "O").all()
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_build_round_trips_through_csv(tmp_path):

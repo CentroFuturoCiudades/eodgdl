@@ -49,7 +49,7 @@ imputed, 84 mislabelled returns recoded, 124 trips after a return home made
 to start at home, 2,033 mistyped start hours repaired — and refuses a trip
 table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
-non-trips there (returns home made while already at home: 416 after the rules, 51 once
+non-trips there (returns home made while already at home: 416 after the rules, 47 once
 the hand passes under `eodgdl/revisions/` have dropped most of them; `eodgdl.chains.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
@@ -174,8 +174,8 @@ the hand revisions):
 ```
 160 trips (160 people) start earlier than the trip before them
 166 trips (164 people) start before the previous trip could have arrived
-331 people whose first trip does not start at home
-486 people whose last trip does not end at home
+334 people whose first trip does not start at home
+487 people whose last trip does not end at home
 ```
 
 Every trip starts where the previous one ended, and the 160 that start earlier are all
@@ -218,7 +218,7 @@ rather than about one column's coding, so nothing surfaces them automatically.
   `eodgdl.chains.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs
-  (`tasha.chain_report`): after the rules and the three hand passes
+  (`tasha.chain_report`): after the rules and the four hand passes
   (`eodgdl/revisions/`) no trip carries a breaking code — the 160 trips that
   still start before the trip before them are all overnight, and every trip
   starts where the previous one ended; `trips.problemas` marks each, and since 2026-09-04

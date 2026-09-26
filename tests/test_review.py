@@ -279,7 +279,7 @@ def test_load_eod_applies_the_frozen_hand_passes():
     rules, revised = load_eod(DATA_DIR, revise_chains=False), load_eod(DATA_DIR)
     t = revised.trips
     passes = chain_revisions()
-    assert [(name, len(edits)) for name, edits in passes] == [("chains_1.csv.gz", 11_669), ("chains_2.csv.gz", 260), ("chains_3.csv.gz", 93)]
+    assert [(name, len(edits)) for name, edits in passes] == [("chains_1.csv.gz", 11_669), ("chains_2.csv.gz", 260), ("chains_3.csv.gz", 93), ("chains_4.csv.gz", 9)]
     # a row's last status wins: pass 1 drops 512, pass 2 restores 77 of them and drops 34 more, pass 3 drops 42
     status = pd.concat([e[e.field == "status"] for _, e in passes]).drop_duplicates(review.KEYS, keep="last")
     gone = pd.MultiIndex.from_frame(status.loc[status.after == "dropped", review.KEYS])
@@ -294,7 +294,7 @@ def test_load_eod_applies_the_frozen_hand_passes():
     assert again.trips.equals(t) and again.hab.equals(revised.hab)
     assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
     assert has_code(t.ajustes, "origen:revision").sum() == 1_367 and has_code(t.ajustes, "fila:revision").sum() == 77
-    assert non_trips(t).sum() == 51
+    assert non_trips(t).sum() == 47
     # what is left: no breaking chain, the tolerated codes left alone
     assert {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES} == dict.fromkeys(BREAKING_ISSUES, 0)
     assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0

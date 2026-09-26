@@ -236,7 +236,8 @@ people:
     derivation: >-
       S if any of: ocupacion == 'Estudiante' (13,451); trabajo_semana_pasada ==
       'Es estudiante' (13,187); the person has at least one trip with
-      motivo_viaje in ('Estudiar', 'Guardería') (10,835 people). Otherwise O.
+      motivo_viaje 'Estudiar', or 'Guardería' made under the age of 12 (older
+      travellers escort a child there, see PurposeDestination). Otherwise O.
     note: Full-time and part-time students are not distinguished.
 
   EmploymentZone:
@@ -460,14 +461,18 @@ trips:
       Otros (especifique): O
     default: O
     derivation: >-
-      Then rank each person's work and school trips in chain order
-      (TripNumber): every W after the first becomes R, every S after the first
-      becomes C.
+      A Guardería trip made by a person aged 12 or over becomes F: the survey
+      interviews ages 6 and over, so that traveller is taking a child to
+      daycare, not attending it; under 12 it stays S (after-school care). Then
+      rank each person's work and school trips in chain order (TripNumber):
+      every W after the first becomes R, every S after the first becomes C.
     note: >-
       LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
-      all collapse into O. Guardería (217) is placed with school, and load_eod
-      marks those trips motivo_guarderia in trips.problemas since most are an
-      adult escorting a child; the 787 activity trips typed 'Su casa' carry
+      all collapse into O. Guardería: 217 trips in the shipped survey, 61 after
+      the hand passes (which recoded most adults' to 'Llevar o recoger a
+      alguien'); 7 are by children under 12, the other 54 become F by the
+      derivation. load_eod marks them all motivo_guarderia in trips.problemas.
+      The 787 activity trips typed 'Su casa' carry
       actividad_en_casa there. 7 trips have
       no motivo_viaje and fall to the default O. Two of load_eod's chain rules
       shape this column upstream (eodgdl.chains): 84 'Regresar a Casa' trips

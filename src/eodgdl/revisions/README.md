@@ -16,6 +16,7 @@ is the earlier pass's `after`. Never edit a frozen pass: correct it with a new p
 | `chains_1.csv.gz` | `notebooks/chain_review.csv` (every person with a `problemas` code, exported 2026-09-08, returned 2026-09-24) | 4,435 | 11,157 cells, 512 rows dropped |
 | `chains_2.csv.gz` | `notebooks/chain_review_2.csv` (the persons still carrying a breaking code after pass 1, plus 75 first-trip returns pass 1 had dropped; filled 2026-09-25) | 146 | 149 cells, 34 rows dropped, 77 restored |
 | `chains_3.csv.gz` | `notebooks/chain_review_3.csv` (a second look at pass 2's judgment calls; filled 2026-09-25) | 67 | 51 cells, 42 rows dropped |
+| `chains_4.csv.gz` | `notebooks/chain_review_4.csv` (the non-trips pass 1 made out of real trips; filled 2026-09-25) | 3 | 9 cells |
 
 Pass 1 was frozen with 26 values normalized from the sheet: 21 starts written `HH:MM:00`,
 one `22.13` (household 7791, person 4, trip 4, read 22:13), four `Regresar a casa`. It was
@@ -62,3 +63,13 @@ people of the same occupation report (a student returning from an AGEB whose stu
 are 91% to a school is returning from school). The two day-shift readings of pass 2
 (9245/4, 9417/4) were checked and stand: a household member works 08:00–18:00 at the same
 AGEB, and none of 51 other work trips to the other factory AGEB starts after 18:00.
+
+Pass 4 (Claude, 2026-09-25) looks at the 48 rows that became returns made from home through
+pass-1 edits rather than through the rules. 45 are the return recorded twice: pass 1 recoded
+the return from work or school (typed with the activity's motive, `actividad_en_casa`) as a
+return, and the row after it — a 'Regresar a Casa' from home to home with the same mode and,
+in most, the same leg minutes — is its duplicate; they stay non-trips. In the other three
+pass 1 also moved the first trip's origin home and overwrote the person's day-start answer
+(a workplace) with 'Su casa', turning the return from work into a non-trip; the recorded
+origin and answer come back (14417/3's bicycle commute among them), and 14018/1's
+home-to-home staff-bus ride at 21:00 is the trip to the night shift.

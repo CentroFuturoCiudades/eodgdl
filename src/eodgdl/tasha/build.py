@@ -3,7 +3,7 @@
 Every coded column is built from ``mappings.yaml`` rather than from a lookup
 retyped here, so changing a mapping changes the output. What the mappings record
 as ``derivation`` prose — the R/C demotion, the passenger override, the
-work/school zone lookups — is implemented below, and the prose is its spec.
+work/school zone lookups, the daycare trips by age — is implemented below, and the prose is its spec.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
@@ -32,6 +32,8 @@ from eodgdl.tasha._schema import build_map, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
 NO_ZONE = "0"  # sentinel for EmploymentZone / SchoolZone
+DAYCARE = "Guardería"
+ESCORT_FROM_AGE = 12  # a Guardería trip from this age on is an escort (PurposeDestination, StudentStatus)
 
 
 class ODTables(NamedTuple):
@@ -101,7 +103,9 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
         return (matching.groupby(level=PERSON).destino.first()
                         .reindex(hab.index).fillna(NO_ZONE).astype(str))
 
-    made_school_trip = (trips.motivo_viaje.isin(["Estudiar", "Guardería"])
+    age = hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
+    made_school_trip = (((trips.motivo_viaje == "Estudiar")
+                         | ((trips.motivo_viaje == DAYCARE) & (age < ESCORT_FROM_AGE)))
                              .groupby(level=PERSON).any()
                              .reindex(hab.index).fillna(False))
     student = ((hab.ocupacion == "Estudiante")
@@ -127,8 +131,13 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
     })
 
 
-def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
+def build_trips(
+    trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame, hab: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """od_trips.csv, one row per trip, in chain (folio_viaje) order.
+
+    ``hab`` gives the ages that tell a daycare trip (school) from an escort to one
+    (F); without it every Guardería trip keeps the lookup's S.
 
     The rows ``load_eod`` marked as non-trips (``eodgdl.chains.non_trips``) are
     left out; ``TripNumber`` is renumbered over them and over the gaps in
@@ -149,9 +158,12 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
     passenger = trips[override["source"]] == "Acompañante"
     mode = mode.mask(is_auto & passenger, override["values"]["Acompañante"])
 
-    # Purpose: the motivo_viaje lookup, then demote repeat work/school trips,
-    # ranked in chain order.
+    # Purpose: the motivo_viaje lookup, a daycare trip from ESCORT_FROM_AGE on as an
+    # escort, then demote repeat work/school trips, ranked in chain order.
     purpose, first_trip = _purposes(trips, viv)
+    if hab is not None:
+        age = hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
+        purpose = purpose.mask((trips.motivo_viaje == DAYCARE).to_numpy() & (age >= ESCORT_FROM_AGE), "F")
     repeat = trips.assign(_p=purpose).groupby(PERSON + ["_p"]).cumcount() > 0
     destination = (purpose.mask((purpose == "W") & repeat, "R")
                           .mask((purpose == "S") & repeat, "C"))
@@ -186,5 +198,5 @@ def build(tables) -> ODTables:
     return ODTables(
         build_households(viv, hab),
         build_people(hab, trips, viv),
-        build_trips(trips, legs, viv),
+        build_trips(trips, legs, viv, hab),
     )

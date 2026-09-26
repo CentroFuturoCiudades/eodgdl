@@ -136,7 +136,8 @@ ISSUE_CODES = {
     "fin_fuera_de_casa": "the day's last trip is not a 'Regresar a Casa' that reaches the household's zone",
     "actividad_en_casa": "an activity motive with destination type 'Su casa': work from home, or a return "
     "home mislabelled the other way round",
-    "motivo_guarderia": "a 'Guardería' motive, which the model maps to school; most are adults escorting a child",
+    "motivo_guarderia": "a 'Guardería' motive: the model reads it as school under age 12 and as an escort (F) from "
+    "12 on, since most are adults escorting a child",
 }
 NON_TRIP_ISSUES = ("regreso_en_casa",)  # rows kept in trips that are not trips
 # ISSUE_CODES in two halves, for the hand review. A breaking issue leaves the
