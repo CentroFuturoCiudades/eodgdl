@@ -321,9 +321,10 @@ def load_eod(
     totals; the cleaned table is short the 38 duplicates' weight.
 
     After the rules come the hand revisions (``revise_chains``, on by
-    default, ignored without ``clean_chains``): the passes frozen under
-    ``eodgdl/revisions/``, each the edits of one review sheet
-    (:mod:`eodgdl.review`), are applied in order. A row dropped by hand is
+    default, ignored without ``clean_chains``): the hand decisions in
+    ``eodgdl/revisions/chains.csv.gz``, one per trip and field, each made
+    against the rules' output and merged there from the review sheets
+    (:mod:`eodgdl.review`), are applied in one pass. A row dropped by hand is
     gone (its legs too, ``viajes_contados`` kept in step), ``ajustes`` then
     says field by field whether a value that differs from the shipped one is
     the rules' (their code) or was set by hand (``<field>:revision``), and

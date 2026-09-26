@@ -362,7 +362,7 @@ def code_counts(s: pd.Series) -> dict[str, int]:
     return codes.value_counts().to_dict()
 
 
-def counts(tables, rules, shipped_trips: int, passes: int) -> dict[str, int]:
+def counts(tables, rules, shipped_trips: int, decisions: int) -> dict[str, int]:
     """Every figure the prose quotes, read back off the tables themselves.
 
     ``rules`` is the chain rules' output before the hand revision (``load_stages().rules``):
@@ -382,7 +382,7 @@ def counts(tables, rules, shipped_trips: int, passes: int) -> dict[str, int]:
         "eliminadas": shipped_trips - len(tables.trips),
         "duplicados": shipped_trips - len(rules.trips),
         "descartadas": len(rules.trips.index.difference(tables.trips.index)),
-        "pasadas": passes,
+        "decisiones": decisions,
         "filas_a_mano": int(revised.str.contains(":revision", regex=False).sum()),
         "horas_a_mano": by_hand.get("hora:revision", 0),
         "motivos_a_mano": by_hand.get("motivo:revision", 0),
@@ -451,14 +451,14 @@ def export(data_dir: Path, out_dir: Path) -> dict[str, pd.DataFrame]:
     os.environ["EODGDL_DATA_DIR"] = str(data_dir)
     from eodgdl._resources import imeplan_rename_map  # noqa: PLC0415  (after the env var)
     from eodgdl.data._catalog import VIAJES_CSV  # noqa: PLC0415
-    from eodgdl._resources import chain_revisions  # noqa: PLC0415
+    from eodgdl._resources import chain_decisions  # noqa: PLC0415
     from eodgdl.eod import load_stages  # noqa: PLC0415
 
     stages = load_stages(data_dir)
     tables = stages.revised   # `counts` reads the audit columns before DROP removes them
     # the trip table as shipped, to say how many rows the cleaning removed
     shipped = len(pd.read_csv(data_dir / VIAJES_CSV, encoding="ISO-8859-1", usecols=[0]))
-    c = counts(tables, stages.rules, shipped, len(chain_revisions()))
+    c = counts(tables, stages.rules, shipped, len(chain_decisions()))
     issues = code_counts(tables.trips["problemas"])
     desc, note = descriptions(c), notes(c)
 
@@ -681,8 +681,8 @@ y ninguna etiqueta se recodificó salvo donde se indica.
       viaje empiece después de que llegó el anterior. Las horas imputadas nunca se editan, y
       donde no hay una relectura única no se toca nada.
    6. *Revisión a mano*: las cadenas que las reglas dejaron con algún defecto se revisaron a
-      mano, persona por persona y con una nota para cada cambio, en {c['pasadas']} pasadas.
-      La revisión fijó {c['horas_a_mano']:,} horas de inicio, {c['motivos_a_mano']} motivos,
+      mano, persona por persona, y la revisión quedó en {c['decisiones']:,} decisiones, cada una
+      con su motivo por escrito. Fijó {c['horas_a_mano']:,} horas de inicio, {c['motivos_a_mano']} motivos,
       {c['origenes_a_mano']:,} orígenes y {c['destinos_a_mano']} destinos, cambió en
       {c['tipos_origen_a_mano']:,} personas la respuesta a dónde empezó su día y descartó
       {c['descartadas']} filas —sobre todo regresos a casa registrados dos veces y, en los

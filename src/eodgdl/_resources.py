@@ -1,4 +1,4 @@
-"""Lazy loaders for bundled package config: the IMEPLAN column rename map and the hand revisions.
+"""Lazy loaders for bundled package config: the IMEPLAN column rename map and the hand decisions.
 
 This is *code config*, not data: ``rename_imeplan`` and ``load_eod`` need it to run, so it
 ships inside the package (not via the data mirror) and the package works offline.
@@ -21,35 +21,19 @@ def imeplan_rename_map() -> dict:
     return json.loads(text)
 
 
-def pass_number(name: str) -> int:
-    """The n of a frozen pass's file name ``chains_<n>.csv.gz``."""
-    return int(name.removeprefix("chains_").removesuffix(".csv.gz"))
-
-
-def pass_files() -> list:
-    """The frozen passes under ``eodgdl/revisions/``, in the order they apply."""
-    root = resources.files("eodgdl") / "revisions"
-    return sorted(
-        (f for f in root.iterdir() if f.name.startswith("chains_") and f.name.endswith(".csv.gz")),
-        key=lambda f: pass_number(f.name),
-    )
-
-
 @functools.cache
-def chain_revisions() -> list[tuple[str, "pd.DataFrame"]]:
-    """The frozen hand passes over the trip chains, in the order they apply: [(file name, edits)].
+def chain_decisions() -> "pd.DataFrame":
+    """The hand decisions over the trip chains that ``load_eod`` applies: ``eodgdl/revisions/chains.csv.gz``.
 
-    Each file under ``eodgdl/revisions/`` (``chains_<n>.csv.gz``) holds the edits one review
-    sheet gave (:func:`eodgdl.review.freeze_edits`); see the README there. Keys are integers,
-    every other column text.
+    One row per trip and field (``household, person, trip, field, before, after, note,
+    source``), each made against the chain rules' output; a review round merges into it
+    (:func:`eodgdl.review.merge_decisions`). See the README there. Keys are integers,
+    every other column text; the frame is shared, so do not modify it.
     """
     import pandas as pd
 
-    out = []
-    for f in pass_files():
-        with f.open("rb") as fh:
-            edits = pd.read_csv(fh, compression="gzip", dtype=str, keep_default_na=False)
-        for key in ("household", "person", "trip"):
-            edits[key] = edits[key].astype(int)
-        out.append((f.name, edits))
-    return out
+    with (resources.files("eodgdl") / "revisions" / "chains.csv.gz").open("rb") as fh:
+        decisions = pd.read_csv(fh, compression="gzip", dtype=str, keep_default_na=False)
+    for key in ("household", "person", "trip"):
+        decisions[key] = decisions[key].astype(int)
+    return decisions

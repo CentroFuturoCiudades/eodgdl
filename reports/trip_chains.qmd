@@ -47,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 from eodgdl import clean_trip_chains, load_stages, tasha
-from eodgdl._resources import chain_revisions
+from eodgdl._resources import chain_decisions
 from eodgdl.chains import (
     BREAKING_ISSUES,
     FIX_CODES,
@@ -87,7 +87,7 @@ def show(df):
 #| label: load
 #| include: false
 
-# the survey as shipped, after the chain rules, and after the hand passes under eodgdl/revisions/, from one
+# the survey as shipped, after the chain rules, and after the hand decisions in eodgdl/revisions/, from one
 # read; everything but @sec-revised counts on the first two
 raw, clean, revised = load_stages()
 
@@ -1541,14 +1541,15 @@ a tour with two stops but also where a missing leg would show, and `{python} sev
 exactly seven, the maximum observed. `{python} pct(minute_zero, 0)` of reported minutes
 are :00.
 
-# The hand passes {#sec-revised}
+# The hand decisions {#sec-revised}
 
 ```{python}
 #| label: revised
 #| include: false
 
-passes = chain_revisions()
-n_passes, n_edits = len(passes), sum(len(e) for _, e in passes)
+decisions = chain_decisions()
+n_decisions = len(decisions)
+assert not decisions.duplicated(["household", "person", "trip", "field"]).any()   # one per trip and field
 V = revised.trips
 by_hand = V[FIX_FLAG].str.contains(":revision", regex=False)
 n_rows_hand = int(by_hand.sum())
@@ -1558,7 +1559,7 @@ revised_tbl = pd.DataFrame({
     "problemas code": list(ISSUE_CODES),
     "group": ["breaking" if c in BREAKING_ISSUES else "tolerated" for c in ISSUE_CODES],
     "after the rules": [fmt(has_code(clean.trips[ISSUE_FLAG], c).sum()) for c in ISSUE_CODES],
-    "after the hand passes": [fmt(has_code(V[ISSUE_FLAG], c).sum()) for c in ISSUE_CODES],
+    "after the hand decisions": [fmt(has_code(V[ISSUE_FLAG], c).sum()) for c in ISSUE_CODES],
 })
 assert all(int(has_code(V[ISSUE_FLAG], c).sum()) == 0 for c in BREAKING_ISSUES)
 assert V.groupby(level=P).tipo_lugar_origen.nunique().max() == 1      # the day-start answer, one per person
@@ -1566,20 +1567,21 @@ assert tasha.validate_all(*tasha.build(revised)) == []
 ```
 
 Everything above is counted on the chain rules' output, `load_eod(revise_chains=False)`.
-`load_eod()` goes on to apply the hand passes frozen under `eodgdl/revisions/`, each the
-edits of one review sheet (`eodgdl.review`); their decisions, pass by pass, are in the
-README there. The `{python} n_passes` passes hold `{python} fmt(n_edits)` edits. On the
-tables they leave, `{python} fmt(n_rows_hand)` rows of `{python} fmt(n_persons_hand)` people
-hold a value set by hand (a `<field>:revision` code in `ajustes`), `{python} n_hand_dropped`
-rows the rules kept are gone — most of them returns home recorded twice and, on night-shift
-days, the next morning's return, outside the survey day — and no breaking code is left
-(@tbl-revised). `load_eod` checks every edit against the tables it is applied to, so a change
-to the rules that moves a value a pass was made against fails the load instead of being
-overwritten.
+`load_eod()` goes on to apply the hand decisions in `eodgdl/revisions/chains.csv.gz`, merged
+there from the review sheets (`eodgdl.review`) and applied in one pass: one decision per trip
+and field, each made against the rules' output, with the reviewer's reason; the README there
+tells what each review round decided. The table holds `{python} fmt(n_decisions)` decisions.
+On the tables they give, `{python} fmt(n_rows_hand)` rows of `{python} fmt(n_persons_hand)`
+people hold a value set by hand (a `<field>:revision` code in `ajustes`),
+`{python} n_hand_dropped` rows the rules kept are gone — most of them returns home recorded
+twice and, on night-shift days, the next morning's return, outside the survey day — and no
+breaking code is left (@tbl-revised). `load_eod` checks every decision against the rules'
+output, so a change to the rules that moves a value a decision was made against fails the
+load instead of being overwritten.
 
 ```{python}
 #| label: tbl-revised
-#| tbl-cap: "The `problemas` codes after the chain rules and after the hand passes, over every trip row. A breaking code leaves the chain inconsistent and is resolved by hand; a tolerated one leaves a consistent chain and is left for the consumer."
+#| tbl-cap: "The `problemas` codes after the chain rules and after the hand decisions, over every trip row. A breaking code leaves the chain inconsistent and is resolved by hand; a tolerated one leaves a consistent chain and is left for the consumer."
 show(revised_tbl)
 ```
 
@@ -1653,8 +1655,8 @@ weakens any segmentation the scheduler needs.
 | "return home" that did not reach home | fixed | recode from the destination type, zone-guarded | `load_eod` |
 | mistyped start hours | fixed | fewest-edits typo search, unique readings only, edited rows marked `hora:+12h` and so on; the residual marked `hora_invertida` | `load_eod` |
 | knowing what was changed and what is left | fixed | every change on the row in `ajustes`, every defect left in `problemas`; filter with `has_code`, drop non-trips with `non_trips` | `load_eod` |
-| a trip after a return home starting elsewhere | fixed | set the origin to the home zone; the `{python} breaks_clean` breaks left are ambiguous, and the hand passes resolve them (@sec-revised) | `load_eod` |
-| residual non-monotone times | fixed by hand | the hand passes resolve every `hora_invertida` and `hora_anterior` (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward, or overlaps within the tolerance (`hora_traslapada`) | `eodgdl/revisions/`, `tasha.build` |
+| a trip after a return home starting elsewhere | fixed | set the origin to the home zone; the `{python} breaks_clean` breaks left are ambiguous, and the hand decisions resolve them (@sec-revised) | `load_eod` |
+| residual non-monotone times | fixed by hand | the hand decisions resolve every `hora_invertida` and `hora_anterior` (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward, or overlaps within the tolerance (`hora_traslapada`) | `eodgdl/revisions/`, `tasha.build` |
 | days not home-based | open | drop from scheduler estimation; keep for mode choice; night shifts keep the evening trip to work and drop the next morning's return, outside the survey day (passes 2–3); the days are marked `inicio_fuera_de_casa` or `fin_fuera_de_casa` | estimation |
 | Guardería coded as school | fixed | from age 12 a Guardería trip is an escort (F) and does not make its traveller a student; under 12 it stays school, and pass 7 put back the 23 children's trips pass 1 had recoded as escorts; marked `motivo_guarderia` | `mappings.yaml`, `eodgdl/revisions/` |
 | people whose every row is a marked non-trip | open | drop the `{python} n_zero_recoded` people from estimation rather than count them as non-travellers | estimation |
@@ -1671,7 +1673,7 @@ weakens any segmentation the scheduler needs.
 from eodgdl import load_stages, clean_trip_chains, tasha
 
 raw, clean, revised = load_stages()          # as shipped; the five rules applied (trips gains ajustes and
-                                             # problemas); then the hand passes under eodgdl/revisions/
+                                             # problemas); then the hand decisions in eodgdl/revisions/
                                              # — what load_eod returns with clean_chains=False,
                                              # revise_chains=False and by default, from one read
 trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)   # the rules on their own

@@ -355,7 +355,7 @@ trips:
       (hora_nocturna), 26 inversions within the tolerance (hora_anterior),
       101 same-minute starts (hora_repetida) and 569 starts inside the
       previous trip's rounded leg minutes (hora_traslapada) are marked too,
-      one time code per row at most. The hand passes under
+      one time code per row at most. The hand decisions in
       eodgdl/revisions/ resolve every hora_invertida and hora_anterior, so
       the only time-order codes load_eod() returns are hora_nocturna (overnight,
       which the derivation codes past 2400) and hora_traslapada (rounding):

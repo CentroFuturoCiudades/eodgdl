@@ -1,53 +1,71 @@
-# Hand revisions of the trip chains
+# Hand decisions over the trip chains
 
-`load_eod()` applies these files, in order, after the chain rules
-(`eodgdl.review.apply_revisions`; `load_eod(revise_chains=False)` stops before them).
-Each is one hand pass over a review sheet (`eodgdl review export`), frozen with `eodgdl review
-freeze` as the edits that change something: one row per changed cell, columns
-`household, person, trip, field, before, after, note`. `before` is what the sheet showed,
-`after` the value applied (`HH:MM`, a level's own label, a zone id or `home`, `dropped` or
-`restored`), `note` the reviewer's reason (once per trip, on its first edit). Passes 1–6 were
-frozen by hand before the command existed.
+`load_eod()` applies `chains.csv.gz`, the hand decisions, to the chain rules' output in one
+pass (`eodgdl.review.apply_revisions`; `load_eod(revise_chains=False)` stops before it). Each
+row is one decision, columns `household, person, trip, field, before, after, note, source`:
 
-A later pass is exported from the tables with the earlier passes applied, so its `before`
-is the earlier pass's `after`. Never edit a frozen pass: correct it with a new pass. A pass
-whose criterion is a rule rather than a call per chain keeps the script that wrote its sheet
-under `scripts/revisions/` (from pass 7 on), so the criterion is code and a second run finds
-nothing left to do.
+- `before` is the rules' value as a review sheet shows it — the shipped one on a row the rules
+  dropped — and `after` the value decided: `HH:MM`, a level's own label, a zone id or `home`,
+  and `dropped` or `restored` under `status`.
+- `note` is the reviewer's reason and `source` the review sheet that made the decision
+  (`notebooks/<source>.csv`).
+- There is one decision at most per trip and field, and each is made against the rules'
+  output, never against another decision, so the table applies at once and in no particular
+  order. The person's answer to where the day started (`orig. type`) sits on their first
+  trip once the decisions are in.
 
-## How a pass is read
+## A review round
+
+Export the chains pending a fix from the tables `load_eod()` returns (`eodgdl review export`),
+edit the sheet, check it (`eodgdl review verify`) and merge it (`eodgdl review freeze`). A new
+value replaces the field's decision and a value that is the rules' own removes it; `dropped`
+adds a drop and takes the row's other decisions with it, and `restored` removes a drop (or, on
+a row the rules dropped, is a decision of its own). `freeze` writes nothing unless the merged
+decisions, applied once to the rules' output, give exactly what the sheet's edits give on top of
+today's tables. A round never stacks on another: an earlier decision is replaced or removed in
+place, and git keeps the history. A round whose criterion is a rule rather than a call per
+chain keeps the script that wrote its sheet under `scripts/revisions/`.
+
+## How the decisions are read
 
 `eodgdl.review.apply_edits`, since the review of the chain fixes (2026-09-25):
 
-- **Every edit is checked against the tables it is applied to.** Its `before` must be what the
-  sheet showed — the current value, or the shipped one on a row the same pass restores — or
-  the pass was made against another version of the tables and the load fails, naming the
-  edit. A value that already holds is skipped. Every edit of the seven passes holds, so a
-  change to the chain rules that moves a value a pass was made against now fails the load
-  instead of being overwritten.
+- **Every decision is checked against the rules' output.** Its `before` must be what the
+  rules give — the shipped value on a row the same decisions restore — or the load fails,
+  naming it. A change to the chain rules that moves a value a decision was made against fails
+  the load for that decision only.
 - **The origin type is one answer per person** ("¿En qué tipo de lugar inició su primer
-  viaje?"). An `orig. type` edit on the person's first trip changes it on every row; one on any
-  other trip is moot. Pass 1 typed 6,357 per trip (the previous trip's destination type);
-  they are moot, which changes no first trip and so nothing the chain rules, the model build
-  or the reweighting read. The sheet shows the answer on the first trip only.
-- **A mode edit keeps the trip on its legs**: on a one-leg trip the leg takes the new mode,
-  on a trip of several legs the new mode must be one of theirs, since the model build reads
-  the main mode and the reweighting the legs.
+  viaje?"): the decision on the person's first trip sets it on every row, one on any other
+  trip is moot, and the sheet shows it on the first trip only.
+- **A mode decision keeps the trip on its legs**: on a one-leg trip the leg takes the new
+  mode, on a trip of several legs the new mode must be one of theirs, since the model build
+  reads the main mode and the reweighting the legs.
 - **`ajustes` is net.** Field by field, a value that is the rules' carries the rules' codes,
-  one a pass set carries `<field>:revision`, and one that is the shipped value again carries
-  nothing; `fila:revision` marks a row the rules dropped and a pass restored. The history —
-  a value set by pass 1 and put back by pass 3, a row dropped and restored — is in these
-  files, not on the rows.
+  one decided by hand carries `<field>:revision`, and one that is the shipped value again
+  carries nothing; `fila:revision` marks a row the rules dropped and a decision restored.
 
-| file | sheet | persons | edits |
-|---|---|---|---|
-| `chains_1.csv.gz` | `notebooks/chain_review.csv` (every person with a `problemas` code, exported 2026-09-08, returned 2026-09-24) | 4,435 | 11,157 cells, 512 rows dropped |
-| `chains_2.csv.gz` | `notebooks/chain_review_2.csv` (the persons still carrying a breaking code after pass 1, plus 75 first-trip returns pass 1 had dropped; filled 2026-09-25) | 146 | 149 cells, 34 rows dropped, 77 restored |
-| `chains_3.csv.gz` | `notebooks/chain_review_3.csv` (a second look at pass 2's judgment calls; filled 2026-09-25) | 67 | 51 cells, 42 rows dropped |
-| `chains_4.csv.gz` | `notebooks/chain_review_4.csv` (the non-trips pass 1 made out of real trips; filled 2026-09-25) | 3 | 9 cells |
-| `chains_5.csv.gz` | `notebooks/chain_review_5.csv` (first trips whose recorded origin pass 1 replaced with home; filled 2026-09-25) | 52 | 124 cells |
-| `chains_6.csv.gz` | `notebooks/chain_review_6.csv` (activity trips that arrive home, `actividad_en_casa`; filled 2026-09-25) | 138 | 141 cells |
-| `chains_7.csv.gz` | `notebooks/chain_review_7.csv` (three kinds of pass-1 edit undone, written by `scripts/revisions/chains_7.py`; 2026-09-25) | 38 | 25 cells, 23 rows restored |
+## History: seven passes, folded into one table
+
+Until 2026-09-25 the review was seven passes frozen one after another (`chains_<n>.csv.gz`),
+each made against the tables the passes before it left, so later passes undid earlier ones:
+12,344 frozen edits for the 5,262 decisions that stand. `scripts/revisions/squash_passes.py`
+merged them in order into `chains.csv.gz`, exactly as a review round merges, and checked after
+each pass that the table, applied once, gives what the passes gave one after another. The
+passes are archived under `notebooks/revisions/`, beside their sheets; nothing loads them.
+
+| pass | sheet | persons | frozen edits | decisions standing |
+|---|---|---|---|---|
+| 1 | `notebooks/chain_review.csv` (every person with a `problemas` code, exported 2026-09-08, returned 2026-09-24) | 4,435 | 11,669: 11,157 cells, 512 rows dropped | 4,858 |
+| 2 | `notebooks/chain_review_2.csv` (the persons still carrying a breaking code after pass 1, plus 75 first-trip returns pass 1 had dropped; filled 2026-09-25) | 146 | 260: 149 cells, 34 rows dropped, 77 restored | 127 |
+| 3 | `notebooks/chain_review_3.csv` (a second look at pass 2's judgment calls; filled 2026-09-25) | 67 | 93: 51 cells, 42 rows dropped | 71 |
+| 4 | `notebooks/chain_review_4.csv` (the non-trips pass 1 made out of real trips; filled 2026-09-25) | 3 | 9 cells | 3 |
+| 5 | `notebooks/chain_review_5.csv` (first trips whose recorded origin pass 1 replaced with home; filled 2026-09-25) | 52 | 124 cells | 64 |
+| 6 | `notebooks/chain_review_6.csv` (activity trips that arrive home, `actividad_en_casa`; filled 2026-09-25) | 138 | 141 cells | 139 |
+| 7 | `notebooks/chain_review_7.csv` (three kinds of pass-1 edit undone, written by `scripts/revisions/chains_7.py`; 2026-09-25) | 38 | 48: 25 cells, 23 rows restored | 0: every edit undoes a pass-1 decision |
+
+The frozen edits that left no decision are the 6,357 origin types pass 1 typed per trip (moot:
+the origin type is one answer per person), values a later pass put back, drop-and-restore
+pairs, and edits whose value already held.
 
 Pass 1 was frozen with 26 values normalized from the sheet: 21 starts written `HH:MM:00`,
 one `22.13` (household 7791, person 4, trip 4, read 22:13), four `Regresar a casa`. It was

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from eodgdl import EODTables, clean_trip_chains, review
-from eodgdl._resources import chain_revisions
+from eodgdl._resources import chain_decisions
 from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, TOLERATED_ISSUES, has_code, mark_issues, non_trips
 from test_eod import AGEB, CAR, ELSEWHERE, SHOP, VIV, _trips
 
@@ -180,9 +180,66 @@ def test_a_row_a_pass_dropped_comes_back_as_the_rules_left_it():
     assert (t.loc[(1, 3, 2), "hora_inicio_m"], t.loc[(1, 3, 2), "ajustes"]) == (30, "hora:revision")
     assert second.hab.viajes_contados.equals(rules.hab.viajes_contados)
     assert t.problemas.equals(mark_issues(t, VIV))
-    # the passes in a row, as load_eod applies them: the rules' tables are where a restore comes from
-    both = review.apply_revisions(rules, shipped, [("a", drop), ("b", back)])
-    assert both.trips.equals(t)
+
+
+def _merge(decisions, edits, tables, shipped, rules, source):
+    """A review round: the sheet's edits against the tables it was exported from, merged into the decisions."""
+    return review.merge_decisions(decisions, review.freeze_edits(edits, tables, shipped, rules), rules, shipped, source)
+
+
+def _same(a, b):
+    return a.trips.equals(b.trips) and a.hab.equals(b.hab)
+
+
+def test_a_round_merges_into_the_decisions_that_apply_in_one_pass():
+    shipped, rules = _survey(_fixture())
+    one = pd.DataFrame([
+        (1, 1, 2, "status", "", "dropped", "a duplicate"),
+        (1, 3, 2, "status", "", "dropped", "not a trip"),
+        (1, 4, 2, "start", "07:00", "12:00", "a 12-hour entry"),
+    ], columns=EDIT_COLUMNS)
+    d1 = _merge(review.decision_frame([]), one, rules, shipped, rules, "round 1")
+    t1 = review.apply_revisions(rules, shipped, d1)
+    assert _same(t1, review.apply_edits(rules, one, shipped, rules))
+    # the next round is exported from the tables the decisions give, and merges into the same decisions
+    two = pd.DataFrame([
+        (1, 1, 2, "status", "dropped", "restored", "a real trip after all"),
+        (1, 3, 2, "status", "dropped", "restored", "a real trip after all"),
+        (1, 3, 2, "start", "09:00", "09:30", ""),          # restored and edited in one round: the sheet showed it as shipped
+        (1, 4, 2, "start", "12:00", "07:00", "the rules had it right"),
+        (1, 5, 1, "status", "", "dropped", "not a trip"),
+    ], columns=EDIT_COLUMNS)
+    d2 = _merge(d1, two, t1, shipped, rules, "round 2")
+    # a restore removes the drop, the rules' own value removes its decision: nothing is reverted by a later pass
+    assert [tuple(r) for r in d2.itertuples(index=False)] == [
+        (1, 3, 2, "start", "09:00", "09:30", "a real trip after all", "round 2"),
+        (1, 5, 1, "status", "", "dropped", "not a trip", "round 2"),
+    ]
+    assert review.decision_changes(d1, d2) == {"added": 2, "changed": 0, "removed": 3}
+    once = review.apply_revisions(rules, shipped, d2)
+    assert _same(once, review.apply_edits(t1, two, shipped, rules))
+    # a row back comes as the rules left it: the repaired 17:30 with its code
+    assert (once.trips.loc[(1, 1, 2), "hora_inicio_h"], once.trips.loc[(1, 1, 2), "ajustes"]) == (17, "hora:+12h")
+    # applied again on the tables they give, the decisions all hold
+    assert _same(review.apply_edits(once, d2, shipped, rules), once)
+
+
+def test_an_answer_stays_on_the_person_s_first_trip_as_the_decisions_change():
+    shipped, rules = _survey(_fixture())
+    one = pd.DataFrame([(1, 4, 1, "orig. type", "Su casa", "Otra vivienda", "slept at a relative's")], columns=EDIT_COLUMNS)
+    d1 = _merge(review.decision_frame([]), one, rules, shipped, rules, "round 1")
+    t1 = review.apply_revisions(rules, shipped, d1)
+    two = pd.DataFrame([(1, 4, 1, "status", "", "dropped", "not a trip")], columns=EDIT_COLUMNS)
+    d2 = _merge(d1, two, t1, shipped, rules, "round 2")
+    # the answer moves to the trip that is now first, with its note and round
+    assert d2[d2.field == "orig. type"][["trip", "after", "note", "source"]].values.tolist() == [
+        [2, "Otra vivienda", "slept at a relative's", "round 1"]]
+    once = review.apply_revisions(rules, shipped, d2)
+    assert (once.trips.loc[(1, 4)].tipo_lugar_origen == "Otra vivienda").all()
+    assert _same(once, review.apply_edits(t1, two, shipped, rules))
+    # the answer set back to the survey's removes the decision
+    three = pd.DataFrame([(1, 4, 2, "orig. type", "Otra vivienda", "Su casa", "")], columns=EDIT_COLUMNS)
+    assert (_merge(d2, three, once, shipped, rules, "round 3").field != "orig. type").all()
 
 
 def test_ajustes_says_what_the_values_owe_to_the_rules_and_to_the_hand():
@@ -285,11 +342,12 @@ def test_freeze_keeps_what_changes_in_canonical_form(tmp_path):
         (1, 4, 2, "start", "07:00", "09:05", "one note per trip"),
         (1, 4, 2, "motive", "Regresar a Casa", "Compras (comida)", ""),
     ]
-    path = review.write_pass(frozen, tmp_path / "chains_9.csv.gz")
-    assert path.read_bytes() == review.write_pass(frozen, tmp_path / "again.csv.gz").read_bytes()   # reproducible bytes
+    decisions = review.merge_decisions(review.decision_frame([]), frozen, cleaned, shipped, "round 1")
+    path = review.write_decisions(decisions, tmp_path / "chains.csv.gz")
+    assert path.read_bytes() == review.write_decisions(decisions, tmp_path / "again.csv.gz").read_bytes()   # reproducible bytes
     back = pd.read_csv(gzip.open(path), dtype=str, keep_default_na=False).astype({k: int for k in review.KEYS})
-    assert back.equals(frozen)
-    assert review.apply_edits(cleaned, back, shipped, cleaned).trips.equals(review.apply_edits(cleaned, edits, shipped, cleaned).trips)
+    assert back.equals(decisions) and (back.note != "").all()                  # every decision keeps its trip's note
+    assert review.apply_revisions(cleaned, shipped, back).trips.equals(review.apply_edits(cleaned, edits, shipped, cleaned).trips)
     with pytest.raises(ValueError, match="not a time"):
         review.freeze_edits(edits.assign(after=edits.after.replace("9:05:00", "9.05")), cleaned, shipped, cleaned)
 
@@ -353,25 +411,22 @@ def test_an_edited_trip_end_takes_the_zone_coded_for_its_ageb(stages):
     assert (ends.groupby("ageb").zone.nunique() == 1).all()
 
 
-def test_load_eod_applies_the_frozen_hand_passes(stages):
+def test_load_eod_applies_the_hand_decisions(stages):
     shipped, rules, revised = stages
     t = revised.trips
-    passes = chain_revisions()
-    assert [(name, len(edits)) for name, edits in passes] == [
-        ("chains_1.csv.gz", 11_669), ("chains_2.csv.gz", 260), ("chains_3.csv.gz", 93), ("chains_4.csv.gz", 9),
-        ("chains_5.csv.gz", 124), ("chains_6.csv.gz", 141), ("chains_7.csv.gz", 48)]
-    # a row's last status wins: pass 1 drops 512, pass 2 restores 77 of them and drops 34 more, pass 3 drops 42,
-    # pass 7 restores 23
-    status = pd.concat([e[e.field == "status"] for _, e in passes]).drop_duplicates(review.KEYS, keep="last")
-    gone = pd.MultiIndex.from_frame(status.loc[status.after == "dropped", review.KEYS])
-    back = pd.MultiIndex.from_frame(status.loc[status.after == "restored", review.KEYS])
-    assert (len(gone), len(back)) == (488, 100)
-    assert not t.index.isin(gone).any() and back.isin(t.index).all()
+    decisions = chain_decisions()
+    # one decision per trip and field, every one with its reason and the review sheet it came from
+    assert len(decisions) == 5_262 and not decisions.duplicated(review.KEYS + ["field"]).any()
+    assert decisions.field.value_counts().to_dict() == {
+        "start": 1_894, "origin": 1_365, "orig. type": 697, "status": 488, "motive": 461, "dest. type": 215, "destination": 142}
+    assert (decisions.note != "").all() and set(decisions.source) <= {"chain_review"} | {f"chain_review_{n}" for n in range(2, 8)}
+    gone = pd.MultiIndex.from_frame(decisions.loc[decisions.after == "dropped", review.KEYS])
+    assert len(gone) == 488 and not t.index.isin(gone).any() and not (decisions.after == "restored").any()
     assert len(t) == len(rules.trips) - 488 == 154_136 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
     assert (revised.hab.viajes_contados == t.groupby(level=PERSON).size().reindex(revised.hab.index).fillna(0)).all()
     assert review.sheet_edits(review.chain_sheet(review.chain_rows(revised, shipped))).empty
-    # the last pass again changes nothing: its values hold, its rows are gone or back
-    again = review.apply_edits(revised, passes[-1][1], shipped, rules)
+    # applied again on the tables they give, the decisions all hold: nothing changes
+    again = review.apply_edits(revised, decisions, shipped, rules)
     assert again.trips.equals(t) and again.hab.equals(revised.hab) and again.legs.equals(revised.legs)
     assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
     assert has_code(t.ajustes, "origen:revision").sum() == 1_365 and has_code(t.ajustes, "fila:revision").sum() == 0

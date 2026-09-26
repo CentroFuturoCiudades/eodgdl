@@ -19,8 +19,12 @@ the pass's evidence and a second run finds nothing left to do.
   one-leg trips with no evidence, leaving it apart from the leg the
   reweighting reads. The mode goes back to the survey's, and the leg with it.
 
+It was frozen as pass 7 (``notebooks/revisions/chains_7.csv.gz``, archived). Every one
+of its edits undoes a pass-1 decision, so merged into the hand decisions
+(``scripts/revisions/squash_passes.py``) it removes 48 and adds none; run on today's
+tables the script finds nothing left to do.
+
     uv run python scripts/revisions/chains_7.py --data data --out notebooks/chain_review_7.csv
-    uv run eodgdl review freeze notebooks/chain_review_7.csv --data data
 """
 from __future__ import annotations
 

@@ -31,15 +31,18 @@ rows cannot be added.
     edits = review.sheet_edits(review.read_sheet("chain_review.csv"))
     verified = review.verify_edits(stages.revised, stages.shipped, edits, stages.rules)
     frozen = review.freeze_edits(edits, stages.revised, stages.shipped, stages.rules)
-    review.write_pass(frozen, review.next_pass_path())                # the next pass load_eod applies
+    merged = review.merge_decisions(chain_decisions(), frozen, stages.rules, stages.shipped, "chain_review_8")
+    review.write_decisions(merged, review.decisions_path())           # what load_eod applies, in one pass
 
 ``verify_edits`` applies the edits (:func:`apply_edits`) and says which
 defects they cleared and which they left or made; ``freeze_edits`` keeps the
-edits that change something, in canonical form, for a new pass under
-``eodgdl/revisions/``. An edit is checked against the tables it is applied
-to: the value it says the sheet showed must be the one they hold, so a sheet
-cannot overwrite a value its editor never saw. ``eodgdl review export``,
-``verify`` and ``freeze`` wrap the three steps.
+edits that change something, in canonical form, and ``merge_decisions`` folds
+them into the hand decisions ``load_eod`` applies — one per trip and field,
+each against the rules' output (``eodgdl/revisions/chains.csv.gz``). An edit
+is checked against the tables it is applied to: the value it says the sheet
+showed must be the one they hold, so a sheet cannot overwrite a value its
+editor never saw. ``eodgdl review export``, ``verify`` and ``freeze`` wrap the
+three steps.
 """
 
 from __future__ import annotations
@@ -640,15 +643,15 @@ def _same(a: pd.Series, b: pd.Series) -> np.ndarray:
 
 
 def _net_fixes(trips: pd.DataFrame, shipped: EODTables, rules: EODTables) -> pd.Series:
-    """The ``ajustes`` of a revised table: what each row's values owe to the rules and to the hand passes.
+    """The ``ajustes`` of a revised table: what each row's values owe to the rules and to the hand decisions.
 
     Field by field (``_PREFIX_COLUMNS``): a value that is the shipped one
     carries no code; one that is the rules' value carries the rules' codes
     for that field; any other was set by hand and carries ``<field>:revision``.
     A row the rules dropped and a pass restored carries ``fila:revision``. So
     a hand edit that puts back the shipped value takes the rule's code off the
-    row with it, and a later pass that undoes an earlier one leaves no trace
-    on the row; the frozen passes keep the history.
+    row with it, and a decision undone leaves no trace on the row; git keeps
+    the history of the decisions.
     """
     n = len(trips)
     in_rules = trips.index.isin(rules.trips.index)
@@ -687,8 +690,11 @@ def _apply(cleaned: EODTables, r: _Resolution, shipped: EODTables, rules: EODTab
         raise ValueError("edits that cannot be applied:\n  " + "\n  ".join(r.problems))
     trips, hab = r.trips.copy(), cleaned.hab.copy()
     legs = r.legs.copy() if r.legs is not None else None
-    by_column = {}
+    by_column, answers = {}, {}
     for key, f, new in r.sets:
+        if f.key == "otype":  # the person's answer, set on every row they keep below
+            answers[key[:2]] = new
+            continue
         i = trips.index.get_loc(key)
         if isinstance(f.column, tuple):
             for c, v in zip(f.column, new):
@@ -710,8 +716,12 @@ def _apply(cleaned: EODTables, r: _Resolution, shipped: EODTables, rules: EODTab
             hab.loc[person, "viajes_contados"] += sign * n
     trips = trips.sort_index()
     legs = legs.sort_index() if legs is not None else None
-    if ORIGIN_TYPE in trips:  # one answer per person, the one on the first trip
-        trips[ORIGIN_TYPE] = trips.groupby(level=PERSON, sort=False)[ORIGIN_TYPE].transform("first")
+    if ORIGIN_TYPE in trips:  # one answer per person: the one the edits give, else the one on the first trip
+        answer = trips.groupby(level=PERSON, sort=False)[ORIGIN_TYPE].transform("first").astype(object)
+        if answers:
+            given = pd.Series(list(trips.index.droplevel("folio_viaje")), index=trips.index).map(answers)
+            answer = answer.where(given.isna(), given)
+        trips[ORIGIN_TYPE] = answer.astype(trips[ORIGIN_TYPE].dtype)
     trips[FIX_FLAG] = _net_fixes(trips, shipped, rules)
     trips[ISSUE_FLAG] = mark_issues(trips, cleaned.viv, legs)
     return EODTables(cleaned.viv, hab, trips, legs)
@@ -754,38 +764,36 @@ def apply_edits(
     ``ValueError`` listing every edit that cannot be applied — an unknown
     label, zone or time, a trip the table lacks, a status other than the two,
     a ``before`` the tables no longer hold — and applies nothing in that case.
-    ``zones`` is the result of ``_zones(shipped)``, passed in by
-    :func:`apply_revisions` so a run of passes reads the survey's zones once.
+    ``zones`` is the result of ``_zones(shipped)``, for a caller that applies
+    several sets of edits to read the survey's zones once.
     """
     zones = zones if zones is not None else _zones(shipped)
     return _apply(cleaned, _resolve(cleaned, edits, shipped, rules, zones), shipped, rules, zones[1])
 
 
-def apply_revisions(rules: EODTables, shipped: EODTables, passes=None) -> EODTables:
-    """The chain rules' tables with the frozen hand passes applied in order (:func:`apply_edits` each).
+def apply_revisions(rules: EODTables, shipped: EODTables, decisions=None) -> EODTables:
+    """The chain rules' tables with the hand decisions applied, all at once (:func:`apply_edits`).
 
-    ``rules`` is the rules' output (``load_eod(revise_chains=False)``) and is
-    also where a later pass restores a row an earlier one dropped from.
-    ``passes`` is a list of ``(name, edits)``; by default the ones that ship
-    under ``eodgdl/revisions/`` (:func:`eodgdl._resources.chain_revisions`),
-    which is what ``load_eod`` applies.
+    ``rules`` is the rules' output (``load_eod(revise_chains=False)``).
+    ``decisions`` defaults to the table that ships as
+    ``eodgdl/revisions/chains.csv.gz`` (:func:`eodgdl._resources.chain_decisions`),
+    which is what ``load_eod`` applies: one decision per trip and field, each
+    made against the rules' output, so they apply in one pass and in no
+    particular order. A review round merges into it (:func:`merge_decisions`).
     """
-    from eodgdl._resources import chain_revisions
+    from eodgdl._resources import chain_decisions
 
-    zones = _zones(shipped)
-    tables = rules
-    for name, edits in chain_revisions() if passes is None else passes:
-        try:
-            tables = apply_edits(tables, edits, shipped, rules, zones=zones)
-        except ValueError as err:
-            raise ValueError(f"revision pass {name}: {err}") from None
-    return tables
+    decisions = chain_decisions() if decisions is None else decisions
+    try:
+        return apply_edits(rules, decisions, shipped, rules)
+    except ValueError as err:
+        raise ValueError(f"the hand decisions: {err}") from None
 
 
 def freeze_edits(
     edits: pd.DataFrame, cleaned: EODTables, shipped: EODTables, rules: EODTables
 ) -> pd.DataFrame:
-    """The edits a new frozen pass holds: the ones that change ``cleaned``, in canonical form, one note per trip.
+    """The edits a review round adds to the decisions: the ones that change ``cleaned``, in canonical form, one note per trip.
 
     ``edits`` is what :func:`sheet_edits` recovers from a sheet exported from
     ``cleaned`` (the tables ``load_eod()`` returns). Edits that hold or are
@@ -799,33 +807,130 @@ def freeze_edits(
     if r.problems:
         raise ValueError("edits that cannot be applied:\n  " + "\n  ".join(r.problems))
     kept = edits.reset_index(drop=True)
+    # a trip's note, wherever it sits among its edits: the edit that carries it may be one left out
+    kept[NOTE] = kept.groupby(KEYS)[NOTE].transform(lambda s: next((n.strip() for n in s.astype(str) if n.strip()), ""))
     applied = (r.outcome == "apply").to_numpy()
     kept = kept[applied].assign(after=r.value[applied].to_numpy())
-    kept[NOTE] = kept[NOTE].astype(str).str.strip().where(~kept.duplicated(KEYS), "")
+    kept[NOTE] = kept[NOTE].where(~kept.duplicated(KEYS), "")
     return kept[KEYS + ["field", "before", "after", NOTE]].reset_index(drop=True)
 
 
-def write_pass(edits: pd.DataFrame, path) -> Path:
-    """Write a pass's edits as the gzipped CSV ``load_eod`` reads, byte for byte the same for the same edits.
+DECISION_COLUMNS = KEYS + ["field", "before", "after", NOTE, "source"]
 
-    The gzip header carries no file name and no time, so a pass written again is the file already committed.
+
+def decision_frame(rows) -> pd.DataFrame:
+    """Decisions as a table in ``DECISION_COLUMNS``, sorted by trip and then by field in sheet order."""
+    order = {c: i for i, c in enumerate(EDITABLE)}
+    out = pd.DataFrame(list(rows), columns=DECISION_COLUMNS).astype({k: int for k in KEYS})
+    out["_order"] = out.field.map(order)
+    return out.sort_values(KEYS + ["_order"]).drop(columns="_order").reset_index(drop=True)
+
+
+def merge_decisions(
+    decisions: pd.DataFrame, frozen: pd.DataFrame, rules: EODTables, shipped: EODTables, source: str
+) -> pd.DataFrame:
+    """The hand decisions with a review round's edits merged in: still one decision per trip and field.
+
+    ``frozen`` is what :func:`freeze_edits` keeps of a sheet exported from the
+    tables the decisions give. Every decision is made against the rules'
+    output (its ``before`` is the rules' value, or the shipped one on a row
+    the rules dropped): a new value replaces the field's decision, and one
+    that is the rules' own removes it. ``dropped`` on a row the rules keep is
+    a decision, and the row's other decisions go with it; ``restored`` on such
+    a row removes the drop, and on a row the rules dropped is a decision of its
+    own. The person's answer to where the day started sits on their first trip
+    once the decisions are in, so it moves when a drop or a restore changes that
+    trip. ``source`` names the review round; ``note`` keeps the sheet's reason on
+    every decision it made.
+    """
+    R, S = rules.trips, shipped.trips
+    home = shipped.viv.ageb.astype(str)
+    otype = next(name for name, f in FIELDS.items() if f.key == "otype")
+
+    def made_against(key, f):  # the rules' value as a sheet shows it, the shipped one on a row the rules dropped
+        v = _shown(R if key in R.index else S, key, f)
+        return HOME if f.key in ("origin", "destination") and v == home[key[0]] else v
+
+    table = {
+        (int(r[0]), int(r[1]), int(r[2]), r[3]): [int(r[0]), int(r[1]), int(r[2]), *r[3:]]
+        for r in decisions[DECISION_COLUMNS].itertuples(index=False)
+    }
+    notes = frozen.groupby(KEYS, sort=False)[NOTE].agg(lambda s: next((n for n in s if n), "")).to_dict()
+    for e in frozen.itertuples(index=False):
+        key = (int(e.household), int(e.person), int(e.trip))
+        note = notes.get(key, "")
+        if e.field == STATUS:
+            if e.after == DROPPED:
+                if key in R.index:
+                    table[(*key, STATUS)] = [*key, STATUS, "", DROPPED, note, source]
+                else:
+                    table.pop((*key, STATUS), None)
+                for name in FIELDS:  # the row's decisions go with it; the person's answer is re-seated below
+                    if name != otype:
+                        table.pop((*key, name), None)
+            elif key in R.index:
+                table.pop((*key, STATUS), None)
+            else:
+                table[(*key, STATUS)] = [*key, STATUS, DROPPED, RESTORED, note, source]
+            continue
+        f = FIELDS[e.field]
+        if f.key == "otype":  # one answer per person: this one replaces any other
+            for k in [k for k in table if k[:2] == key[:2] and k[3] == otype]:
+                del table[k]
+        before = made_against(key, f)
+        if _canon(e.field, e.after, home[key[0]]) == _canon(e.field, before, home[key[0]]):
+            table.pop((*key, e.field), None)
+        else:
+            table[(*key, e.field)] = [*key, e.field, before, e.after, note, source]
+
+    # re-seat every answer on the person's first trip once the decisions are in
+    dropped = {k[:3] for k, v in table.items() if k[3] == STATUS and v[5] == DROPPED}
+    restored = {k[:3] for k, v in table.items() if k[3] == STATUS and v[5] == RESTORED}
+    trips_of = R.index.to_frame(index=False).groupby(PERSON).folio_viaje.agg(list).to_dict()
+    for k in [k for k in table if k[3] == otype]:
+        person = k[:2]
+        kept = sorted(
+            [(*person, t) for t in trips_of.get(person, []) if (*person, t) not in dropped]
+            + [r for r in restored if r[:2] == person]
+        )
+        decision = table.pop(k)
+        if kept:  # a person with no trip left has no answer to keep
+            first = kept[0]
+            table[(*first, otype)] = [*first, otype, made_against(first, FIELDS[otype]), *decision[5:]]
+    return decision_frame(table.values())
+
+
+def decision_changes(before: pd.DataFrame, after: pd.DataFrame) -> dict:
+    """How many decisions a merge added, changed and removed."""
+    key = KEYS + ["field"]
+    old = before.set_index(key)[["after"]]
+    new = after.set_index(key)[["after"]]
+    both = old.index.intersection(new.index)
+    return {
+        "added": len(new.index.difference(old.index)),
+        "changed": int((old.loc[both, "after"] != new.loc[both, "after"]).sum()),
+        "removed": len(old.index.difference(new.index)),
+    }
+
+
+def write_decisions(decisions: pd.DataFrame, path) -> Path:
+    """Write the decisions as the gzipped CSV ``load_eod`` reads, byte for byte the same for the same decisions.
+
+    The gzip header carries no file name and no time, so the file written again is the file already committed.
     """
     import gzip
 
     path = Path(path)
     with open(path, "wb") as f, gzip.GzipFile(filename="", mode="wb", fileobj=f, mtime=0) as gz:
-        gz.write(edits.to_csv(index=False).encode("utf-8"))
+        gz.write(decision_frame(decisions[DECISION_COLUMNS].itertuples(index=False)).to_csv(index=False).encode("utf-8"))
     return path
 
 
-def next_pass_path() -> Path:
-    """Where the next frozen pass goes: ``chains_<n+1>.csv.gz`` beside the others under ``eodgdl/revisions/``."""
+def decisions_path() -> Path:
+    """Where the decisions live: ``eodgdl/revisions/chains.csv.gz`` in the source tree."""
     from importlib import resources
 
-    from eodgdl._resources import pass_files, pass_number
-
-    n = max((pass_number(f.name) for f in pass_files()), default=0)
-    return Path(str(resources.files("eodgdl") / "revisions")) / f"chains_{n + 1}.csv.gz"
+    return Path(str(resources.files("eodgdl") / "revisions")) / "chains.csv.gz"
 
 
 class Verification(NamedTuple):

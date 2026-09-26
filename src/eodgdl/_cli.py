@@ -54,11 +54,12 @@ def main() -> None:
     ver_p.add_argument("--edits", default=None, help="Write the recovered edits to this CSV")
     ver_p.add_argument("--out", default=None, help="Write the edited persons' sheet, after the edits, to this CSV")
     frz_p = review_sub.add_parser(
-        "freeze", help="Freeze an edited sheet as the next pass load_eod applies (eodgdl/revisions/chains_<n>.csv.gz)"
+        "freeze", help="Merge an edited sheet into the hand decisions load_eod applies (eodgdl/revisions/chains.csv.gz)"
     )
     frz_p.add_argument("sheet", help="The edited review sheet, exported from the tables load_eod() returns now")
     frz_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
-    frz_p.add_argument("--out", default=None, help="Where to write (default: the next chains_<n>.csv.gz)")
+    frz_p.add_argument("--source", default=None, help="The review round's name on its decisions (default: the sheet's name)")
+    frz_p.add_argument("--out", default=None, help="Where to write (default: eodgdl/revisions/chains.csv.gz)")
 
     rew_p = sub.add_parser("reweight", help="Inputs for TMG.SurveyReweight: records, zone system, census targets")
     rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
@@ -178,7 +179,7 @@ def _review(args) -> int:
     from eodgdl import load_stages, review
     from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, has_code
 
-    stages = load_stages(args.data)  # the survey as shipped, after the rules and after the passes, from one read
+    stages = load_stages(args.data)  # the survey as shipped, after the rules and after the hand decisions, from one read
     shipped, rules, cleaned = stages
 
     if args.review_cmd == "export":
@@ -207,6 +208,10 @@ def _review(args) -> int:
         return 1
     print(f"read {args.sheet}  ({len(edited):,} rows, {len(edits):,} edits)")
     if args.review_cmd == "freeze":
+        from pathlib import Path
+
+        from eodgdl._resources import chain_decisions
+
         try:
             frozen = review.freeze_edits(edits, cleaned, shipped, rules)
         except ValueError as err:
@@ -215,18 +220,23 @@ def _review(args) -> int:
         if frozen.empty:
             print("nothing to freeze: every edit already holds or is moot")
             return 1
+        before = chain_decisions()
+        merged = review.merge_decisions(before, frozen, rules, shipped, args.source or Path(args.sheet).stem)
+        # one pass over the rules' output must give what the sheet gives on top of the tables it was exported from
+        once = review.apply_revisions(rules, shipped, merged)
+        stacked = review.apply_edits(cleaned, frozen, shipped, rules)
+        if not (once.trips.equals(stacked.trips) and once.legs.equals(stacked.legs) and once.hab.equals(stacked.hab)):
+            print("the merged decisions do not give what the sheet's edits give; nothing written")
+            return 1
         verified = review.verify_edits(cleaned, shipped, frozen, rules)
-        path = review.write_pass(frozen, args.out or review.next_pass_path())
-        s = verified.summary
-        print(f"wrote {path}  ({len(frozen):,} edits of {len(edits):,}; the rest already held, were moot or were notes)")
+        path = review.write_decisions(merged, args.out or review.decisions_path())
+        change = review.decision_changes(before, merged)
+        print(f"wrote {path}: {len(merged):,} decisions ({change['added']:,} added, {change['changed']:,} changed, "
+              f"{change['removed']:,} removed) from {len(frozen):,} of the sheet's {len(edits):,} edits; "
+              "the rest already held, were moot or were notes")
         print()
-        for key, value in s.items():
+        for key, value in verified.summary.items():
             print(f"  {key:<26} {value:>7,}")
-        what = [f"{s['cells']:,} cells"] + [
-            f"{s[k]:,} rows {k.split('_')[1]}" for k in ("rows_dropped", "rows_restored") if s[k]
-        ]
-        print("\nthe line for eodgdl/revisions/README.md:")
-        print(f"| `{path.name}` | `{args.sheet}` (…) | {s['persons']:,} | {', '.join(what)} |")
         return 0
     if args.edits:
         edits.to_csv(args.edits, index=False, encoding="utf-8-sig")
