@@ -376,8 +376,8 @@ assert agreement.to_dict() == {"in zone": 305_056, "access point": 3_076}
 rule_counts = assign.groupby(["unit", "rule"], observed=True).agg(units=("POBTOT", "size"), population=("POBTOT", "sum"))
 assert rule_counts.units.to_dict() == {
     ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
-    ("ageb", "trip ends"): 613, ("ageb", "trip ends over polygon"): 15,
-    ("ageb", "polygon"): 359, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
+    ("ageb", "trip ends"): 615, ("ageb", "trip ends over polygon"): 15,
+    ("ageb", "polygon"): 357, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
     ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
     ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
 }

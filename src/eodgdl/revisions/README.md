@@ -17,6 +17,7 @@ is the earlier pass's `after`. Never edit a frozen pass: correct it with a new p
 | `chains_2.csv.gz` | `notebooks/chain_review_2.csv` (the persons still carrying a breaking code after pass 1, plus 75 first-trip returns pass 1 had dropped; filled 2026-09-25) | 146 | 149 cells, 34 rows dropped, 77 restored |
 | `chains_3.csv.gz` | `notebooks/chain_review_3.csv` (a second look at pass 2's judgment calls; filled 2026-09-25) | 67 | 51 cells, 42 rows dropped |
 | `chains_4.csv.gz` | `notebooks/chain_review_4.csv` (the non-trips pass 1 made out of real trips; filled 2026-09-25) | 3 | 9 cells |
+| `chains_5.csv.gz` | `notebooks/chain_review_5.csv` (first trips whose recorded origin pass 1 replaced with home; filled 2026-09-25) | 52 | 124 cells |
 
 Pass 1 was frozen with 26 values normalized from the sheet: 21 starts written `HH:MM:00`,
 one `22.13` (household 7791, person 4, trip 4, read 22:13), four `Regresar a casa`. It was
@@ -73,3 +74,20 @@ pass 1 also moved the first trip's origin home and overwrote the person's day-st
 (a workplace) with 'Su casa', turning the return from work into a non-trip; the recorded
 origin and answer come back (14417/3's bicycle commute among them), and 14018/1's
 home-to-home staff-bus ride at 21:00 is the trip to the night shift.
+
+Pass 5 (Claude, 2026-09-25) revisits pass 1's rule for the day's first trip — "nobody spends
+the night at a shop, so the day started at home" — which replaced the person's day-start
+answer (a place) with 'Su casa' on 647 first trips and moved 642 origins to the home AGEB.
+The survey's own evidence says pass 1 was mostly right: in 363 the recorded origin is a copy
+of the destination (same AGEB and type), in 153 the type is copied and the recorded AGEB lies
+near home (median 1.1 km, the dwelling coded one AGEB off), in 60 the AGEB is copied, and in
+all three groups the trip's reported minutes fit a trip from home (87–92%). What pass 5 does:
+- **Rotated records** (27): the first trip was recorded from a place to home and the next
+  from home onwards, so the place is where the first trip went. Pass 1 moved the origin home
+  and left the destination at home, a trip from home to home; the place becomes the first
+  trip's destination and the next trip's origin (11 pass 1 had already rotated are left).
+- **A separate start** (25): the recorded origin has its own AGEB and type, appears nowhere
+  else in the day, and the minutes fit a trip from there better than from home or do not
+  tell; the recorded origin and answer come back (the day starts away from home).
+The other first trips keep pass 1's reading, as do those whose minutes favour home, whose
+place recurs later in the day, or whose AGEB has no census geometry to measure.

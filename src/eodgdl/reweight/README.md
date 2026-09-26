@@ -121,8 +121,8 @@ Census values come from INEGI's Censo 2020 through `mxcensus` (`load_census(stat
 the AGEB and rural-locality frames). Which rows make up each survey zone is decided by
 `zoning.assign_units` from the centralidad polygons the survey was fielded on and the zones
 the survey coded for its dwellings and trip ends (the survey's zone is a function of the
-AGEB code: each of the 1,691 codes it records has one zone across dwellings, origins and
-destinations; 1,694 before the hand revisions moved three AGEBs' only trip ends home); IMEPLAN's AGEB table plays no part. An urban AGEB is never split: a sampled one takes
+AGEB code: each of the 1,693 codes it records has one zone across dwellings, origins and
+destinations; 1,694 before the hand revisions moved one AGEB's only trip end home); IMEPLAN's AGEB table plays no part. An urban AGEB is never split: a sampled one takes
 the zone coded for its dwellings (26 of them against the polygons, La Aurora in Juanacatlán
 among them), one with trip ends but no dwelling the zone coded most for them (15 against the
 polygons, the largest a campus coded `68B` whose residents mostly live in `44`'s polygon),

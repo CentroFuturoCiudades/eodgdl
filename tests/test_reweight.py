@@ -179,8 +179,8 @@ def test_every_census_unit_gets_at_most_one_zone_and_the_survey_s(files, viv, tr
     assert a.index.is_unique and reweight.check_assignment(a, viv, trips) == []
     assert a.groupby(["unit", "rule"], observed=True).size().to_dict() == {
         ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
-        ("ageb", "trip ends"): 613, ("ageb", "trip ends over polygon"): 15,
-        ("ageb", "polygon"): 359, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
+        ("ageb", "trip ends"): 615, ("ageb", "trip ends over polygon"): 15,
+        ("ageb", "polygon"): 357, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
         ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
         ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
     }
@@ -236,8 +236,8 @@ def test_every_trip_end_is_in_its_ageb_s_zone(files, viv, trips):
     # the survey's zone is a function of the AGEB code: one zone per code, across its
     # dwellings, origins and destinations
     codes = reweight.survey_codes(viv, trips)
-    # (1,691 codes: 1,694 on the rules' output; three AGEBs' only trip ends were origins moved home by hand)
-    assert (codes.groupby("code").zone.nunique() == 1).all() and codes.code.nunique() == 1_691
+    # (1,693 codes: 1,694 on the rules' output; one AGEB's only trip end is an origin moved home by hand)
+    assert (codes.groupby("code").zone.nunique() == 1).all() and codes.code.nunique() == 1_693
     # the chain rule that moves an origin home moves its zone too
     moved = trips[trips.ajustes.astype(str).str.contains("origen:casa")].reset_index()
     home = viv.centralidad.astype(str)
