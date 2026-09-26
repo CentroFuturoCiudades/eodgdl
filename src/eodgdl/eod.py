@@ -9,7 +9,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from eodgdl._resources import imeplan_rename_map
+from eodgdl._resources import imeplan_rename_map, leg_minutes
 from eodgdl.chains import PERSON, clean_trip_chains
 from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
@@ -307,22 +307,18 @@ def load_eod(
     pass ``eod_path`` (or set ``$EODGDL_DATA_DIR``) to read them from a local directory.
     :func:`load_stages` returns all three stages below from one read.
 
-    By default the trip chains are cleaned (:func:`eodgdl.chains.clean_trip_chains`): the
-    325 trips with no start time (and no motive) are imputed — 37 from the
-    home-to-home return that duplicates them, the rest from their nearest
-    timed trips — as are the 7 timed trips with no motive; 84 mislabelled
-    'Regresar a Casa' trips take their destination type's motive, 69 that end
-    in their own origin's AGEB go home, 67 that end elsewhere take the motive
-    of the place, 231 activity trips that arrive home become returns and 163
-    daycare trips from age 12 escorts; 556 returns home made from home, and
-    the 75 next-morning returns that close a night-shift day, are kept and
-    marked as non-trips; every trip starts where the previous one ended (147
-    at home after a return, 31 elsewhere), and 1,192 first trips recorded
-    leaving another zone — their destination's AGEB, an answer 'Su casa', the
-    destination's place type as the answer — start at home; 2,485 mistyped
-    start hours in 1,927 chains are repaired; and 816 starts that fall before
-    the previous trip's arrival by 15 minutes or less, or by up to an hour
-    where no reading of the hours fits, move to it. One kind of row is dropped: the
+    By default the trip chains are cleaned (:func:`eodgdl.chains.clean_trip_chains`, whose
+    docstring and rules carry the evidence and the counts): the travel minutes a review
+    corrected (``eodgdl/revisions/leg_minutes.csv.gz``) go in first, since the rules read
+    them; the trips with no start time or motive are imputed; mislabelled returns home and
+    activities that arrive home are recoded, daycare trips from age 12 become escorts; the
+    returns home made from home, and the next-morning returns that close a night-shift day,
+    are kept and marked as non-trips; every trip starts where the previous one ended, the
+    first trips recorded leaving another zone start at home or, recorded rotated, go from
+    home to the place they name; the returns left away from home go home or to a place
+    nothing names; mistyped start hours are read by the fewest typo edits, a day read past
+    midnight holds together after it, and starts that fall a little before the previous
+    arrival move to it. One kind of row is dropped: the
     38 home-to-home returns that duplicate an imputed return, whose time and
     motive now sit on the return they repeat; ``hab.viajes_contados`` is
     reduced by one for those persons so it still counts the person's trip
@@ -430,7 +426,8 @@ def _load(eod_path: Path | None, stop: str, verbose: bool, skip_stale: bool = Fa
 
     stages = [EODTables(df_viv, df_hab.copy(), *_split_legs(df_trips))]
     if stop != "shipped":
-        cleaned, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab)
+        # the travel minutes a review corrected go in first: the rules read them (eodgdl/revisions/leg_minutes.csv.gz)
+        cleaned, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab, minutes=leg_minutes())
         # the dropped duplicates leave viajes_contados one too high for their persons
         lost = (
             df_trips.index.difference(cleaned.index).droplevel("folio_viaje").value_counts()

@@ -337,30 +337,35 @@ trips:
       home by 06:00 after one that started at or after noon, or a return home
       before 10:00 after a trip to work that started at or after 18:00 (a
       night shift), is the next day's — the trip load_eod marks hora_nocturna
-      — and so is every trip after it. A 06:00 return from a 21:00 night shift
-      is 3000, an 08:00 one 3200.
+      — and so is every trip after it, where no trip to work or school
+      follows it and the day's last start comes less than 24 hours after its
+      first (eodgdl.chains._day_wraps). A 06:00 return from a 21:00 night
+      shift is 3000, an 08:00 one 3200.
     note: >-
-      The hours are the ones load_eod returns, after its chain cleaning: the
-      325 trips with no start time are imputed (37 from the home-to-home
-      return that duplicates them, 288 from their nearest timed trips,
-      eodgdl.chains._impute_untimed_trips), and 2,485 mistyped start hours in
-      1,927 chains are repaired by the fewest typo edits — a 12-hour-clock
+      The hours are the ones load_eod returns, after its chain cleaning (the
+      counts are in eodgdl.chains and pinned by tests/test_eod.py): the trips
+      with no start time are imputed, from the home-to-home return that
+      duplicates them or from their nearest timed trips
+      (eodgdl.chains._impute_untimed_trips), and mistyped start hours are
+      repaired by the fewest typo edits — a 12-hour-clock
       entry, an extra or missing leading 1, or both, and where those read
       nothing a morning start typed as an evening one — that let every trip
       start after the previous one arrived (its start plus its leg minutes,
       15 minutes of tolerance) and leave half an hour or more at work or
       school, or that take a day's first trip to anything but work out of the
       small hours when a stay of eight hours or more follows it, applied only
-      where the cheapest reading is unique (eodgdl.chains._repair_start_times).
-      A start that still falls before the previous arrival by the tolerance
-      or less, or by up to an hour where no reading of the hours fits and the
-      trip before does not go to work or school, moves to that arrival
-      (eodgdl.chains._start_at_arrival). Every such row is marked in
+      where the cheapest reading is unique (eodgdl.chains._repair_start_times),
+      the leg minutes read after a review's corrections
+      (eodgdl/revisions/leg_minutes.csv.gz). A start that still falls before
+      the previous arrival by the tolerance or less, or by up to an hour where
+      no reading of the hours fits and the trip before does not go to work or
+      school, moves to that arrival (eodgdl.chains._start_at_arrival), and the
+      search reads once more what that move cleared. Every such row is marked in
       trips.ajustes (hora:duplicado, hora:vecinos, hora:+12h, hora:llegada
       and so on); a consumer that wants to treat them as uncertain has the
-      flag, though this column does not carry it. After the rules 355 trips
+      flag, though this column does not carry it. After the rules some trips
       still start before the previous trip could have arrived by more than
-      the tolerance and are marked hora_invertida in trips.problemas, and 195
+      the tolerance and are marked hora_invertida in trips.problemas, and the
       overnight wraps hora_nocturna, one time code per row at most. The hand
       decisions in eodgdl/revisions/ resolve every hora_invertida, so the
       only time-order code load_eod() returns is hora_nocturna (overnight,
@@ -444,9 +449,10 @@ trips:
       put home in the wrong zone and, for a first trip that is a return home,
       make it go from H to H. load_eod's rules start such a day at home when
       its first trip is an activity that does not go home itself
-      (origen:respuesta) and give it the place it started at when its first
-      trip is a return (tipo_origen:regreso); the rest, marked
-      inicio_zona_ajena, the hand decisions resolve.
+      (origen:respuesta), read it as rotated when it goes home and the next
+      trip leaves from home (origen:rotado), and give it the place it started
+      at when its first trip is a return (tipo_origen:regreso); a hand edit
+      that leaves one carries inicio_zona_ajena.
       Never H on a trip whose PurposeDestination is H: load_eod marks the
       returns made from home as non-trips and the build leaves them out, see
       PurposeDestination.
@@ -456,13 +462,14 @@ trips:
     derivation: trips.origen as load_eod returns it — the AGEB CVEGEO or locality id.
     note: >-
       load_eod makes every trip start where the previous one ended
-      (eodgdl.chains._start_where_previous_ended): 147 origins go to the
-      household's zone, the trip following a 'Regresar a Casa' that reached
-      home but recorded as starting elsewhere, usually at a stop visited
-      earlier in the day, and 31 to the previous trip's destination; 1,192
-      first trips recorded leaving another zone start at home
-      (eodgdl.chains._first_origins_at_home). No continuity break is left;
-      tasha.chain_report counts any a hand edit makes.
+      (eodgdl.chains._start_where_previous_ended): at the household's zone
+      after a 'Regresar a Casa' that reached home but was followed by a trip
+      recorded as starting elsewhere, usually at a stop visited earlier in
+      the day, else at the previous trip's destination; first trips recorded
+      leaving another zone start at home (eodgdl.chains._first_origins_at_home)
+      or, recorded from a place to home with the next trip leaving home, go
+      from home to the place (eodgdl.chains._rotated_first_trips). No
+      continuity break is left; tasha.chain_report counts any a hand edit makes.
 
   PurposeDestination:
     source: motivo_viaje
@@ -493,26 +500,26 @@ trips:
     note: >-
       LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
       all collapse into O. Guardería: 217 trips in the shipped survey. load_eod's
-      chain rules recode the 163 made from age 12 to 'Llevar o recoger a
+      chain rules recode the ones made from age 12 to 'Llevar o recoger a
       alguien' (motivo:guarderia, what the hand passes had done trip by trip),
       so the age rule above reads the same way and only acts on a table
-      without them; the 30 left on the chain, all children's, carry
-      motivo_guarderia in trips.problemas. The 556 activity trips typed 'Su
-      casa' after the rules carry actividad_en_casa there. 7 trips have no
+      without them; the ones left on the chain, all children's, carry
+      motivo_guarderia in trips.problemas. The activity trips typed 'Su casa'
+      after the rules carry actividad_en_casa there. 7 trips have no
       motivo_viaje and fall to the default O. load_eod's chain rules shape this
-      column upstream (eodgdl.chains): 84 'Regresar a Casa' trips whose
-      destination zone is not the household's already carry the motive their
-      destination type implies (22 Estudiar, 13 Trabajar, 22 Compras, 27
-      other), 69 recorded ending in their own origin's AGEB go home, 67 that
-      end elsewhere take the motive the person's own trips give the place, 231
-      activity trips that arrive at 'Su casa' in the home zone from another
-      zone are returns, and the returns home made while already at home, and
-      the next morning's return of a night shift, are marked as non-trips,
-      which the builder leaves out — so with the first derivation above no
-      trip goes from H to H, and the Trabajar recodes set an EmploymentZone
-      like any other. The 29 'Regresar a Casa' trips left that miss the home
-      zone carry regreso_sin_llegar, a breaking code the hand decisions
-      resolve: load_eod's tables have none.
+      column upstream (eodgdl.chains, where the counts are): 'Regresar a
+      Casa' trips whose destination zone is not the household's carry the
+      motive their destination type implies, or go home where they were
+      recorded ending in their own origin's AGEB, or take the motive the
+      person's own trips give the place, or, the day's last trip to an AGEB
+      nothing else touches, go home, and else 'Otros'; activity trips that
+      arrive at 'Su casa' in the home zone from another zone are returns; and
+      the returns home made while already at home, and the next morning's
+      return of a night shift, are marked as non-trips, which the builder
+      leaves out — so with the first derivation above no trip goes from H to
+      H, and the Trabajar recodes set an EmploymentZone like any other. A
+      'Regresar a Casa' a hand edit leaves away from the home zone carries
+      regreso_sin_llegar, a breaking code: load_eod's tables have none.
 
   ZoneDestination:
     source: destino

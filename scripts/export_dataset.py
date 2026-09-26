@@ -130,8 +130,8 @@ DEFECTOS_ES = {
     "fin_fuera_de_casa": "el último viaje del día no es un regreso que llegue a la zona de la vivienda",
     "regreso_en_casa": "un 'Regresar a Casa' hecho estando ya en casa: no es un viaje",
     "motivo_guarderia": "motivo 'Guardería' de un menor de 12 años, que asiste a la guardería",
-    "regreso_sin_llegar": "un 'Regresar a Casa' que no llegó a la zona de la vivienda y al que ni su "
-                          "tipo de lugar de destino ni los demás viajes de la persona dan un motivo",
+    "regreso_sin_llegar": "un 'Regresar a Casa' que no llegó a la zona de la vivienda: las reglas leen "
+                          "todos, así que lo dejó una edición a mano",
     "hora_repetida": "empieza en el mismo minuto que el viaje anterior",
     "hora_nocturna": "empieza de madrugada después de un viaje de la tarde o la noche: se lee "
                      "como viaje nocturno y se deja igual",
@@ -143,6 +143,9 @@ DEFECTOS_ES = {
     "hora_2301": "empieza a las 23:01 tal como se reportó, el minuto en que la encuesta amontona "
                  "los regresos tardíos: el regreso fue a esa hora o después, quizá pasada la "
                  "medianoche",
+    "hora_madrugada": "el primer viaje del día, a algo que no es el trabajo, empieza antes de las "
+                      "05:00: un mercado o un acompañamiento temprano, o una hora de reloj de 12 horas "
+                      "que las reglas no pudieron releer",
 }
 
 _FECHA = (
@@ -249,9 +252,10 @@ def notes(c: dict[str, int]) -> dict[tuple[str, str], str]:
             "Se reparó e imputó junto con la hora; vea `hora_inicio_h`."
         ),
         ("viajes", "motivo_viaje"): (
-            f"Recodificado en {c['recodificados'] + c['regresos_lugar']} viajes 'Regresar a Casa' que "
-            "no llegaron a la zona de la vivienda (a partir de su tipo de lugar de destino, o de lo "
-            f"que la persona hace en ese lugar), en {c['llegadas_casa']} viajes de actividad que "
+            f"Recodificado en {c['recodificados'] + c['regresos_lugar'] + c['regresos_otros']} viajes "
+            "'Regresar a Casa' que no llegaron a la zona de la vivienda (a partir de su tipo de lugar "
+            "de destino, de lo que la persona hace en ese lugar, u 'Otros' donde nada lo dice), en "
+            f"{c['llegadas_casa']} viajes de actividad que "
             f"llegan a 'Su casa' en la zona de la vivienda (son el regreso) y en {c['guarderia']} "
             "viajes 'Guardería' de personas de 12 años o más (llevan o recogen a un menor), e "
             f"imputado en los {c['sin_motivo']} que no traían ninguno: {c['motivo_vec']} por "
@@ -268,7 +272,8 @@ def notes(c: dict[str, int]) -> dict[tuple[str, str], str]:
             f"Fijado donde terminó el viaje anterior en {c['origen_casa'] + c['origen_anterior']} "
             f"viajes ({c['origen_casa']} en la zona de la vivienda, después de un regreso a casa que "
             f"sí llegó), en la zona de la vivienda en {c['primeros_casa']:,} primeros viajes del día "
-            "anotados saliendo de otra zona, y a mano en "
+            f"anotados saliendo de otra zona y en {c['primeros_rotados']} anotados al revés, de un lugar "
+            "a casa (van de casa a ese lugar), y a mano en "
             f"{c['origenes_a_mano']:,}. Quedan {c['origen_discontinuo']} viajes que no empiezan "
             "donde terminó el anterior."
         ),
@@ -417,6 +422,9 @@ def counts(tables, rules, shipped_trips: int, decisions: int) -> dict[str, int]:
         "origen_casa": fix.get("origen:casa", 0),
         "origen_anterior": fix.get("origen:anterior", 0),
         "primeros_casa": fix.get("origen:copia", 0) + fix.get("origen:respuesta", 0) + fix.get("origen:tipo_copia", 0),
+        "primeros_rotados": fix.get("origen:rotado", 0),
+        "regresos_casa": fix.get("destino:casa", 0),
+        "regresos_otros": fix.get("motivo:otros", 0),
         "respuestas_regreso": int(
             rules.trips.index[rules.trips["ajustes"].str.contains("tipo_origen:regreso", regex=False)]
             .droplevel("folio_viaje").nunique()
@@ -661,7 +669,8 @@ y ninguna etiqueta se recodificó salvo donde se indica.
    que ningún glosario documenta. Se etiquetaron `Transporte informal` a partir de un
    registro gemelo: la vivienda 879, del mismo AGEB y la misma fecha, repite viaje por viaje
    y traslado por traslado los diarios de esas dos personas y etiqueta así esos mismos
-   traslados. Es la única corrección manual sobre los datos.
+   traslados. Es la única corrección manual antes de depurar las cadenas; los minutos de
+   traslado que corrigió la revisión se describen en el paso 8.
 5. **Validación y tipado.** Cada tabla se valida contra un esquema estricto que fija el tipo
    de cada columna (entero, entero con faltantes, fecha, texto) y los niveles válidos de cada
    variable categórica: municipios, las 71 centralidades, los 20 medios de transporte, etc.
@@ -678,8 +687,13 @@ y ninguna etiqueta se recodificó salvo donde se indica.
    viajes compartidos. No se eliminó ninguna —los dos miembros de cada par son igual de
    creíbles—, así que **los totales expandidos cuentan esos diarios dos veces**. Esta entrega
    no incluye la marca persona por persona.
-8. **Depuración de las cadenas de viaje.** El orden de las filas es la cadena del día. Las
-   reglas se aplican en este orden:
+8. **Depuración de las cadenas de viaje.** El orden de las filas es la cadena del día. Antes
+   de las reglas, los minutos de traslado de {c['minutos_a_mano']} viajes se corrigen: son
+   motorizados que reportaban el doble de lo que la encuesta suele reportar para su medio a su
+   distancia en línea recta y chocaban con la salida siguiente, y toman los minutos típicos,
+   repartidos entre sus traslados en proporción. Van antes porque las reglas leen los minutos:
+   la llegada de un viaje, contra la que se juzga cada salida siguiente, es su hora de inicio
+   más sus minutos. Las reglas se aplican después en este orden:
    1. *Imputación de lo que se perdió del cuestionario*: a {c['sin_hora']} viajes les falta la
       hora de inicio, y a esos mismos más otros pocos —{c['sin_motivo']} en total— les falta
       el motivo: se perdió el bloque del cuestionario donde iban. En vez de descartarlos se
@@ -707,29 +721,33 @@ y ninguna etiqueta se recodificó salvo donde se indica.
       destino del viaje anterior—, y {c['primeros_casa']:,} primeros viajes del día anotados
       saliendo de otra zona empiezan en casa: el origen copia la AGEB del destino, la persona
       respondió que el día empezó en su casa, o la respuesta copia el tipo de lugar del destino.
+      {c['primeros_rotados']} primeros viajes anotados de un lugar a casa, cuyo viaje siguiente
+      sale de casa, se leen al revés: van de casa a ese lugar, y el siguiente sale de ahí.
       Las {c['respuestas_regreso']} personas cuyo día empieza con un regreso a casa desde otra
       zona y que respondieron 'Su casa' toman como respuesta el tipo de lugar de donde regresan.
+      Los regresos a casa que siguen fuera de casa y que nada lee terminan en casa si son el
+      último viaje del día a una AGEB que ningún otro viaje toca ({c['regresos_casa']}), y si no
+      toman 'Otros' como motivo y tipo de lugar ({c['regresos_otros']}).
    5. *Reparación de horas mal anotadas*: {c['horas_reparadas']:,} horas de inicio, en
       {c['cadenas_reparadas']:,} cadenas, se releyeron con el menor número de erratas
       posibles (reloj de 12 horas en los dos sentidos, un 1 de más o de menos al principio) que
       permite que cada viaje empiece después de que llegó el anterior y deja al menos media hora
       en el trabajo o la escuela. Un regreso a casa antes de las 10:00 después de salir al
-      trabajo a las 18:00 o más tarde es de la mañana siguiente: un turno nocturno. Las horas
+      trabajo a las 18:00 o más tarde es de la mañana siguiente: un turno nocturno, siempre que
+      después no se vuelva al trabajo o a la escuela y el día no llegue a 24 horas. Las horas
       imputadas nunca se editan, y donde no hay una relectura única no se toca nada. Después,
       {c['horas_llegada']} salidas que caían antes de la llegada del viaje anterior —por 15
       minutos o menos, o por hasta una hora donde ninguna relectura cabe y el viaje anterior no
-      va al trabajo ni a la escuela— se recorren a esa llegada.
+      va al trabajo ni a la escuela— se recorren a esa llegada, y las cadenas que eso despeja se
+      releen una vez más.
    6. *Revisión a mano*: lo que las reglas dejaron se revisó con un criterio escrito, persona
       por persona, y la revisión quedó en {c['decisiones']:,} decisiones, cada una con su
       motivo. Fijó {c['horas_a_mano']:,} horas de inicio, {c['motivos_a_mano']} motivos,
-      {c['origenes_a_mano']:,} orígenes, {c['destinos_a_mano']} destinos y los minutos de traslado de
-      {c['minutos_a_mano']} viajes (motorizados que reportaban el doble de lo que la encuesta suele reportar
-      para su medio a su distancia en línea recta y chocaban con la salida siguiente; los minutos se
-      repartieron entre sus traslados en proporción), cambió en
+      {c['origenes_a_mano']:,} orígenes y {c['destinos_a_mano']} destinos, cambió en
       {c['tipos_origen_a_mano']:,} personas la respuesta a dónde empezó su día y descartó
       {c['descartadas']} filas —en los turnos nocturnos que la regla no alcanza, el regreso de la
       mañana siguiente, que cae fuera del día de la encuesta—; en total {c['filas_a_mano']:,}
-      filas guardan un valor fijado a mano. Después de
+      filas guardan un valor fijado a mano, contando los minutos corregidos. Después de
       ella ningún viaje empieza donde no terminó el anterior, y ninguno empieza antes de que
       hubiera podido llegar el anterior (su hora de inicio más sus minutos de traslado) salvo los
       que cruzan la medianoche: el modelo de demanda no admite traslapes.

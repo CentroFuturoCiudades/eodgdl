@@ -1,4 +1,4 @@
-"""Lazy loaders for bundled package config: the IMEPLAN column rename map and the hand decisions.
+"""Lazy loaders for bundled package config: the IMEPLAN column rename map, the hand decisions and the leg minutes.
 
 This is *code config*, not data: ``rename_imeplan`` and ``load_eod`` need it to run, so it
 ships inside the package (not via the data mirror) and the package works offline.
@@ -37,3 +37,22 @@ def chain_decisions() -> "pd.DataFrame":
     for key in ("household", "person", "trip"):
         decisions[key] = decisions[key].astype(int)
     return decisions
+
+
+@functools.cache
+def leg_minutes() -> "pd.DataFrame":
+    """The travel minutes a review round corrected, read before the chain rules: ``eodgdl/revisions/leg_minutes.csv.gz``.
+
+    One row per trip (``household, person, trip, before, after, note, source``): the trip's
+    reported minutes summed over its legs, and the minutes it takes instead, which
+    :func:`eodgdl.chains.clean_trip_chains` spreads over its legs in proportion before any rule
+    reads them. See the README there. Keys and minutes are integers, the rest text; the frame
+    is shared, so do not modify it.
+    """
+    import pandas as pd
+
+    with (resources.files("eodgdl") / "revisions" / "leg_minutes.csv.gz").open("rb") as fh:
+        table = pd.read_csv(fh, compression="gzip", dtype=str, keep_default_na=False)
+    for key in ("household", "person", "trip", "before", "after"):
+        table[key] = table[key].astype(int)
+    return table

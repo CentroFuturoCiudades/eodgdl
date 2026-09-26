@@ -14,17 +14,17 @@ the person's first trip only, and a decision keeps it under trip
 
 Next to every column that may take a change stands an empty ``new …``
 column: ``new start``, ``new motive``, ``new dest. type``, ``new orig. type``,
-``new origin``, ``new destination``, ``new mode``, ``new leg min`` and ``new
-status``. The hand edits go there — ``start`` as HH:MM, a motive or place
-type by its label, a zone by its id or ``home``, a mode by its label, the
-trip's travel minutes as a whole number (spread over its legs in proportion);
-``dropped`` under ``new status`` to take a row out of the chain, ``restored``
-to bring back a row the tables no longer hold — and why under ``note``. The
-original columns are never touched, so the sheet carries its own before and
-after and needs no copy to be read back; ``ajustes`` and ``problemas`` take
-no new value (both are recomputed), and rows cannot be added. A note typed
-where nothing else changes gives the decisions already on that trip a new
-reason.
+``new origin``, ``new destination``, ``new mode`` and ``new status``. The
+hand edits go there — ``start`` as HH:MM, a motive or place type by its
+label, a zone by its id or ``home``, a mode by its label; ``dropped`` under
+``new status`` to take a row out of the chain, ``restored`` to bring back a
+row the tables no longer hold — and why under ``note``. The original columns
+are never touched, so the sheet carries its own before and after and needs
+no copy to be read back; ``leg min`` (the trip's travel minutes, which the
+rules read, so a review corrects them before the rules, in
+``eodgdl/revisions/leg_minutes.csv.gz``), ``ajustes`` and ``problemas`` take
+no new value, and rows cannot be added. A note typed where nothing else
+changes gives the decisions already on that trip a new reason.
 
     stages = load_stages()                                            # shipped, rules and revised from one read
     rows = review.chain_rows(stages.revised, stages.shipped)          # per shipped trip, shipped and current values
@@ -33,7 +33,7 @@ reason.
     ...                                                               # edit by hand
     sheet = review.read_sheet("chain_review.csv")
     edits = review.sheet_edits(sheet)
-    done = review.freeze_round(edits, stages, "chain_review_14", shown=review.sheet_keys(sheet))
+    done = review.freeze_round(edits, stages, "chain_review_16", shown=review.sheet_keys(sheet))
     done.verified.summary                                             # what the edits did (eodgdl review verify)
     review.write_decisions(done.decisions, review.decisions_path())   # what load_eod applies, in one pass
 
@@ -69,11 +69,17 @@ import numpy as np
 import pandas as pd
 
 from eodgdl.chains import (
+    _EARLY_START,
+    _NIGHT_SHIFT_RETURN,
+    ESCORT,
     FIX_FLAG,
+    HOME_MOTIVE,
     ISSUE_CODES,
-    ISSUE_GROUPS,
     ISSUE_FLAG,
+    ISSUE_GROUPS,
+    MANDATORY_MOTIVES,
     PERSON,
+    WORK_MOTIVE,
     _home_zone,
     _leg_minutes,
     _start_minutes,
@@ -114,8 +120,10 @@ FIELDS = {
     "origin": Field("origin", "origen", "origen:revision"),
     "destination": Field("destination", "destino", "destino:revision"),
     "mode": Field("mode", "modo_principal", "modo:revision"),
-    "leg min": Field("legmin", LEG_MINUTES, "minutos:revision"),
 }
+# The columns the sheet shows, shipped → cleaned, that take no new value: the travel minutes the rules read,
+# which a review corrects before the rules (eodgdl/revisions/leg_minutes.csv.gz, eodgdl.chains._correct_minutes).
+SHOWN = {"leg min": Field("legmin", LEG_MINUTES, "minutos:revision")}
 READ_ONLY = [FIX_FLAG, ISSUE_FLAG]
 EDITABLE = list(FIELDS) + [STATUS]
 NEW = "new "  # prefix of the columns that take the hand edits
@@ -133,13 +141,13 @@ COLUMNS = (
     + PERSON_COLUMNS
     + KEYS[2:]
     + [c for name in FIELDS for c in (name, new_column(name))]
+    + list(SHOWN)
     + READ_ONLY
     + [STATUS, new_column(STATUS), NOTE]
 )
 
 _ARROW_SPLIT = re.compile(r"\s*(?:→|->)\s*")
 _HHMM = re.compile(r"^(\d{1,2}):(\d{2})(?::00)?$")  # spreadsheets add :00 seconds and drop the leading zero
-_WHOLE = re.compile(r"^(\d{1,3})(?:\.0*)?$")  # whole minutes; spreadsheets may write 30 as 30.0
 
 
 # ------------------------------------------------------------------ building
@@ -171,10 +179,10 @@ def _values(trips: pd.DataFrame, legs: pd.DataFrame | None, f: Field, index) -> 
 
 
 def chain_rows(cleaned: EODTables, shipped: EODTables) -> pd.DataFrame:
-    """One row per shipped trip: the shipped and cleaned value of every editable field, and the codes.
+    """One row per shipped trip: the shipped and cleaned value of every field a sheet shows, and the codes.
 
-    Indexed like ``shipped.trips``. For every field in ``FIELDS`` a
-    ``<key>_shipped`` and a ``<key>_clean`` column (the start in minutes
+    Indexed like ``shipped.trips``. For every field in ``FIELDS`` and ``SHOWN``
+    a ``<key>_shipped`` and a ``<key>_clean`` column (the start in minutes
     from midnight, the travel minutes summed over the legs, the rest as
     labels or zone ids; NaN where missing, and on every cleaned column of a
     dropped row), then ``ajustes``, ``problemas``, ``dropped`` (the row is
@@ -186,7 +194,7 @@ def chain_rows(cleaned: EODTables, shipped: EODTables) -> pd.DataFrame:
     Cr = C.reindex(R.index)
     kept = pd.Series(R.index.isin(C.index), index=R.index)
     out = {}
-    for f in FIELDS.values():
+    for f in (*FIELDS.values(), *SHOWN.values()):
         out[f"{f.key}_shipped"] = _values(R, shipped.legs, f, R.index)
         out[f"{f.key}_clean"] = _values(C, cleaned.legs, f, R.index).where(kept)
     out[FIX_FLAG] = Cr[FIX_FLAG].astype(object).fillna("") if FIX_FLAG in Cr else ""
@@ -289,10 +297,11 @@ def chain_sheet(
 
     Columns ``COLUMNS``: the keys, the person columns, then the editable
     fields formatted as the browser shows them (``shipped → cleaned`` where
-    a value changed, HH:MM starts, ``home`` for the household's zone, whole
-    travel minutes, ``—`` for a missing value) each followed by its empty
-    ``new …`` column, ``ajustes``, ``problemas``, ``status`` (``dropped``,
-    ``changed`` or blank) with its ``new status``, and an empty ``note``.
+    a value changed, HH:MM starts, ``home`` for the household's zone, ``—``
+    for a missing value) each followed by its empty ``new …`` column, the
+    whole travel minutes (``leg min``, shown only), ``ajustes``,
+    ``problemas``, ``status`` (``dropped``, ``changed`` or blank) with its
+    ``new status``, and an empty ``note``.
     ``orig. type``, the person's one answer to where the day started, is
     filled on the person's first kept trip only; a dropped row shows every
     shipped value.
@@ -313,7 +322,7 @@ def chain_sheet(
     for col in PERSON_COLUMNS[1:]:
         sheet[col] = info[col].to_numpy()
     sheet["trip"] = t.index.get_level_values("folio_viaje")
-    for name, f in FIELDS.items():
+    for name, f in (*FIELDS.items(), *SHOWN.items()):
         shipped, clean = t[f"{f.key}_shipped"], t[f"{f.key}_clean"]
         if f.key == "start":
             shipped, clean = _hhmm(shipped), _hhmm(clean)
@@ -324,7 +333,8 @@ def chain_sheet(
         else:
             shipped, clean = _text(shipped), _text(clean)
         sheet[name] = _cell(shipped, clean, t.dropped)
-        sheet[new_column(name)] = ""
+        if name in FIELDS:
+            sheet[new_column(name)] = ""
     kept = ~t.dropped.to_numpy()
     seen = pd.Series(kept.astype(int), index=t.index).groupby(level=PERSON).cumsum().to_numpy()
     sheet.loc[kept & (seen > 1), "orig. type"] = ""  # the answer shows on the first kept trip
@@ -385,15 +395,9 @@ def _time(text) -> tuple[int, int] | None:
     return int(m[1]), int(m[2])
 
 
-def _minutes(text) -> int | None:
-    """The whole minutes of a leg min cell, 1 or more (``30.0`` as a spreadsheet writes it is 30); None if it is not one."""
-    m = _WHOLE.match(str(text).strip())
-    return int(m[1]) if m and int(m[1]) > 0 else None
-
-
 def _canon(field: str, text, home: str | None) -> str:
-    """The form in which two cells of ``field`` compare: HH:MM for a time, the zone id for ``home``, whole minutes
-    for leg min, lower case for a label."""
+    """The form in which two cells of ``field`` compare: HH:MM for a time, the zone id for ``home``, lower case for
+    a label."""
     text = str(text).strip()
     key = FIELDS[field].key
     if key == "start":
@@ -401,9 +405,6 @@ def _canon(field: str, text, home: str | None) -> str:
         return f"{t[0]:02d}:{t[1]:02d}" if t else text
     if key in ("origin", "destination"):
         return home if home is not None and text.lower() == HOME else text
-    if key == "legmin":
-        m = _minutes(text)
-        return str(m) if m is not None else text
     return text.lower()
 
 
@@ -417,8 +418,8 @@ def sheet_edits(sheet: pd.DataFrame) -> pd.DataFrame:
     else is one edit with field ``note``, which :func:`freeze_round` makes the
     new reason of the decisions on that trip. A new value equal to the one
     beside it is not an edit — times compare as times, so ``9:05`` or
-    ``09:05:00`` is ``09:05``, minutes as whole numbers, labels regardless of
-    case, and ``home`` as the row's home zone — nor is a ``new status`` that would not change the row
+    ``09:05:00`` is ``09:05``, labels regardless of case, and ``home`` as the
+    row's home zone — nor is a ``new status`` that would not change the row
     (``dropped`` on a dropped row, ``restored`` on a kept one). A value that
     cannot be applied — an unknown label or zone, a bad time, a status other
     than those two — is an edit here; :func:`apply_edits` refuses it. A
@@ -563,15 +564,11 @@ def _answer_rows(index: pd.MultiIndex) -> dict:
     return {key[:2]: key for key in _first_rows(index)}
 
 
-def _shown(trips: pd.DataFrame, minutes: pd.Series | None, key, f: Field) -> str:
-    """The value of field ``f`` on row ``key`` as a sheet shows it: HH:MM, a zone id, whole minutes or a label,
-    ``—`` if missing. ``minutes`` holds the travel minutes of the table's trips (:func:`_trip_minutes`)."""
+def _shown(trips: pd.DataFrame, key, f: Field) -> str:
+    """The value of field ``f`` on row ``key`` as a sheet shows it: HH:MM, a zone id or a label, ``—`` if missing."""
     if f.key == "start":
         h, m = trips.at[key, f.column[0]], trips.at[key, f.column[1]]
         return MISSING if pd.isna(h) or pd.isna(m) else f"{int(h):02d}:{int(m):02d}"
-    if f.key == "legmin":
-        v = minutes.get(key, np.nan) if minutes is not None else np.nan
-        return MISSING if pd.isna(v) else str(int(v))
     v = trips.at[key, f.column]
     return MISSING if pd.isna(v) else str(v)
 
@@ -596,7 +593,6 @@ def _resolve(cleaned, edits, shipped, rules, zones=None) -> _Resolution:
     a dropped row as shipped — else it was made against another version of
     the tables and is refused. A mode edit on a trip of several legs must
     name one of their modes; on a one-leg trip the leg takes the new mode.
-    A leg min edit names the trip's travel minutes, at least one per leg.
     """
     trips, legs = cleaned.trips, cleaned.legs
     known, zone_of = zones if zones is not None else _zones(shipped)
@@ -653,15 +649,8 @@ def _resolve(cleaned, edits, shipped, rules, zones=None) -> _Resolution:
         if isinstance(trips[f.column].dtype, pd.CategoricalDtype)
         else None
         for f in FIELDS.values()
-        if not isinstance(f.column, tuple) and f.key != "legmin"
+        if not isinstance(f.column, tuple)
     }
-    minutes = {}  # the travel minutes of each table a before is read off, worked out when first needed
-
-    def minutes_of(source):
-        tag = tuple(map(id, source))
-        if tag not in minutes:
-            minutes[tag] = _trip_minutes(*source, source[0].index).dropna().astype(int)
-        return minutes[tag]
 
     for i in np.flatnonzero(~np.isin(fields, [STATUS, NOTE])):
         key, name, text = keys[i], fields[i], afters[i]
@@ -721,20 +710,6 @@ def _resolve(cleaned, edits, shipped, rules, zones=None) -> _Resolution:
                 continue
             holds = str(trips.at[key, f.column]) == new
             canonical = HOME if text.lower() == HOME else new
-        elif f.key == "legmin":
-            new = _minutes(text)
-            if new is None:
-                problem(i, f"{where}: '{text}' is not a whole number of minutes")
-                continue
-            if legs is None:
-                problem(i, f"{where}: the tables carry no legs to spread the minutes over")
-                continue
-            n_legs = len(legs.loc[key])
-            if new < n_legs:
-                problem(i, f"{where}: {new} minutes cannot spread over {n_legs} legs, one minute each at least")
-                continue
-            holds = minutes_of((trips, legs)).get(key) == new
-            canonical = str(new)
         else:
             new = text
             if levels[f.column] is not None:
@@ -755,8 +730,7 @@ def _resolve(cleaned, edits, shipped, rules, zones=None) -> _Resolution:
         if holds:
             outcome[i] = "holds"
             continue
-        source = (shipped.trips, shipped.legs) if key in now_restored else (trips, legs)
-        shown = _shown(source[0], minutes_of(source) if f.key == "legmin" else None, key, f)
+        shown = _shown(shipped.trips if key in now_restored else trips, key, f)
         h = home[key[0]]
         if _canon(name, befores[i], h) != _canon(name, shown, h):
             problem(i, f"{where}: the sheet showed '{befores[i]}' but the tables hold '{shown}': "
@@ -793,7 +767,7 @@ def _net_fixes(trips: pd.DataFrame, legs: pd.DataFrame | None, shipped: EODTable
     in_rules = index.isin(rules.trips.index)
     same_shipped, same_rules = {}, {}
     for f in FIELDS.values():
-        if f.key != "legmin" and not all(c in trips for c in (f.column if isinstance(f.column, tuple) else (f.column,))):
+        if not all(c in trips for c in (f.column if isinstance(f.column, tuple) else (f.column,))):
             continue
         prefix = f.code.split(":")[0]
         now = _values(trips, legs, f, index)
@@ -818,29 +792,16 @@ def _net_fixes(trips: pd.DataFrame, legs: pd.DataFrame | None, shipped: EODTable
     return pd.Series(out, index=trips.index, name=FIX_FLAG, dtype=str)
 
 
-def _spread(minutes, total: int) -> list[int]:
-    """``total`` whole minutes over legs in proportion to their ``minutes``, one at least each (largest remainder)."""
-    m = np.asarray(minutes, dtype=float)
-    extra = total - len(m)  # every leg keeps a minute; the rest goes by share
-    share = m / m.sum() * extra
-    out = np.floor(share).astype(int)
-    out[np.argsort(-(share - out), kind="stable")[: extra - out.sum()]] += 1
-    return (out + 1).tolist()
-
-
 def _apply(cleaned: EODTables, r: _Resolution, shipped: EODTables, rules: EODTables, zone_of) -> EODTables:
     """The tables with a resolution's edits applied, ``ajustes`` and ``problemas`` recomputed; raises on a problem."""
     if r.problems:
         raise ValueError("edits that cannot be applied:\n  " + "\n  ".join(r.problems))
     trips, hab = r.trips.copy(), cleaned.hab.copy()
     legs = r.legs.copy() if r.legs is not None else None
-    by_column, answers, minutes = {}, {}, {}
+    by_column, answers = {}, {}
     for key, f, new in r.sets:
         if f.key == "otype":  # the person's answer, set on every row they keep below
             answers[key[:2]] = new
-            continue
-        if f.key == "legmin":  # the trip's legs, below
-            minutes[key] = new
             continue
         i = trips.index.get_loc(key)
         if isinstance(f.column, tuple):
@@ -854,9 +815,6 @@ def _apply(cleaned: EODTables, r: _Resolution, shipped: EODTables, rules: EODTab
         trips.iloc[list(values), trips.columns.get_loc(column)] = list(values.values())
     for leg, mode in r.leg_modes:
         legs.loc[leg, "traslado_medio"] = mode
-    for key, total in minutes.items():
-        own = legs.loc[key, LEG_MINUTES]
-        legs.loc[[key + (n,) for n in own.index], LEG_MINUTES] = _spread(own.to_numpy(), total)
     if r.dropped:
         trips = trips.drop(index=r.dropped)
         if legs is not None:
@@ -898,9 +856,7 @@ def apply_edits(
     on the person's first trip — changes the person's answer, on every row;
     a mode edit on a one-leg trip changes the leg's mode
     too, so ``modo_principal`` stays one of the trip's leg modes, which the
-    model build and the reweighting both read. A ``leg min`` edit sets the
-    trip's travel minutes, spread over its legs in proportion to what they
-    held (:func:`_spread`), the model's ``Duration``. A ``status`` of ``dropped``
+    model build and the reweighting both read. A ``status`` of ``dropped``
     removes the row and its legs and lowers the person's ``viajes_contados``;
     one of ``restored`` brings back a row the table lacks: from ``rules`` when
     it holds the row, so a row an earlier pass dropped comes back with the
@@ -1053,7 +1009,6 @@ def merge_decisions(
     trip, keeping each decision's value and source.
     """
     R, S = rules.trips, shipped.trips
-    minutes = {id(R): _trip_minutes(R, rules.legs, R.index), id(S): _trip_minutes(S, shipped.legs, S.index)}
     home = shipped.viv.ageb.astype(str)
     answers = R.groupby(level=PERSON, sort=False)[ORIGIN_TYPE].first() if ORIGIN_TYPE in R else None
 
@@ -1061,8 +1016,7 @@ def merge_decisions(
         if f.key == "otype":
             v = answers.get(key[:2], np.nan)
             return MISSING if pd.isna(v) else str(v)
-        source = R if key in R.index else S
-        v = _shown(source, minutes[id(source)], key, f)
+        v = _shown(R if key in R.index else S, key, f)
         return HOME if f.key in ("origin", "destination") and v == home[key[0]] else v
 
     table = {
@@ -1120,6 +1074,16 @@ def decision_changes(before: pd.DataFrame, after: pd.DataFrame) -> dict:
     }
 
 
+def _write_gzip_csv(frame: pd.DataFrame, path) -> Path:
+    """``frame`` as a gzipped CSV whose header carries no file name and no time: the same table, the same bytes."""
+    import gzip
+
+    path = Path(path)
+    with open(path, "wb") as f, gzip.GzipFile(filename="", mode="wb", fileobj=f, mtime=0) as gz:
+        gz.write(frame.to_csv(index=False).encode("utf-8"))
+    return path
+
+
 def write_decisions(decisions: pd.DataFrame, path) -> Path:
     """Write the decisions as the gzipped CSV ``load_eod`` reads, byte for byte the same for the same decisions.
 
@@ -1127,13 +1091,9 @@ def write_decisions(decisions: pd.DataFrame, path) -> Path:
     The cached table (:func:`eodgdl._resources.chain_decisions`) is dropped, so a ``load_eod`` in the same
     process reads what was written.
     """
-    import gzip
-
     from eodgdl._resources import chain_decisions
 
-    path = Path(path)
-    with open(path, "wb") as f, gzip.GzipFile(filename="", mode="wb", fileobj=f, mtime=0) as gz:
-        gz.write(decision_frame(decisions[DECISION_COLUMNS].itertuples(index=False)).to_csv(index=False).encode("utf-8"))
+    path = _write_gzip_csv(decision_frame(decisions[DECISION_COLUMNS].itertuples(index=False)), path)
     chain_decisions.cache_clear()
     return path
 
@@ -1145,11 +1105,33 @@ def decisions_path() -> Path:
     return Path(str(resources.files("eodgdl") / "revisions")) / "chains.csv.gz"
 
 
+LEG_MINUTE_COLUMNS = KEYS + ["before", "after", NOTE, "source"]
+
+
+def write_leg_minutes(table: pd.DataFrame, path) -> Path:
+    """Write the travel minutes a review corrected as the gzipped CSV ``load_eod`` reads before the rules.
+
+    One row per trip, sorted, in ``LEG_MINUTE_COLUMNS`` (see :func:`eodgdl._resources.leg_minutes`); byte for byte
+    the same for the same table, and the cached table is dropped, as :func:`write_decisions` does.
+    """
+    from eodgdl._resources import leg_minutes
+
+    frame = table[LEG_MINUTE_COLUMNS].astype({k: int for k in KEYS + ["before", "after"]})
+    path = _write_gzip_csv(frame.sort_values(KEYS).reset_index(drop=True), path)
+    leg_minutes.cache_clear()
+    return path
+
+
+def leg_minutes_path() -> Path:
+    """Where the corrected travel minutes live: ``eodgdl/revisions/leg_minutes.csv.gz`` in the source tree."""
+    return decisions_path().with_name("leg_minutes.csv.gz")
+
+
 # ------------------------------------------------------------------ snapshots
 
 
 def snapshot(tables: EODTables, shipped: EODTables) -> pd.DataFrame:
-    """Every shipped trip's value of every ``FIELDS`` column in ``tables``, as a sheet shows it, and ``dropped``.
+    """Every shipped trip's value of every ``FIELDS`` and ``SHOWN`` column in ``tables``, as a sheet shows it, and ``dropped``.
 
     What :func:`changed_persons` compares a later load with. The stale check
     guards the decisions, but a round that let the rules' value stand leaves
@@ -1160,7 +1142,8 @@ def snapshot(tables: EODTables, shipped: EODTables) -> pd.DataFrame:
     rows = chain_rows(tables, shipped)
     shown = {"start": _hhmm, "legmin": _whole}
     out = pd.DataFrame(
-        {name: shown.get(f.key, _text)(rows[f"{f.key}_clean"]) for name, f in FIELDS.items()}, index=rows.index
+        {name: shown.get(f.key, _text)(rows[f"{f.key}_clean"]) for name, f in {**FIELDS, **SHOWN}.items()},
+        index=rows.index,
     )
     out[STATUS] = np.where(rows.dropped, DROPPED, "")
     return out.rename_axis(KEYS)
@@ -1205,10 +1188,6 @@ _SHORT_WORK = 30  # minutes
 _LONG_WORKDAY = 14 * 60
 _LONG_DAY = 20 * 60
 _LONG_ERRAND = 8 * 60
-_EARLY = 5 * 60  # minutes from midnight: chains._EARLY_START
-_MANDATORY = ("Trabajar", "Estudiar")
-_ESCORT = "Llevar o recoger a alguien"  # a drop-off takes no time
-_HOME_MOTIVE = "Regresar a Casa"
 
 
 def screens(tables: EODTables) -> pd.DataFrame:
@@ -1224,7 +1203,9 @@ def screens(tables: EODTables) -> pd.DataFrame:
     summed), ``day_minutes`` (the first start to the last arrival),
     ``long_errands`` (stays of eight hours or more at a place that is not
     home, work or school), ``night_shift_end`` (the day ends with a return
-    from work the next morning), one boolean column per ``SCREENS`` entry,
+    from work the next morning, before 10:00, as a night shift does; until
+    2026-09-26 any hour of the next day counted, and days that went to work
+    again after a night passed as night shifts), one boolean column per ``SCREENS`` entry,
     and ``problems``: the stays of no minutes away from home, work and school,
     the short stays at work or school, the early start, the long errands and a day of more
     than 20 hours that does not end with a night shift's morning return,
@@ -1237,18 +1218,19 @@ def screens(tables: EODTables) -> pd.DataFrame:
     person = t.index.droplevel("folio_viaje")
     stay = pd.Series(start, index=t.index).groupby(level=PERSON).shift(-1).to_numpy() - arrive
     motive = t.motivo_viaje.astype(object).to_numpy()
-    work = (motive == "Trabajar") & ~np.isnan(stay)
-    mandatory = np.isin(motive, _MANDATORY) & ~np.isnan(stay)
+    work = (motive == WORK_MOTIVE) & ~np.isnan(stay)
+    mandatory = np.isin(motive, MANDATORY_MOTIVES) & ~np.isnan(stay)
     first = t.groupby(level=PERSON).cumcount().to_numpy() == 0
     last = t.groupby(level=PERSON).cumcount(ascending=False).to_numpy() == 0
-    after_work = pd.Series(motive == "Trabajar", index=t.index).groupby(level=PERSON).shift(1).fillna(False).to_numpy(bool)
+    after_work = pd.Series(motive == WORK_MOTIVE, index=t.index).groupby(level=PERSON).shift(1).fillna(False).to_numpy(bool)
+    next_morning = (start >= 1440) & (start < 1440 + _NIGHT_SHIFT_RETURN)
     frame = pd.DataFrame(
         {"zero": stay == 0, "zero_work": work & (stay == 0), "short_work": mandatory & (stay < _SHORT_WORK),
-         "zero_away": (stay == 0) & ~np.isin(motive, [_HOME_MOTIVE, _ESCORT, *_MANDATORY]),
+         "zero_away": (stay == 0) & ~np.isin(motive, [HOME_MOTIVE, ESCORT, *MANDATORY_MOTIVES]),  # a drop-off takes no time
          "work": np.where(work, np.clip(stay, 0, None), 0.0),
-         "long_errand": (stay >= _LONG_ERRAND) & ~np.isin(motive, [_HOME_MOTIVE, *_MANDATORY]),
-         "early": first & ~np.isin(motive, ["Trabajar", _HOME_MOTIVE]) & (start % 1440 < _EARLY),
-         "night_end": last & (motive == _HOME_MOTIVE) & after_work & (start >= 1440),
+         "long_errand": (stay >= _LONG_ERRAND) & ~np.isin(motive, [HOME_MOTIVE, *MANDATORY_MOTIVES]),
+         "early": first & ~np.isin(motive, [WORK_MOTIVE, HOME_MOTIVE]) & (start % 1440 < _EARLY_START),
+         "night_end": last & (motive == HOME_MOTIVE) & after_work & next_morning,
          "start": start, "arrive": arrive},
         index=person,
     )

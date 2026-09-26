@@ -1,13 +1,26 @@
 # Hand decisions over the trip chains
 
-`load_eod()` applies `chains.csv.gz`, the hand decisions, to the chain rules' output in one
-pass (`eodgdl.review.apply_revisions`; `load_eod(revise_chains=False)` stops before it). Each
-row is one decision, columns `household, person, trip, field, before, after, note, source`:
+Two tables hold the hand work on the trip chains, read at the two ends of the chain rules:
+
+- `leg_minutes.csv.gz`, the **travel minutes** a review corrected, goes in **before** the rules
+  (`eodgdl.chains._correct_minutes`, called by `clean_trip_chains`): the rules read the minutes,
+  since a trip's arrival — the moment every later start is tested against — is its start plus its
+  minutes. One row per trip, columns `household, person, trip, before, after, note, source`:
+  `before` is the trip's reported minutes summed over its legs, `after` the minutes it takes
+  instead, spread over its legs in proportion to what each reported, a minute each at least. The
+  load fails if a trip's minutes are not `before`. The corrected trips carry `minutos:revision`
+  in `ajustes`, and a review sheet shows their minutes, shipped → corrected, under `leg min`,
+  which takes no new value.
+- `chains.csv.gz`, the **hand decisions**, goes in **after** the rules: `load_eod()` applies it
+  to their output in one pass (`eodgdl.review.apply_revisions`; `load_eod(revise_chains=False)`
+  stops before it). Each row is one decision, columns `household, person, trip, field, before,
+  after, note, source`, described below.
+
+For the decisions:
 
 - `before` is the rules' value as a review sheet shows it — the shipped one on a row the rules
   dropped — and `after` the value decided: `HH:MM`, a level's own label, a zone id or `home`,
-  whole minutes under `leg min` (the trip's travel minutes, spread over its legs in
-  proportion), and `dropped` or `restored` under `status`.
+  and `dropped` or `restored` under `status`.
 - `note` is the reviewer's reason and `source` the review sheet that made the decision
   (`notebooks/<source>.csv`).
 - There is one decision at most per trip and field, and each is made against the rules'
@@ -18,6 +31,10 @@ row is one decision, columns `household, person, trip, field, before, after, not
 The hand decisions sit only on persons the rules' output marks — a `problemas` or an `ajustes`
 code on one of their trips (`eodgdl.review.marked_persons`): the survey nothing marks keeps its
 values (user, 2026-09-26).
+
+A change to `leg_minutes.csv.gz` changes what the rules read, so it is a change to the rules:
+take a snapshot first (below) and make it with a script under `scripts/revisions/`, as round 15's
+writes it; no review sheet edits it.
 
 ## A review round
 
@@ -44,8 +61,9 @@ minute the previous one arrives (`zero_stay`), one that leaves work so (`zero_wo
 leaves work or school within half an hour (`short_work`), more than 14 hours at work
 (`long_workday`), a day of more than 20 hours (`long_day`), a first non-work trip before 05:00
 (`early_start`), eight hours or more at an errand (`long_errand`). `screens` also counts a day's
-`problems`, the measure a criterion round reads a day by (round 14's). A consistent chain can
-still be implausible.
+`problems`, the measure a criterion round reads a day by (rounds 14 and 15); a day of more than 20
+hours counts unless it ends with a night shift's return the next morning, before 10:00. A
+consistent chain can still be implausible.
 
 ## When the rules change
 
@@ -66,7 +84,7 @@ decision holds it, and a rule change that moves it moves it silently. So before 
 take a snapshot (`eodgdl review snapshot --out before.csv.gz`), and after it export the persons
 whose values moved (`eodgdl review export --since before.csv.gz`) to look at them. Round 14 read
 such a snapshot, `notebooks/revisions/snapshot_13.csv.gz`, taken before the rules of the fourth
-review of the chains.
+review of the chains; round 15 reads it too.
 
 ## How the decisions are read
 
@@ -82,63 +100,60 @@ review of the chains.
 - **A mode decision keeps the trip on its legs**: on a one-leg trip the leg takes the new
   mode, on a trip of several legs the new mode must be one of theirs, since the model build
   reads the main mode and the reweighting the legs.
-- **A leg-minutes decision sets the trip's travel minutes**, spread over its legs in
-  proportion to what each held, a minute each at least: the model's `Duration`.
 - **`ajustes` is net.** Field by field, a value that is the rules' carries the rules' codes,
   one decided by hand carries `<field>:revision`, and one that is the shipped value again
-  carries nothing; `fila:revision` marks a row the rules dropped and a decision restored.
+  carries nothing; `fila:revision` marks a row the rules dropped and a decision restored. The
+  travel minutes carry `minutos:revision` from the rules' output, since they are corrected
+  before the rules.
 
-## Round 14: the table made again (2026-09-26)
+## Round 15: the table made again (2026-09-26)
 
-The fourth review of the chains took the first hand pass as a suggestion only and turned its
-templates into chain rules (`eodgdl.chains`, the fourth review in each rule's docstring):
+The fifth review of the chains changed the rules under round 14's decisions (`eodgdl.chains`, the
+fifth review in each rule's docstring):
 
-- a return recorded ending in its own origin's AGEB goes home (`destino:copia`);
-- an activity trip that arrives at 'Su casa' in the home zone from another zone is a return
-  (`motivo:casa`, what passes 1 and 6 did by hand);
-- a return that ends elsewhere takes the motive the person's trips give the place
-  (`motivo:lugar`);
-- a daycare trip from age 12 is an escort (`motivo:guarderia`);
-- a night shift's next-morning return, the last row of a day that opens with the return from
-  the job, is no trip of the day (`regreso_dia_siguiente`, the convention of passes 2 and 3);
-- every trip starts where the previous one ended (`origen:anterior`);
-- a first trip whose answer says home, or copies its destination's place type, starts at home
-  (`origen:respuesta`, `origen:tipo_copia`);
-- a day that opens with a return from elsewhere answers where it started
-  (`tipo_origen:regreso`, passes 2 and 3);
-- the hours get a second menu, a night window and a limit at work.
+- round 9's travel minutes are read **before** the rules (`leg_minutes.csv.gz`); round 14 had
+  carried them as decisions applied after, so the typo search read the reported minutes and the
+  hand then undid its readings start by start: household 7425, person 3, reports 120 minutes for
+  four trips whose hours fit 60, and the search had read two of them two hours later;
+- a day read past midnight must **hold together** after it: no trip to work or school after the
+  night, and its last start less than 24 hours after its first (`_day_wraps`). Round 14 had
+  kept 15 days that went to work again after the night, 11 of them running past 24 hours, and
+  had lost round 8's split shift for household 8992, person 1 (21:00 →
+  02:00 → 16:00 → 19:00, back to 09:00 → 14:00 → 16:00 → 19:00 now), because `screens` took
+  any return from work on the next day, at any hour, for a night shift's; it no longer does;
+- the typo search runs **once more** after the move to the arrival, where a contradiction of
+  minutes had kept it from reading an hour elsewhere in the chain (`_read_start_times`: household
+  834, person 1, an escort at 04:30 that is 16:30);
+- two of round 14's criteria are **rules**: a first trip recorded from a place to home whose next
+  trip leaves from home went from home to the place (`_rotated_first_trips`, 47 days: round 14's
+  16, 22 of the fifth pass's rotations, and 8 days nobody had read), and a return left away from
+  home goes home if it is the day's last trip to an AGEB nothing else touches, else to 'Otros'
+  (`_short_returns`, 29 returns).
 
-The rules then leave 291 persons with a breaking code, against 1,100 before. Every decision was
-retired: the first pass's (2,642, its notes with them), and rounds 11–13's, which existed to carry
-and mend it. `notebooks/revisions/decisions_13.csv.gz` keeps the table as rounds 1–13 left it (3,663
-decisions), and `notebooks/revisions/snapshot_13.csv.gz` the tables they gave.
+The rules then leave 246 persons with a breaking code, all of it `hora_invertida`, against 291.
+Round 14's table (1,274 decisions) was retired whole, as round 14 had retired the table before it,
+and round 15 (`scripts/revisions/chains_15.py`, which reads round 14's inputs,
+`notebooks/revisions/decisions_13.csv.gz` and `snapshot_13.csv.gz`) made it again:
 
-Round 14 (`scripts/revisions/chains_14.py`, which reads both files) made again what still says
-something the rules do not, and is the table's one source:
-
-- **Carried** (476): the decisions of passes 2–6 and round 9 on any field but the start, where
-  the rules' output still holds the value each was made against and not yet the value it sets.
-  Among them are round 9's 371 leg minutes, pass 5's rotated first trips, pass 2's night shifts
-  outside the rule's signature, and pass 4's staff bus. Pass 6's recodes whose trip only the
-  first pass had put at home, and every day-start answer and night-shift drop a rule now gives,
-  are left. Pass 5's rotations are completed (27 days) where no rule starts the day at home: the
-  origin and the answer that the first pass had set.
-- **Rotated first trips** (16 days): a day that still says it started at home while its first
-  trip, an activity, was recorded from a place to home and the next from home onwards takes pass
-  5's reading. The first trip went from home to the place, and the next leaves from there.
-- **Start times** (647): 689 days read again. Candidates:
-  - the rules' reading, made again on the chain as the carried decisions leave it (176 starts);
+- **Leg minutes** (371 trips, 432 legs): every one of round 9's corrections, written as
+  `leg_minutes.csv.gz` with round 9's reason.
+- **Carried** (62): the decisions of passes 2–6 on any field but the start, where the rules'
+  output still holds the value each was made against and not yet the value it sets — pass 5's
+  rotations the rule does not read, pass 4's staff bus, pass 2's swaps and night shifts outside
+  the rule's signature, pass 6's recodes. Pass 5's rotations are completed (origin and answer)
+  where no rule starts the day at home.
+- **Start times** (514): 518 days read again. Candidates:
+  - the rules' reading, made again on the chain as the carried decisions leave it (9 starts);
   - the earlier tables' reading, the first pass's and its corrections, a suggestion;
   - where the rules' reading still overlaps, the fewest minutes moved in all.
 
   The day keeps the reading with no overlap and the fewest problems (`screens`, plus a departure
   moved into the small hours). On a tie it keeps the fewest starts changed, then the fewest
-  minutes. 417 days keep the rules' reading, 205 take the earlier one and 67 the fewest minutes.
-- **Returns that stop short** (29): the day's last trip to an AGEB that no other trip of the day
-  touches ends at home; any other becomes 'Otros', the O the model already gave it.
+  minutes. 241 days keep the rules' reading, 211 take the earlier one and 66 the fewest minutes.
 
-1,274 decisions, from 3,663 in eleven sources. No breaking code is left, every decision applies
-and sits on a person the rules' output marks, and a second run of the script finds nothing.
+576 decisions, from round 14's 1,274 (of which 371 are the leg minutes, now read before the
+rules). No breaking code is left, every decision applies and sits on a person the rules' output
+marks, and a second run of the script finds nothing.
 
 ## History
 
@@ -157,5 +172,9 @@ day, and rounds 8–13 merged into it by `eodgdl review freeze`:
 - round 12: implausible days;
 - round 13: notes.
 
-The sheets of passes 1–10, round 9's and 10's scripts and the frozen passes are in git (commit
-9570b7c and earlier); round 14's notes say which earlier decision each carried decision keeps.
+Round 14 (2026-09-26, the fourth review of the chains) retired every earlier decision and made the
+table again on rules that took over the first pass's templates; round 15 (the same day, the fifth
+review) did the same on the rules that took over two of round 14's criteria. The sheets of passes
+1–10, round 9's and 10's scripts and the frozen passes are in git (commit 9570b7c and earlier),
+round 14's script and sheet in commit 42b0cbb; round 15's notes say which earlier decision each
+carried decision keeps.

@@ -47,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 from eodgdl import clean_trip_chains, load_stages, tasha
-from eodgdl._resources import chain_decisions
+from eodgdl._resources import chain_decisions, leg_minutes
 from eodgdl.chains import (
     BREAKING_ISSUES,
     FIX_CODES,
@@ -56,6 +56,8 @@ from eodgdl.chains import (
     ISSUE_FLAG,
     TIME_ORDER_ISSUES,
     _arrivals_home,
+    _correct_minutes,
+    _day_wraps,
     _daycare_escorts,
     _first_origins_at_home,
     _first_return_answers,
@@ -67,6 +69,8 @@ from eodgdl.chains import (
     _recode_returns_by_destination,
     _returns_copying_origin,
     _returns_elsewhere,
+    _rotated_first_trips,
+    _short_returns,
     _trip_features,
     days_past_midnight,
     has_code,
@@ -98,6 +102,9 @@ def show(df):
 # the survey as shipped, after the chain rules, and after the hand decisions in eodgdl/revisions/, from one
 # read; everything but @sec-revised counts on the first two
 raw, clean, revised = load_stages()
+# the travel minutes a review corrected, which the rules read in place of the reported ones (@sec-minutes)
+minutes_table = leg_minutes()
+_, legs_read, minutes_fixed = _correct_minutes(raw.trips.sort_index(), raw.legs, minutes_table)
 
 
 def with_helpers(trips, viv, legs):
@@ -129,6 +136,9 @@ def hhmm(h, m):
     return "—" if pd.isna(h) else f"{int(h):02d}:{int(m):02d}"
 
 
+clean_minutes = clean.legs.traslado_min.groupby(level=[0, 1, 2]).sum()
+
+
 def person_table(key, source=R):
     """One person's trips as shipped, with what load_eod did to each row and what it left."""
     t = source.loc[key]
@@ -146,6 +156,13 @@ def person_table(key, source=R):
             notes.append(f"motive → {c.motivo_viaje}")
         if str(c.origen) != str(row.origen):
             notes.append("origin → home" if str(c.origen) == home else f"origin → {c.origen}")
+        if str(c.destino) != str(row.destino):
+            notes.append("destination → home" if str(c.destino) == home else f"destination → {c.destino}")
+        if str(c.tipo_lugar_destino) != str(row.tipo_lugar_destino) and str(c.motivo_viaje) == str(row.motivo_viaje):
+            notes.append(f"type → {c.tipo_lugar_destino}")
+        minutes = clean_minutes.get((key[0], key[1], fv))
+        if minutes is not None and pd.notna(row.legmin) and int(minutes) != int(row.legmin):
+            notes.append(f"minutes → {int(minutes)}")
         if c[FIX_FLAG]:
             notes.append(f"[{c[FIX_FLAG]}]")
         if c[ISSUE_FLAG]:
@@ -268,21 +285,22 @@ inv_after_work = float((R.prev_motivo[earlier] == "Trabajar").mean())
 #| label: fixes
 #| include: false
 
-cleaned_trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)
-assert counts == {"untimed_trips": 325, "untimed_persons": 281,
+cleaned_trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab, minutes=minutes_table)
+assert counts == {"leg_minutes_corrected": 371, "untimed_trips": 325, "untimed_persons": 281,
                   "times_from_duplicate": 37, "times_from_neighbours": 288,
                   "motives_from_duplicate": 38, "motives_from_neighbours": 294,
                   "recoded_returns": 84, "returns_copying_origin": 69, "arrivals_home": 231, "daycare_escorts": 163,
                   "home_to_home": 556, "returns_elsewhere": 67, "next_morning_returns": 75, "duplicate_returns": 38,
                   "origins_repaired": 147, "origins_continued": 31, "first_origins_copied": 955,
-                  "first_origins_answered": 86, "first_origins_typed": 151, "answers_set_home": 569,
-                  "first_return_answers": 75, "start_times_edited": 2_485, "chains_repaired": 1_927,
-                  "early_starts_read": 110, "starts_at_arrival": 816,
-                  "left_hora_invertida": 355, "left_hora_nocturna": 195, "left_hora_anterior": 0,
+                  "first_origins_answered": 86, "first_origins_typed": 151, "first_trips_rotated": 47,
+                  "answers_set_home": 600, "first_return_answers": 75, "short_returns_home": 8,
+                  "short_returns_other": 21, "start_times_edited": 2_479, "chains_repaired": 1_923,
+                  "early_starts_read": 110, "chains_read_after_the_slide": 3, "starts_at_arrival": 687,
+                  "left_hora_invertida": 351, "left_hora_nocturna": 178, "left_hora_anterior": 0,
                   "left_hora_repetida": 0, "left_hora_traslapada": 0, "left_origen_discontinuo": 0,
-                  "left_regreso_sin_llegar": 29, "left_tipo_destino_dudoso": 16,
-                  "left_inicio_fuera_de_casa": 412, "left_inicio_zona_ajena": 16, "left_fin_fuera_de_casa": 502,
-                  "left_actividad_en_casa": 556, "left_motivo_guarderia": 30, "left_hora_2301": 94,
+                  "left_regreso_sin_llegar": 0, "left_tipo_destino_dudoso": 16,
+                  "left_inicio_fuera_de_casa": 381, "left_inicio_zona_ajena": 0, "left_fin_fuera_de_casa": 494,
+                  "left_actividad_en_casa": 536, "left_motivo_guarderia": 30, "left_hora_2301": 94,
                   "left_hora_madrugada": 59}
 assert len(clean.trips) == len(cleaned_trips) == n_trips - counts["duplicate_returns"]
 assert len(clean.hab) == n_hab
@@ -349,7 +367,7 @@ imputed_evening = float(imputed_hours.between(17, 19).mean())
 imp_w_share = float(clean.trips.ponderador[imp_time | imp_dup].sum() / clean.trips.ponderador.sum())
 imputed_left = int((clean.trips[ISSUE_FLAG][imp_time] != "").sum())
 home_R = raw.viv.ageb.astype(str).reindex(R.index.get_level_values(0)).to_numpy()
-feat = _trip_features(raw.trips.sort_index(), home_R, raw.hab, raw.legs)
+feat = _trip_features(raw.trips.sort_index(), home_R, raw.hab, legs_read)
 candidates = feat[feat.activity & feat.start.notna() & feat.next_start.notna()]
 donors = feat[_donor_mask(feat)]                    # the pool the imputation draws from
 n_candidates, n_donors = len(candidates), len(donors)
@@ -389,8 +407,8 @@ score_tbl = pd.DataFrame({
 })
 
 # --- home-to-home returns, on the table with the lost blocks filled
-t1_filled, imp_masks = _impute_untimed_trips(raw.trips.sort_index(), home_R, raw.hab, raw.legs)
-t1 = with_helpers(t1_filled, raw.viv, raw.legs)
+t1_filled, imp_masks = _impute_untimed_trips(raw.trips.sort_index(), home_R, raw.hab, legs_read)
+t1 = with_helpers(t1_filled, raw.viv, legs_read)
 assert t1.start.notna().all()
 first_return_from_home = int(((R.pos == 1) & R.is_return & (R.tipo_lugar_origen == HOME)).sum())
 first_return_from_away = int(((R.pos == 1) & R.is_return & (R.tipo_lugar_origen == HOME) & (R.origen.astype(str) != R.home)).sum())
@@ -476,8 +494,8 @@ motive_changed = has_code(C[FIX_FLAG], "motivo:tipo_destino").reindex(common).fi
 assert int(motive_changed.sum()) == 84 and not (motive_changed & ~changed_any).any()
 n_motives_changed = int(changed_any.sum())
 origin_changed = C.origen.reindex(common).astype(str) != R.origen.reindex(common).astype(str)
-assert int(origin_changed.sum()) == (counts["origins_repaired"] + counts["origins_continued"] + counts["first_origins_copied"]
-                                     + counts["first_origins_answered"] + counts["first_origins_typed"])
+origin_coded = C[FIX_FLAG].reindex(common).str.contains(r"(?:^|;)origen:")
+assert (origin_changed == origin_coded).all()                     # an origin changes where a rule says so, and only there
 recode_tbl = (pd.DataFrame({"destination type": R.tipo_lugar_destino.reindex(common)[motive_changed].astype(str),
                             "motive after": C.motivo_viaje.reindex(common)[motive_changed].astype(str)})
                 .value_counts().reset_index(name="trips").sort_values("trips", ascending=False))
@@ -535,10 +553,13 @@ assert (edited_hours >= 5).all()
 c_inv = (C.start < C.prev_start).fillna(False)
 c_early = (C.start < C.prev_start + C.prev_leg).fillna(False)
 # the marking's overnight: an evening start, a return home after an afternoon one (a second shift), or a return
-# home before 10:00 after an evening trip to work (a night shift)
-overnight_c = ((((C.prev_start >= 18 * 60) | ((C.prev_start >= 12 * 60) & C.is_return)) & (C.start <= 6 * 60))
-               | ((C.prev_start >= 18 * 60) & C.is_return & (C.prev_motivo == "Trabajar") & (C.start < _NIGHT_SHIFT_RETURN))
-               ).fillna(False)
+# home before 10:00 after an evening trip to work (a night shift) — where the day holds together after it: no trip
+# to work or school after the night, less than 24 hours from the first start to the last (_day_wraps, @sec-night)
+next_day_c = ((((C.prev_start >= 18 * 60) | ((C.prev_start >= 12 * 60) & C.is_return)) & (C.start <= 6 * 60))
+              | ((C.prev_start >= 18 * 60) & C.is_return & (C.prev_motivo == "Trabajar") & (C.start < _NIGHT_SHIFT_RETURN))
+              ).fillna(False)
+overnight_c = pd.Series(_day_wraps(C, C.start.to_numpy()), index=C.index)
+n_night_voided = int((next_day_c & ~overnight_c).sum())       # read overnight but for the day after it: hora_invertida
 night_shift_c = (overnight_c & C.is_return & (C.prev_motivo == "Trabajar") & (C.start > 6 * 60)).fillna(False)
 n_second_menu = int(C.index[has_code(C[FIX_FLAG], "hora:-12h").to_numpy()].droplevel("folio_viaje").nunique())
 c_beyond = ((C.prev_start + C.prev_leg - C.start) > _START_TIME_TOLERANCE).fillna(False) & ~overnight_c
@@ -616,7 +637,21 @@ ex_arrival = example("motivo:casa")
 ex_elsewhere = example("motivo:lugar")
 ex_night = example("regreso_dia_siguiente", ISSUE_FLAG, 5)
 ex_continued = example("origen:anterior")
-n_elsewhere_left = int(has_code(clean.trips[ISSUE_FLAG], "regreso_sin_llegar").sum())
+ex_rotated = example("origen:rotado")
+ex_short_home = example("destino:casa", max_trips=6)
+ex_short_other = example("motivo:otros", max_trips=6)
+n_rotated_typed = int(has_code(clean.trips[FIX_FLAG], "tipo_destino:rotado").sum())
+assert int(has_code(clean.trips[ISSUE_FLAG], "regreso_sin_llegar").sum()) == 0
+assert int(has_code(clean.trips[ISSUE_FLAG], "inicio_zona_ajena").sum()) == 0
+# the travel minutes read before the rules: the trips they cover, and household 7425, person 3
+n_minutes_trips, n_minutes_legs = int(minutes_fixed.sum()), int((legs_read.traslado_min != raw.legs.traslado_min).sum())
+assert n_minutes_trips == counts["leg_minutes_corrected"] and int(has_code(clean.trips[FIX_FLAG], "minutos:revision").sum()) == n_minutes_trips
+ex_minutes = (7425, 3)
+assert clean.trips.loc[ex_minutes].hora_inicio_h.tolist() == raw.trips.loc[ex_minutes].hora_inicio_h.tolist()
+ex_again = (834, 1)                           # read once the move to the arrival cleared the way (@sec-arrival)
+assert has_code(clean.trips.loc[ex_again][FIX_FLAG], "hora:+12h").any()
+ex_split = (8992, 1)                          # to work again after a night: read as a split shift (@sec-night)
+assert clean.trips.loc[ex_split].hora_inicio_h.tolist() == [9, 14, 16, 19]
 
 # --- what the build now says
 od = tasha.build(clean)
@@ -738,7 +773,7 @@ at_2301 = R[(R.hora_inicio_h == 23) & (R.hora_inicio_m == 1)]
 sentinel_last, sentinel_return = float((at_2301.pos == at_2301.n).mean()), float(at_2301.is_return.mean())
 assert at_23[1] > 10 * max(at_23[2], at_23[3], at_23[4]) and hour_0 < min(hour_1, hour_23) / 10
 inv_people = int(persons_C[inv_c].nunique())
-assert int(inv_c.sum()) == 501      # 840 until the third review, 814 until the fourth (2026-09-26)
+assert int(inv_c.sum()) == 496      # 840 until the third review, 814 until the fourth, 501 until the fifth (2026-09-26)
 
 def day_flags(T):
     """The residual defects of a chain table (with_helpers), one boolean column each."""
@@ -873,8 +908,7 @@ def _b(x):
 
 def error_masks(T, home_to_home):
     """One boolean mask per kind of error, on table T (R as shipped, C after load_eod)."""
-    wrap = _b((((T.prev_start >= 18 * 60) | ((T.prev_start >= 12 * 60) & T.is_return)) & (T.start <= 6 * 60))
-              | ((T.prev_start >= 18 * 60) & T.is_return & (T.prev_motivo == "Trabajar") & (T.start < _NIGHT_SHIFT_RETURN)))
+    wrap = pd.Series(_day_wraps(T, T.start.to_numpy()), index=T.index)
     # a start the rules set (imputed or repaired) is not the survey's own value
     time_set = (T[FIX_FLAG].astype(str).str.contains(r"(?:^|;)hora:") if FIX_FLAG in T.columns
                 else pd.Series(False, index=T.index))
@@ -910,18 +944,18 @@ treatments = {
     "return home made while already at home": "kept, marked `regreso_en_casa` in `problemas`; the build leaves it out (@sec-home)",
     "return home whose destination type is not a home":
         "recoded from the type where the zone agrees (@sec-mislabel); the rest are corroborated by the zone, kept and marked `tipo_destino_dudoso`",
-    "return home not reaching the home zone": "recoded where the type says otherwise (@sec-mislabel), sent home where it copies its origin (@sec-copied-return), given the motive of the place it went to (@sec-elsewhere); the rest marked `regreso_sin_llegar`",
+    "return home not reaching the home zone": "recoded where the type says otherwise (@sec-mislabel), sent home where it copies its origin (@sec-copied-return), given the motive of the place it went to (@sec-elsewhere), the rest home or 'Otros' (@sec-short): none left",
     "does not start where the previous trip ended": "origin set to where the previous trip ended (@sec-origin): none left",
     "starts before the previous trip":
         "hour repaired where a unique reading exists (@sec-clock), start moved to the arrival (@sec-arrival); the rest marked `hora_invertida`, or `hora_nocturna` when overnight, a night shift's morning return among them",
     "starts before the previous trip could have arrived, beyond the tolerance and not overnight":
-        "hour repaired where a unique reading exists (@sec-clock), start moved to the arrival up to an hour where none does (@sec-arrival); the rest marked `hora_invertida`",
+        "hour repaired where a unique reading exists (@sec-clock), start moved to the arrival up to an hour where none does (@sec-arrival); the rest marked `hora_invertida`, a day read overnight that goes to work again after the night among them (@sec-night)",
     "starts after the previous trip but before it could have arrived, within the tolerance":
         "start moved to the arrival, marked `hora:llegada` (@sec-arrival): the reported leg minutes are rounded and overrun the next start",
     "starts at the same minute as the previous trip":
         "start moved to the arrival within the tolerance (@sec-arrival); the rest marked `hora_invertida`, the previous trip's legs exceeding it",
     "first trip from 'Su casa' but not from the home zone":
-        "origin set home on an activity day, the answer set to the place a returning day came from (@sec-copied); a first trip that goes to the home zone itself is left, marked `inicio_zona_ajena`, for the review (@sec-revised)",
+        "origin set home on an activity day, the answer set to the place a returning day came from (@sec-copied), a first trip that goes to the home zone itself read as rotated (@sec-rotated): none left",
     "first trip not from 'Su casa'":
         "origin and answer set home where the origin copies the destination or the answer its place type (@sec-copied); the rest marked `inicio_fuera_de_casa` (@sec-lingering-geo)",
     "first trip, to anything but work, before 05:00":
@@ -1009,22 +1043,26 @@ block was lost, and the row after them is either the trip's own return or a dupl
 it. And the survey's own answers contradict each other in a few hundred rows in ways the
 tables let us arbitrate.
 
-`eodgdl.load_eod()` applies its rules in five stages before returning the trip table (@sec-fixes)
-and drops one kind of row only. It imputes the `{python} fmt(n_untimed)` untimed trips — `{python} counts["times_from_duplicate"]`
+`eodgdl.load_eod()` reads the travel minutes a review corrected in place of the reported ones
+(`{python} counts["leg_minutes_corrected"]` trips, @sec-minutes), applies its rules in five stages
+before returning the trip table (@sec-fixes) and drops one kind of row only. It imputes the `{python} fmt(n_untimed)` untimed trips — `{python} counts["times_from_duplicate"]`
 from the home-to-home row that duplicates them, which is then dropped, `{python} counts["times_from_neighbours"]`
 from their nearest timed trips. It recodes the motives the chain contradicts —
 `{python} counts["recoded_returns"] + counts["returns_elsewhere"]` "return home" trips that went elsewhere,
 `{python} counts["arrivals_home"]` activity trips that arrived home, `{python} counts["daycare_escorts"]`
-daycare escorts — and sends home `{python} counts["returns_copying_origin"]` returns recorded ending where they
-started. It keeps the `{python} counts["home_to_home"]` returns home made while already at home and the
+daycare escorts, `{python} counts["short_returns_other"]` returns nothing reads, to *Otros* — and sends home
+`{python} counts["returns_copying_origin"] + counts["short_returns_home"]` returns recorded ending where they
+started or somewhere nothing else touches. It keeps the `{python} counts["home_to_home"]` returns home made while already at home and the
 `{python} counts["next_morning_returns"]` next-morning returns that close a night-shift day, but marks them as
 non-trips; makes every trip start where the previous one ended and
 `{python} fmt(counts["first_origins_copied"] + counts["first_origins_answered"] + counts["first_origins_typed"])` first
-trips recorded leaving another zone start at home; repairs `{python} fmt(counts["start_times_edited"])` mistyped
-start hours in `{python} fmt(counts["chains_repaired"])` chains; and moves
+trips recorded leaving another zone start at home, and `{python} counts["first_trips_rotated"]` recorded from a
+place to home go from home to the place; repairs `{python} fmt(counts["start_times_edited"])` mistyped
+start hours in `{python} fmt(counts["chains_repaired"])` chains, reading a day past midnight only where it holds
+together after it; and moves
 `{python} counts["starts_at_arrival"]` starts that overlap the previous arrival to that arrival. Most of these
 rules were the first hand pass's templates, turned into rules in the fourth review of the chains
-(2026-09-26). Every change is written to
+(2026-09-26), and two of the next round's criteria became rules in the fifth, the same day. Every change is written to
 the row in a new `ajustes` column and every defect left in a `problemas` column
 (@tbl-flags), the residual defects of @sec-lingering included, so a consumer can keep, filter or weight the
 `{python} fmt(n_rows_fixed)` rows that were changed and the `{python} fmt(n_rows_left)`
@@ -1164,10 +1202,11 @@ show(person_table((8, 3)))
 
 # Problems found and fixed {#sec-fixes}
 
-`load_eod()` applies the rules below in five stages — what the questionnaire lost
-(@sec-untimed), motives and destinations (@sec-mislabel to @sec-daycare), the rows that are not
-trips and where the other returns went (@sec-home, @sec-elsewhere, @sec-nightshift), origins
-(@sec-origin, @sec-copied) and start times (@sec-clock to @sec-arrival) — and
+`load_eod()` reads the travel minutes a review corrected first (@sec-minutes), then applies the
+rules below in five stages — what the questionnaire lost (@sec-untimed), motives and destinations
+(@sec-mislabel to @sec-daycare), the rows that are not trips and where the other returns went
+(@sec-home, @sec-elsewhere, @sec-nightshift), where the trips start and end (@sec-origin to
+@sec-short) and start times (@sec-clock to @sec-night) — and
 `load_eod(clean_chains=False)` returns the survey as shipped. One kind of row is dropped, the `{python} n_dropped`
 home-to-home returns that duplicate an imputed return (@sec-untimed); the trip table keeps
 its other `{python} fmt(n_trips_c)` rows, and two columns record what happened to each. `ajustes` names
@@ -1200,6 +1239,28 @@ show(flag_vocab)
 #| output: asis
 print(md_table(error_rows,
                ["error", "trips as shipped", "share", "trips after `load_eod()`", "share", "treatment"]))
+```
+
+## The travel minutes a review corrected come first {#sec-minutes}
+
+Every rule that reads a start time reads it against the previous trip's arrival, its start plus
+its leg minutes, so the minutes are part of what the rules read. A motorised trip that reports
+twice the survey's typical minutes for its mode over its straight-line distance — the median of
+the survey's trips of that mode in that distance band, AGEB centroid to centroid — reports the
+error, not the clock: the ninth hand round gave `{python} n_minutes_trips` such trips
+(`{python} n_minutes_legs` legs) the typical minutes, and the person's other trips over the same
+route the same. Until the fifth review of the chains (2026-09-26) those were hand decisions applied
+after the rules, so the typo search read the reported minutes and the hand undid its readings start
+by start; since then they are a table, `eodgdl/revisions/leg_minutes.csv.gz`, that `load_eod`
+reads before any rule, spreading a trip's minutes over its legs in proportion (`minutos:revision`).
+Household 7425, person 3 (@tbl-ex-minutes) reports 120 minutes for each of four trips to work and
+back: the afternoon shift at 14:10 starts before the ride home from the morning one could have ended,
+and the search read the last two starts two hours later. With 60 minutes the survey's own hours hold.
+
+```{python}
+#| label: tbl-ex-minutes
+#| tbl-cap: "Minutes that were the error (household 7425, person 3): 120 minutes for a 60-minute ride. Read before the rules, the survey's hours stand."
+show(person_table(ex_minutes))
 ```
 
 ## Untimed trips are lost questionnaires, and are imputed {#sec-untimed}
@@ -1474,8 +1535,8 @@ home, went to a place — unless the person made it from home, in which case it 
 (@sec-home). What the person does there is what their own trips to that AGEB do: the most common
 motive among them and its place type. Where no other trip goes there and the day started there,
 it is what the day-start answer names. `{python} counts["returns_elsewhere"]` returns are read so
-(`motivo:lugar`) and `{python} n_elsewhere_left` are left with nothing to go by
-(`regreso_sin_llegar`), for the review of @sec-revised. The first hand pass had recoded 87 such
+(`motivo:lugar`) and `{python} counts["short_returns_home"] + counts["short_returns_other"]` are left with nothing
+to go by, which @sec-short reads once the origins are continuous. The first hand pass had recoded 87 such
 returns, 56 of them to *Trabajar* — 20 of those for students, homemakers or children, a default
 rather than a reading.
 
@@ -1651,6 +1712,47 @@ and the three within-tolerance codes are gone from the rules' output. `{python} 
 the stays of no minutes the moves leave are at work, all within the tolerance: the recorded
 times say the person left before arriving, a contradiction of hours the minutes cannot mend.
 
+**The search once more.** The search of @sec-clock reads a chain only if one reading makes all of
+it feasible, so a contradiction of minutes that the move to the arrival closes afterwards stood in
+the way of reading an hour typed wrong elsewhere in the same chain. Since the fifth review of the
+chains (2026-09-26) the chains still infeasible once the starts have moved are searched again, the
+moved starts locked, and `{python} counts["chains_read_after_the_slide"]` are read so. Household
+834, person 1 (@tbl-ex-again) is one: its escort at 04:30 between work at 08:00 and a return at
+18:00 is 16:30, but the visit's return at 20:10 came 28 minutes before the 38-minute ride could
+end, which no reading of the hours fixes, so until then the search read nothing; the return moves
+to 20:38 and the escort reads as the hand decisions had read it. Run twice over their own output,
+the rules now change nothing more.
+
+```{python}
+#| label: tbl-ex-again
+#| tbl-cap: "A contradiction of minutes that hid an hour typed wrong (household 834, person 1): the return moves to the arrival, then the escort reads as 16:30."
+show(person_table(ex_again))
+```
+
+## A day read past midnight holds together after it {#sec-night}
+
+A start read as the next day's (@sec-clock) puts the rest of the day on the next calendar day. The
+reading stands only where no trip to work or school comes after the trip that passes midnight — a
+night shift ends the day, and a day that goes to work again after one is two shifts in one diary —
+and where the day's last start then comes less than 24 hours after its first
+(`eodgdl.chains._day_wraps`, which the search, the marking and the model's `StartTime` all read).
+Until the fifth review of the chains (2026-09-26) the reading stood regardless: 15 days went to work
+again after the night, 11 of them running past 24 hours, and the hand review took them for night
+shifts because its measure of a day did too. Most are the work, home, work, home diaries whose
+first trip to work is recorded in the evening, which the tenth hand round had read one by one:
+household 8992, person 1
+(@tbl-ex-split) went to work at 21:00 and home at 02:00, to work again at 16:00 and home at 19:00,
+a split shift typed on the wrong side of the clock that the eighth hand round had read as 09:00 and
+14:00. Held to a day that holds together, the search reads it so, and a day it cannot read keeps
+the contradiction as `hora_invertida` for the review (`{python} n_night_voided` trips on the rules'
+output). No day `load_eod` returns runs 24 hours.
+
+```{python}
+#| label: tbl-ex-split
+#| tbl-cap: "Not a night shift (household 8992, person 1): to work at 21:00, home at 02:00, to work again at 16:00. A split shift from 09:00 and 14:00."
+show(person_table(ex_split))
+```
+
 ## Every trip starts where the previous one ended {#sec-origin}
 
 A trip whose origin is not where the previous trip ended breaks the chain. The breaks are
@@ -1713,10 +1815,7 @@ reading copied the AGEB (`origen:tipo_copia`, the answer becoming 'Su casa'); th
 1.4 km. A place where somebody spends the night — another dwelling, a hospital, *Otros* — is
 left: the first pass moved 3 of the 20 other dwellings. Neither reading moves a first trip that
 goes to the home zone itself, which moved home would go from home to home: it is the rotated
-record the fifth hand pass read — the first trip recorded from a place to home and the next from
-home onwards, so the place is where the first trip went — and the review reads it so
-(@sec-revised); the `{python} counts["left_inicio_zona_ajena"]` that answer *Su casa* keep
-`inicio_zona_ajena` until then. A first trip that is a return home is left too, and a day that
+record of @sec-rotated. A first trip that is a return home is left too, and a day that
 opens with a return from another AGEB did not start at home whatever the answer says: the
 `{python} counts["first_return_answers"]` persons who answered *Su casa* take the place type their
 own, their household's or same-occupation trips give that AGEB (`tipo_origen:regreso`), as hand
@@ -1726,6 +1825,55 @@ passes 2 and 3 had done for the same days.
 #| label: tbl-ex-copied
 #| tbl-cap: "A copied origin: the first trip leaves the AGEB it goes to, and the answer to where the day started names the destination's type. The origin becomes home and the answer 'Su casa'."
 show(person_table(ex_copied))
+```
+
+## A first trip recorded from a place to home went from home to the place {#sec-rotated}
+
+Some days record their first trip turned round: an activity — work, school, a shop — from a place
+to the home zone, and the next trip from home onwards. The trip went from home to the place it
+names as its origin, and the next left from there. The reading holds where the person answered that
+the day started at *Su casa*, or where the next trip is a *Regresar a Casa* from home to home, a
+return that makes sense only from the place. `{python} counts["first_trips_rotated"]` first trips
+are so recorded; `load_eod` sets their origin home and their destination to the place
+(`origen:rotado`, `destino:rotado`), the next trip's origin to the place (`origen:anterior`), the
+answer to *Su casa*, and, where the trip was recorded arriving at *Su casa* and the answer names a
+place, that place's type (`tipo_destino:rotado`, `{python} n_rotated_typed` trips; @tbl-ex-rotated).
+The fifth hand pass had rotated 22 of these days one by one and round 14 of the hand decisions 16
+more; 8 had been read by neither, and one the fourth pass read as a return from work. Since the
+fifth review of the chains (2026-09-26) it is a rule. A day whose next trip goes somewhere else, or
+back to the place, is not rotated: that record says something else — a return from a night shift, a
+day that started at the place.
+
+```{python}
+#| label: tbl-ex-rotated
+#| tbl-cap: "A rotated first trip: recorded from a place to home, then home onwards. It went from home to the place."
+show(person_table(ex_rotated))
+```
+
+## A return left away from home ends at home, or at a place nothing names {#sec-short}
+
+A *Regresar a Casa* still away from the home zone once its type, a copied destination, the
+person's trips and the day-start answer have been read (@sec-mislabel, @sec-copied-return,
+@sec-elsewhere) went somewhere nothing names. The day's last trip to an AGEB that no other trip of
+the day touches is the return home with the home geocoded in another AGEB, and ends at home
+(`destino:casa`, `{python} counts["short_returns_home"]` returns; @tbl-ex-short-home). Any other
+went to a place the day leaves from or comes back to, and takes *Otros* as its motive and place type
+(`motivo:otros`, `{python} counts["short_returns_other"]`; @tbl-ex-short-other), the O the model
+build gave it already. Round 14 of the hand decisions read them so one by one, where the first
+hand pass had recoded most of them *Trabajar* or *Estudiar*, for students, children and
+homemakers alike; since the fifth review of the chains it is a rule, and `regreso_sin_llegar` is
+left only where a hand edit makes one.
+
+```{python}
+#| label: tbl-ex-short-home
+#| tbl-cap: "A last return to an AGEB nothing else touches: the home, geocoded elsewhere."
+show(person_table(ex_short_home))
+```
+
+```{python}
+#| label: tbl-ex-short-other
+#| tbl-cap: "A return that went to a place the day comes back to or leaves from: 'Otros'."
+show(person_table(ex_short_other))
 ```
 
 ## The contract, the validator and the chain report {#sec-contract}
@@ -1769,7 +1917,8 @@ show(ft)
 before the trip before them: `{python} int(night_c.sum())` look like night or second shifts
 (this one by 06:00, the previous trip at or after 18:00, or at or after noon when this one is a
 return home; or a return home before 10:00 after a trip to work at or after 18:00, the night
-shift of @sec-clock) and are marked `hora_nocturna`, and the rest are among the
+shift of @sec-clock; in a day that holds together after it, @sec-night) and are marked
+`hora_nocturna`, and the rest are among the
 `{python} fmt(c_beyond.sum())` marked `hora_invertida`: trips that still start before the
 previous trip could have arrived by more than the tolerance and are not overnight, chains for
 which no reading within the edit menu and the cost cap exists, or several equally cheap ones.
@@ -1815,10 +1964,9 @@ show(person_table((43, 2)))
 (`inicio_fuera_de_casa`) and `{python} n_last_not_home` do not end with a return to the home zone
 (`fin_fuera_de_casa`): night shifts, second homes, nights spent elsewhere and geocoding slips all
 look alike here, and nothing says which. `{python} n_first_zone_mismatch` say *Su casa* while
-leaving another zone (`inicio_zona_ajena`): first trips that go to the home zone itself, the
-rotated records of @sec-copied, which the review reads. No trip starts elsewhere than where the
-previous one ended (`origen_discontinuo`, `{python} n_zone_breaks`): the rule of @sec-origin reads
-them all, so only a hand edit can leave one.
+leaving another zone (`inicio_zona_ajena`) and no trip starts elsewhere than where the previous one
+ended (`origen_discontinuo`, `{python} n_zone_breaks`): the rules of @sec-origin, @sec-copied and
+@sec-rotated read them all, so only a hand edit can leave one.
 `{python} pct(same_zone_share, 0)` of trips start and end in the same AGEB, which is
 legitimate at this resolution and zero-distance for any skim.
 
@@ -1882,8 +2030,7 @@ decisions = chain_decisions()
 n_decisions = len(decisions)
 assert not decisions.duplicated(["household", "person", "trip", "field"]).any()   # one per trip and field
 V = revised.trips
-by_hand = V[FIX_FLAG].str.contains(":revision", regex=False)
-n_leg_minutes = int(has_code(V[FIX_FLAG], "minutos:revision").sum())
+by_hand = V[FIX_FLAG].str.replace("minutos:revision", "", regex=False).str.contains(":revision", regex=False)
 n_rows_hand = int(by_hand.sum())
 n_persons_hand = int(V.index[by_hand].droplevel("folio_viaje").nunique())
 n_hand_dropped = len(clean.trips.index.difference(V.index))
@@ -1898,7 +2045,7 @@ assert V.groupby(level=P).tipo_lugar_origen.nunique().max() == 1      # the day-
 assert tasha.validate_all(*tasha.build(revised)) == []
 n_answers = int((decisions.field == "orig. type").sum())
 assert (decisions.loc[decisions.field == "orig. type", "trip"] == 0).all()    # a decision about the person
-assert set(decisions.source) == {"chain_review_14"}                            # one round made them all
+assert set(decisions.source) == {"chain_review_15"}                            # one round made them all
 n_hand_starts = int((decisions.field == "start").sum())
 n_hand_persons = int(decisions[["household", "person"]].drop_duplicates().shape[0])
 
@@ -1928,27 +2075,26 @@ Everything above is counted on the chain rules' output, `load_eod(revise_chains=
 `load_eod()` goes on to apply the hand decisions in `eodgdl/revisions/chains.csv.gz`, merged
 there from a review sheet (`eodgdl.review`) and applied in one pass: one decision per trip and
 field, each made against the rules' output, with its reason, and the person's answer to where
-the day started as a decision about the person (trip 0, `{python} n_answers` of them). The table
-holds `{python} fmt(n_decisions)` decisions on `{python} fmt(n_hand_persons)` people, all made by
-one review round, round 14 (`scripts/revisions/chains_14.py`, whose criteria the README there
-details). The rules of the fourth review of the chains had turned the first hand pass into rules
-and retired every earlier decision — the first pass's, taken as a suggestion only, and the rounds
-that existed to carry and mend it — and round 14 made again what still says something the rules
-do not: the decisions of passes 2–6 and round 9 on fields other than the start, where the rules'
-output still holds the value each was made against (round 9's leg minutes, the rotated first
-trips, the night shifts the rule does not reach); pass 5's reading of a rotated first trip, on the
-days that still say they started at home in another zone; the start times of every day the rules leave
-overlapping or the earlier tables read otherwise, `{python} fmt(n_hand_starts)` of them, taking
-among the rules' reading, the earlier tables' and the fewest minutes moved in all the one with
-no overlap and the fewest problems (@sec-scheduler); and the returns the rules leave short of
-home. On the tables the decisions give, `{python} fmt(n_rows_hand)` rows of
-`{python} fmt(n_persons_hand)` people hold a value set by hand (a `<field>:revision` code in
-`ajustes`), `{python} n_hand_dropped` rows the rules kept are gone — on the night-shift days the
-rule does not reach, the next morning's return, outside the survey day — and no breaking code is
-left (@tbl-revised). TASHA cannot schedule a trip that starts before the previous one arrives, so
-every overlap is breaking; where a motorised trip reports twice the survey's typical minutes for
-its mode over its straight-line distance, the decisions take its minutes down to the typical ones
-(`minutos:revision`, on `{python} fmt(n_leg_minutes)` trips) rather than move the next start.
+the day started as a decision about the person (trip 0, `{python} n_answers` of them). (The
+travel minutes the review corrected are not among them: the rules read them, so they go in
+before the rules, @sec-minutes.) The table holds `{python} fmt(n_decisions)` decisions on
+`{python} fmt(n_hand_persons)` people, all made by one review round, round 15
+(`scripts/revisions/chains_15.py`, whose criteria the README there details). The rules of the
+fourth review of the chains had turned the first hand pass into rules, and those of the fifth
+turned two of round 14's criteria into rules too (@sec-rotated, @sec-short), read the minutes
+before the rules and held a day read past midnight to hold together (@sec-night); each time every
+earlier decision was retired and one round made again, from the same inputs, what still says
+something the rules do not: the decisions of passes 2–6 on fields other than the start, where the
+rules' output still holds the value each was made against (pass 5's rotated first trips the rule
+does not read, pass 4's staff bus, pass 2's night shifts outside the rule's signature); and the
+start times of every day the rules leave overlapping or the earlier tables read otherwise,
+`{python} fmt(n_hand_starts)` of them, taking among the rules' reading, the earlier tables' and the
+fewest minutes moved in all the one with no overlap and the fewest problems (@sec-scheduler). On
+the tables the decisions give, `{python} fmt(n_rows_hand)` rows of `{python} fmt(n_persons_hand)`
+people hold a value set by hand (a `<field>:revision` code in `ajustes`), `{python} n_hand_dropped`
+rows the rules kept are gone — on the night-shift days the rule does not reach, the next morning's
+return, outside the survey day — and no breaking code is left (@tbl-revised). TASHA cannot
+schedule a trip that starts before the previous one arrives, so every overlap is breaking.
 `load_eod` checks every decision against the rules' output, so a change to the rules that moves a
 value a decision was made against fails the load instead of being overwritten;
 `load_stages(skip_stale=True)` sets such decisions aside, `eodgdl review export --stale` puts them
@@ -2034,18 +2180,19 @@ weakens any segmentation the scheduler needs.
 | untimed trips and their duplicates | fixed | impute: the duplicate's answers where one follows, else the nearest timed trips' vote and a start counted back from the next trip; imputed rows marked `hora:…`, `motivo:…`; the duplicate row is dropped, the only row `load_eod` removes | `load_eod` |
 | returns home made from home | fixed | keep the row, mark it `regreso_en_casa`; the build leaves it out | `load_eod` |
 | a night shift's next-morning return | fixed | keep the row, mark it `regreso_dia_siguiente`: the day ends at work (@sec-nightshift) | `load_eod` |
-| "return home" that did not reach home | fixed | recode from the destination type, zone-guarded; home where the destination copies the origin (`destino:copia`); the motive of the place where the person's trips or answer give one (`motivo:lugar`); the rest read by the review | `load_eod`, `eodgdl/revisions/` |
+| "return home" that did not reach home | fixed | recode from the destination type, zone-guarded; home where the destination copies the origin (`destino:copia`); the motive of the place where the person's trips or answer give one (`motivo:lugar`); home as the day's last trip to an AGEB nothing else touches, else 'Otros' (`destino:casa`, `motivo:otros`, @sec-short) | `load_eod` |
 | activity trips that arrive home | fixed | a return (`motivo:casa`, @sec-arrivals) | `load_eod` |
 | mistyped start hours | fixed | fewest-edits typo search, a second menu with the morning typed as evening, unique readings only, at least half an hour at work or school, edited rows marked `hora:+12h` and so on; the residual marked `hora_invertida` | `load_eod` |
 | night shifts read as short evening stints | fixed | a return home before 10:00 after an evening trip to work is the next morning's (`hora_nocturna`, @sec-clock) | `load_eod` |
+| a night read before another workday | fixed | a day read past midnight must hold together after it: no trip to work or school after the night, less than 24 hours long; the search reads the rest otherwise, a split shift as a split shift (@sec-night) | `load_eod` |
 | knowing what was changed and what is left | fixed | every change on the row in `ajustes`, every defect left in `problemas`; filter with `has_code`, drop non-trips with `non_trips` | `load_eod` |
 | a trip that starts elsewhere than the previous one ended | fixed | the origin is the previous destination, home after a return home (`origen:casa`, `origen:anterior`; @sec-origin) | `load_eod` |
-| a first trip that copies home away | fixed | the day started at home where the origin copies the destination's AGEB, the answer says home or copies the destination's type, and the answer becomes 'Su casa'; a day that opens with a return from elsewhere answers where it started; a first trip recorded from a place to home is the rotated record the review reads (@sec-copied) | `load_eod`, `eodgdl/revisions/` |
-| starts before the previous arrival by minutes | fixed | the start moves to the previous arrival (`hora:llegada`; @sec-arrival), within the tolerance always and up to an hour where no reading of the hours fits, not after work or school | `load_eod` |
+| a first trip that copies home away | fixed | the day started at home where the origin copies the destination's AGEB, the answer says home or copies the destination's type, and the answer becomes 'Su casa'; a day that opens with a return from elsewhere answers where it started (@sec-copied); a first trip recorded from a place to home whose next trip leaves home went there from home (@sec-rotated) | `load_eod` |
+| starts before the previous arrival by minutes | fixed | the start moves to the previous arrival (`hora:llegada`; @sec-arrival), within the tolerance always and up to an hour where no reading of the hours fits, not after work or school; the search runs once more where the move cleared the way | `load_eod` |
 | a day that starts in the small hours with a long stay | fixed | the typo search reads it too (@sec-early); the early starts it leaves are marked `hora_madrugada` | `load_eod` |
-| residual non-monotone times | fixed by hand | round 14 reads every `hora_invertida` the rules leave, which TASHA cannot schedule, by the reading with no overlap and the fewest problems among the rules', the earlier tables' and the fewest minutes moved (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward | `eodgdl/revisions/`, `tasha.build` |
-| the first hand pass | retired | taken as a suggestion only: its templates became rules, its readings are one candidate in round 14's, and its decisions and notes left the table (2026-09-26) | `eodgdl.chains`, `eodgdl/revisions/` |
-| leg minutes too long for the distance | fixed by hand | a motorised trip reporting twice the survey's typical minutes for its mode and distance band takes the typical minutes (round 9's decisions, carried by round 14) | `eodgdl/revisions/` |
+| residual non-monotone times | fixed by hand | round 15 reads every `hora_invertida` the rules leave, which TASHA cannot schedule, by the reading with no overlap and the fewest problems among the rules', the earlier tables' and the fewest minutes moved (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward | `eodgdl/revisions/`, `tasha.build` |
+| the first hand pass | retired | taken as a suggestion only: its templates became rules, its readings are one candidate in round 15's, and its decisions and notes left the table (2026-09-26) | `eodgdl.chains`, `eodgdl/revisions/` |
+| leg minutes too long for the distance | fixed | a motorised trip reporting twice the survey's typical minutes for its mode and distance band takes the typical minutes (round 9's corrections), read before the rules, which read the minutes (@sec-minutes) | `eodgdl/revisions/leg_minutes.csv.gz`, `load_eod` |
 | days not home-based | open | drop from scheduler estimation; keep for mode choice; night shifts keep the evening trip to work and mark the next morning's return (@sec-nightshift); the days are marked `inicio_fuera_de_casa` or `fin_fuera_de_casa` | estimation |
 | Guardería coded as school | fixed | from age 12 a Guardería trip is an escort: `load_eod` recodes it 'Llevar o recoger a alguien' (`motivo:guarderia`, @sec-daycare) and the model build reads the age the same way; under 12 it stays school, marked `motivo_guarderia` | `load_eod`, `mappings.yaml` |
 | people whose every row is a marked non-trip | open | drop the `{python} n_zero_recoded_m` people from estimation rather than count them as non-travellers | estimation |
@@ -2062,23 +2209,27 @@ weakens any segmentation the scheduler needs.
 ```python
 from eodgdl import load_stages, clean_trip_chains, tasha
 
+from eodgdl._resources import leg_minutes
+
 raw, clean, revised = load_stages()          # as shipped; the rules applied (trips gains ajustes and
                                              # problemas); then the hand decisions in eodgdl/revisions/
                                              # — what load_eod returns with clean_chains=False,
                                              # revise_chains=False and by default, from one read
-trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)   # the rules on their own
+trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab,   # the rules on their own, with the
+                                  minutes=leg_minutes())                  # minutes a review corrected first
 od = tasha.build(clean)                      # the model tables, without the marked non-trips
 tasha.validate_all(*od)                      # [] — the contract holds
 tasha.chain_report(od.trips)                 # what remains, as counts
 ```
 
 The rules and their evidence are the docstrings of `clean_trip_chains` and, stage by stage,
-`_impute_untimed_trips` (with `_duplicate_returns` and `_nearest_donors`);
+`_correct_minutes` (the minutes read first); `_impute_untimed_trips` (with `_duplicate_returns` and `_nearest_donors`);
 `_recode_returns_by_destination`, `_returns_copying_origin`, `_arrivals_home`,
 `_daycare_escorts`; `_home_to_home_returns`, `_returns_elsewhere`, `_next_morning_returns`
 (`_mark_non_trips`); `_start_where_previous_ended`, `_first_origins_at_home`,
-`_first_return_answers`; `_repair_start_times` (with `_search_edits` and `_next_day`) and
-`_start_at_arrival` in `src/eodgdl/chains.py`. The recode table is
+`_rotated_first_trips`, `_first_return_answers`, `_short_returns`; `_read_start_times`, with
+`_repair_start_times` (`_search_edits`), `_start_at_arrival` and `_day_wraps` (`_next_day`), in
+`src/eodgdl/chains.py`. The recode table is
 `_MOTIVO_POR_TIPO_LUGAR_DESTINO`, the matcher's features `_IMPUTE_WEIGHTS`, the edit menus
 `_START_TIME_EDITS` and `_START_TIME_EDITS_2`, the early-start thresholds `_EARLY_START` and
 `_EARLY_LONG_STAY`, and the flag vocabulary `FIX_CODES` and `ISSUE_CODES` in the same file. The survey's design is described in
