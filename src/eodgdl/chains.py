@@ -61,6 +61,9 @@ _START_TIME_TOLERANCE = (
     15  # minutes: an inversion this small is minute noise, not an hour error
 )
 _START_TIME_MAX_COST = 4.0  # give up rather than rewrite a day
+# 23:01 in minutes: the start the survey heaps its late returns on (see
+# _remaining_issues, hora_2301). Found 2026-09-25 in a review of the chains.
+_SENTINEL_START = 23 * 60 + 1
 
 # --------------------------------------------------------------- trip chains
 # The survey records each person's trips for one weekday ("el día de ayer o el
@@ -110,7 +113,7 @@ FIX_CODES = {
     "origen:revision": "origin zone set by hand on a review sheet",
     "destino:revision": "destination zone set by hand on a review sheet",
     "modo:revision": "main mode set by hand on a review sheet",
-    "fila:revision": "a row load_eod dropped, restored by hand on a review sheet",
+    "fila:revision": "a row the chain rules dropped (a duplicate return), restored by hand on a review sheet",
 }
 ISSUE_CODES = {
     "regreso_en_casa": "a 'Regresar a Casa' made while already at home: not a trip; the model build leaves it out",
@@ -123,7 +126,8 @@ ISSUE_CODES = {
     "that is not a home; the motive is kept",
     "hora_nocturna": "starts by 06:00 after a trip that started at or after 18:00, or is a return home by "
     "06:00 after a trip that started at or after noon: read as overnight and left alone; a night or second "
-    "shift or a mistyped hour, nothing says which",
+    "shift or a mistyped hour, nothing says which. The day passes midnight here: the model build counts this "
+    "trip's hours and the next ones' past 2400 (days_past_midnight)",
     "hora_anterior": "starts before the previous trip's start but within the tolerance of its arrival, so "
     "not repaired: minute noise",
     "hora_repetida": "starts at the same minute as the previous trip, whose legs fit within the tolerance "
@@ -138,8 +142,19 @@ ISSUE_CODES = {
     "home mislabelled the other way round",
     "motivo_guarderia": "a 'Guardería' motive: the model reads it as school under age 12 and as an escort (F) from "
     "12 on, since most are adults escorting a child",
+    "hora_2301": "starts at 23:01 as the survey reports it, the minute it heaps the day's late returns on: the "
+    "return came then or later, perhaps after midnight; the value is kept",
 }
 NON_TRIP_ISSUES = ("regreso_en_casa",)  # rows kept in trips that are not trips
+# The codes that say how a start relates to the previous trip's; a row carries at
+# most one of them. hora_2301 is about the reported value itself and may sit beside one.
+TIME_ORDER_ISSUES = (
+    "hora_invertida",
+    "hora_nocturna",
+    "hora_anterior",
+    "hora_repetida",
+    "hora_traslapada",
+)
 # ISSUE_CODES in two halves, for the hand review. A breaking issue leaves the
 # chain inconsistent — a trip starts before the one it follows, a trip end sits
 # in two places, a return home never reaches home, home is named where the home
@@ -157,7 +172,6 @@ BREAKING_ISSUES = (
 )
 TOLERATED_ISSUES = tuple(c for c in ISSUE_CODES if c not in BREAKING_ISSUES)
 ISSUE_GROUPS = {"breaking": BREAKING_ISSUES, "tolerated": TOLERATED_ISSUES}
-# The five hora_* codes are mutually exclusive: a row carries at most one of them.
 
 # Nearest-neighbour imputation of the lost questionnaire block (motive,
 # destination type, start time). A target's distance to a donor is the sum of
@@ -210,7 +224,7 @@ def _add_code(flags: np.ndarray, mask, code: str) -> None:
 
 def has_code(flags: pd.Series, code: str) -> pd.Series:
     """True where a ';'-joined flag column (``ajustes`` or ``problemas``) carries ``code``."""
-    return flags.astype(str).map(lambda s: code in s.split(";"))
+    return flags.astype(str).map(lambda s: code in s.split(";")).astype(bool)
 
 
 def non_trips(trips: pd.DataFrame) -> pd.Series:
@@ -565,7 +579,7 @@ def _impute_untimed_trips(
             trips.loc[t.index, "hora_inicio_h"] = pd.array(start // 60, dtype="Int64")
             trips.loc[t.index, "hora_inicio_m"] = pd.array(start % 60, dtype="Int64")
             masks["time_from_neighbours"][np.flatnonzero(ready)[need_time]] = True
-    else:
+    if trips.motivo_viaje.isna().any() or np.isnan(_start_minutes(trips)).any():
         raise ValueError("untimed trips left after 20 passes")
     return trips, masks
 
@@ -707,6 +721,40 @@ def _overnight(prev: float, this: float) -> bool:
     return prev >= 18 * 60 and this <= 6 * 60
 
 
+def _next_day(start: np.ndarray, prev_start: np.ndarray, is_return: np.ndarray) -> np.ndarray:
+    """The starts read as the next calendar day's: by 06:00 after a trip that started at or after 18:00,
+    or a return home by 06:00 after one that started at or after noon.
+
+    The second clause is the second shift the typo search cannot read otherwise: its own
+    window (``_overnight``) stays at 18:00, where a 03:00 after 14:00 is likelier a mistyped
+    15:00. ``_remaining_issues`` marks these trips ``hora_nocturna`` and the model build codes
+    them past 2400 (:func:`days_past_midnight`), so both read one definition.
+    """
+    with np.errstate(invalid="ignore"):
+        overnight = (prev_start >= 18 * 60) | ((prev_start >= 12 * 60) & is_return)
+        return ~np.isnan(prev_start) & overnight & (start <= 6 * 60)
+
+
+def days_past_midnight(trips: pd.DataFrame) -> pd.Series:
+    """How many midnights a person's day has passed when each trip starts: 0, then 1 from a start read as the next day's on.
+
+    ``trips`` is a chain table sorted in chain order and without the rows that
+    are not trips, the chain the model build reads and ``problemas`` is marked
+    on; the trip where the day passes midnight is the one marked
+    ``hora_nocturna`` (``_next_day``), and every trip after it is on the next
+    day too. The model's ``StartTime`` adds 2400 per midnight, so a diary that
+    runs into the next morning keeps counting its hours (a 06:00 return after a
+    21:00 trip to work is 3000). On ``load_eod()``'s tables a day passes
+    midnight at most once — 160 do — and none then spans more than 24 hours.
+    """
+    pid = _person_ids(trips)
+    start = _start_minutes(trips)
+    prev_start = _shift(start, pid, 1).astype(float)
+    is_return = (trips.motivo_viaje == HOME_MOTIVE).to_numpy()
+    wraps = pd.Series(_next_day(start, prev_start, is_return).astype(int), index=trips.index)
+    return wraps.groupby(pid).cumsum().rename("days_past_midnight")
+
+
 def _chain_needs_repair(start: np.ndarray, travel: np.ndarray) -> bool:
     """Does some trip start before the previous one could have arrived, beyond the tolerance?"""
     tol = _START_TIME_TOLERANCE
@@ -846,7 +894,10 @@ def _repair_start_times(
 
 
 def _remaining_issues(
-    trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame | None
+    trips: pd.DataFrame,
+    home: np.ndarray,
+    legs: pd.DataFrame | None,
+    time_edited: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """What is still wrong with each trip of a chain after the rules, one mask per ``ISSUE_CODES`` entry it can produce.
 
@@ -876,7 +927,20 @@ def _remaining_issues(
     recodes; and 217 trips carry the 'Guardería' motive
     (``motivo_guarderia``), most made by adults escorting a child, which the
     model reads as a school trip.
+
+    ``hora_2301`` marks a start of 23:01 that is the survey's own value
+    (``time_edited`` holds the rows whose start a rule or a hand edit set):
+    106 shipped trips start at 23:01 against 4 at 23:02, 10 at 23:03 and none
+    at 23:04, 105 of them the person's last trip and a return home, while the
+    whole hour from 00:00 holds 10 starts against 785 from 23:00 and 182 from
+    01:00. The capture heaps the day's late returns on that minute, so the
+    return came at 23:01 or later, likely after midnight; nothing says when,
+    and the value is kept. 98 of them are on the chain (8 are non-trips, and
+    2 more reach 23:01 by the 12-hour-clock repair of an 11:01).
     """
+    time_edited = (
+        np.zeros(len(trips), dtype=bool) if time_edited is None else np.asarray(time_edited, dtype=bool)
+    )
     pid = _person_ids(trips)
     first = np.r_[True, pid[1:] != pid[:-1]]
     last = np.r_[pid[1:] != pid[:-1], True]
@@ -894,12 +958,8 @@ def _remaining_issues(
     kind = trips.tipo_lugar_destino
     origin_kind = trips.tipo_lugar_origen.astype(str).to_numpy()
     from_home = origin_kind == HOME_PLACE
+    wrap = has_prev & _next_day(start, prev_start, is_return)  # overnight: the next calendar day's
     with np.errstate(invalid="ignore"):
-        # overnight: by 06:00 after an evening start, or a return home by 06:00 after an
-        # afternoon one — the second shift the typo search cannot read otherwise (its own
-        # window stays at 18:00, where a 03:00 after 14:00 is likelier a mistyped 15:00)
-        overnight = (prev_start >= 18 * 60) | ((prev_start >= 12 * 60) & is_return)
-        wrap = has_prev & overnight & (start <= 6 * 60)
         inverted = has_prev & (start < prev_arrival - _START_TIME_TOLERANCE) & ~wrap
         earlier = has_prev & (start < prev_start) & ~inverted & ~wrap
         same_minute = has_prev & (start == prev_start) & ~inverted
@@ -923,6 +983,7 @@ def _remaining_issues(
         "fin_fuera_de_casa": last & ~(is_return & (dest == home)),
         "actividad_en_casa": ~is_return & (kind == HOME_PLACE).to_numpy(),
         "motivo_guarderia": (trips.motivo_viaje == "Guardería").to_numpy(),
+        "hora_2301": (start == _SENTINEL_START) & ~time_edited,
     }
 
 
@@ -953,7 +1014,13 @@ def mark_issues(
     at_home = _home_to_home_returns(trips, home)
     _add_code(issues, at_home, "regreso_en_casa")
     where = np.flatnonzero(~at_home)
-    for code, mask in _remaining_issues(trips[~at_home], home[~at_home], legs).items():
+    time_edited = (
+        trips[FIX_FLAG].astype(str).str.contains(r"(?:^|;)hora:").to_numpy()
+        if FIX_FLAG in trips
+        else np.zeros(n, dtype=bool)
+    )
+    left = _remaining_issues(trips[~at_home], home[~at_home], legs, time_edited[~at_home])
+    for code, mask in left.items():
         _add_code(issues, _expand(mask, where, n), code)
     return pd.Series(issues, index=trips.index, name=ISSUE_FLAG, dtype=str)
 
@@ -1029,7 +1096,7 @@ def clean_trip_chains(
     if "zona_origen" in chain:
         trips.loc[chain.index, "zona_origen"] = chain.zona_origen.to_numpy()
     trips.loc[chain.index, "hora_inicio_h"] = chain.hora_inicio_h.to_numpy()
-    left = _remaining_issues(chain, home[is_trip], legs)
+    left = _remaining_issues(chain, home[is_trip], legs, locked | (edit != ""))
     for code, mask in left.items():
         _add_code(issues, _expand(mask, where, n), code)
     untimed_persons = int(trips.index[untimed].droplevel("folio_viaje").nunique())

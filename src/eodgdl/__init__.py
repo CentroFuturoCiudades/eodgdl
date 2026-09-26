@@ -11,10 +11,12 @@ from eodgdl import data, review, reweight, tasha
 from eodgdl._resources import imeplan_rename_map
 from eodgdl.chains import clean_trip_chains
 from eodgdl.eod import (
+    EODStages,
     EODTables,
     clean_eod,
     flag_repeated_diaries,
     load_eod,
+    load_stages,
     rename_imeplan,
 )
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
@@ -27,7 +29,9 @@ __all__ = [
     "__version__",
     # Survey loader
     "EODTables",
+    "EODStages",
     "load_eod",
+    "load_stages",
     "rename_imeplan",
     "clean_eod",
     "clean_trip_chains",

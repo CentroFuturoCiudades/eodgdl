@@ -21,23 +21,32 @@ def imeplan_rename_map() -> dict:
     return json.loads(text)
 
 
+def pass_number(name: str) -> int:
+    """The n of a frozen pass's file name ``chains_<n>.csv.gz``."""
+    return int(name.removeprefix("chains_").removesuffix(".csv.gz"))
+
+
+def pass_files() -> list:
+    """The frozen passes under ``eodgdl/revisions/``, in the order they apply."""
+    root = resources.files("eodgdl") / "revisions"
+    return sorted(
+        (f for f in root.iterdir() if f.name.startswith("chains_") and f.name.endswith(".csv.gz")),
+        key=lambda f: pass_number(f.name),
+    )
+
+
 @functools.cache
 def chain_revisions() -> list[tuple[str, "pd.DataFrame"]]:
     """The frozen hand passes over the trip chains, in the order they apply: [(file name, edits)].
 
     Each file under ``eodgdl/revisions/`` (``chains_<n>.csv.gz``) holds the edits one review
-    sheet gave (:func:`eodgdl.review.sheet_edits`); see the README there. Keys are integers,
+    sheet gave (:func:`eodgdl.review.freeze_edits`); see the README there. Keys are integers,
     every other column text.
     """
     import pandas as pd
 
-    root = resources.files("eodgdl") / "revisions"
-    files = sorted(
-        (f for f in root.iterdir() if f.name.startswith("chains_") and f.name.endswith(".csv.gz")),
-        key=lambda f: int(f.name.removeprefix("chains_").removesuffix(".csv.gz")),
-    )
     out = []
-    for f in files:
+    for f in pass_files():
         with f.open("rb") as fh:
             edits = pd.read_csv(fh, compression="gzip", dtype=str, keep_default_na=False)
         for key in ("household", "person", "trip"):

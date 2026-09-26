@@ -7,10 +7,10 @@ import pytest
 
 import eodgdl
 from eodgdl import reweight
+from eodgdl.chains import non_trips
 from eodgdl.reweight import _spec
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
 
 SCHEMAS = {
     "households": eodgdl.viv_schema,
@@ -52,17 +52,13 @@ def test_constraint_index_places_every_target_once():
 
 
 @pytest.fixture(scope="module")
-def files():
-    if not HAS_DATA:
-        pytest.skip("in-repo data/ not present")
-    return reweight.build(eodgdl.load_eod(DATA_DIR), data_dir=DATA_DIR)
+def tables(stages):
+    return stages.revised
 
 
 @pytest.fixture(scope="module")
-def tables():
-    if not HAS_DATA:
-        pytest.skip("in-repo data/ not present")
-    return eodgdl.load_eod(DATA_DIR)
+def files(tables):
+    return reweight.build(tables, data_dir=DATA_DIR)
 
 
 @pytest.fixture(scope="module")
@@ -75,23 +71,22 @@ def trips(tables):
     return tables.trips
 
 
-def test_records_have_the_survey_s_rows_and_integer_keys(files):
+def test_records_have_the_survey_s_rows_and_integer_keys(files, trips):
     hh, pp, tt = files.households, files.persons, files.trips
     assert len(hh) == 17_901
     assert len(pp) == 58_061
-    assert len(tt) == 154_662 - 38 - 511 - 134  # load_eod drops the duplicates and the rows dropped by hand, build leaves out the non-trips
+    assert len(tt) == len(trips) - int(non_trips(trips).sum())  # every trip load_eod returns but the non-trips
     for df, key in ((hh, "HouseholdID"), (pp, "PersonID")):
         assert pd.api.types.is_integer_dtype(df[key]) and not df[key].duplicated().any()
     assert tt.PersonID.isin(pp.PersonID).all()
     assert pp.HouseholdID.isin(hh.HouseholdID).all()
 
 
-def test_employed_is_tasha_s_worker(files):
+def test_employed_is_tasha_s_worker(files, tables):
     # One worker definition across the package: tasha's EmploymentStatus F or P is
     # reweight's Employed, person by person (both read trabajo_semana_pasada).
     from eodgdl import tasha
 
-    tables = eodgdl.load_eod(DATA_DIR)
     people = tasha.build_people(tables.hab, tables.trips, tables.viv)
     worker = people.EmploymentStatus.isin(["F", "P"]).to_numpy()
     assert (worker == (files.persons.Employed.to_numpy() == 1)).all()
@@ -232,7 +227,8 @@ def test_every_trip_end_is_in_its_ageb_s_zone(files, viv, trips):
     # localities). Only the access points, the airport and six road gateways, are not.
     a = files.zone_assignment.set_index("CVEGEO")
     agreement = reweight.trip_end_agreement(a, viv, trips)
-    assert agreement.to_dict() == {"in zone": 304_882, "access point": 3_076}
+    ends = 2 * int((~non_trips(trips)).sum())
+    assert agreement.to_dict() == {"in zone": ends - 3_076, "access point": 3_076}
     # the survey's zone is a function of the AGEB code: one zone per code, across its
     # dwellings, origins and destinations
     codes = reweight.survey_codes(viv, trips)

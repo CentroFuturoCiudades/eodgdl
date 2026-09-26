@@ -49,8 +49,8 @@ imputed, 84 mislabelled returns recoded, 124 trips after a return home made
 to start at home, 2,033 mistyped start hours repaired — and refuses a trip
 table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
-non-trips there (returns home made while already at home: 416 after the rules, 134 once
-the hand passes under `eodgdl/revisions/` have dropped most of them; `eodgdl.chains.non_trips`), since the contract
+non-trips there (returns home made while already at home, most of which the hand passes
+under `eodgdl/revisions/` drop; `eodgdl.chains.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
 another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: the
@@ -169,20 +169,19 @@ builder cannot repair them without inventing data: that each trip starts in
 the zone the previous one ended in, and that each trip starts after the
 previous one arrived. `tasha.chain_report(trips)` counts those instead, together with tours
 that do not begin or end at home, and the CLI prints it after every build and
-validate without changing the exit code. On `load_eod()`'s tables (the chain rules and
-the hand revisions):
-
-```
-160 trips (160 people) start earlier than the trip before them
-166 trips (164 people) start before the previous trip could have arrived
-359 people whose first trip does not start at home
-477 people whose last trip does not end at home
-```
-
-Every trip starts where the previous one ended, and the 160 that start earlier are all
-overnight (`hora_nocturna`). On the rules' output alone (`load_eod(revise_chains=False)`) the
-same report reads 32 zone breaks, 840, 1,674, 127 same-minute starts, 1,620 (the 714 first
-trips that answer 'Su casa' from another zone do not start at home) and 416.
+validate without changing the exit code. `StartTime` counts its hours on past midnight
+(2530 is 01:30 on the next day): the trip where a person's day passes midnight — the one
+`load_eod` marks `hora_nocturna` — and every trip after it carry 2400 more
+(`eodgdl.chains.days_past_midnight`), and the contract's range, 0 to 4759, allows the one
+midnight a one-day diary passes. On `load_eod()`'s tables (the chain rules and the hand
+revisions) every trip then starts where the previous one ended and after the previous one
+started, the few that start before the previous trip could have arrived overlap it by
+rounding (`hora_traslapada`), and a few hundred days start or end away from home. On the
+rules' output alone (`load_eod(revise_chains=False)`) the same report reads 32 zone breaks,
+732 trips that start earlier than the one before, 1,566 that start before the previous trip
+could have arrived, 127 same-minute starts, 1,620 days that do not start at home (the 714
+first trips that answer 'Su casa' from another zone among them) and 416 that do not end
+there.
 
 ## Open items
 
@@ -219,10 +218,10 @@ rather than about one column's coding, so nothing surfaces them automatically.
   `eodgdl.chains.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs
-  (`tasha.chain_report`): after the rules and the six hand passes
-  (`eodgdl/revisions/`) no trip carries a breaking code — the 160 trips that
-  still start before the trip before them are all overnight, and every trip
-  starts where the previous one ended; `trips.problemas` marks each, and since 2026-09-04
+  (`tasha.chain_report`): after the rules and the hand passes
+  (`eodgdl/revisions/`) no trip carries a breaking code — the trips that
+  pass midnight are coded past 2400, so `StartTime` runs forward along every
+  chain, and every trip starts where the previous one ended; `trips.problemas` marks each, and since 2026-09-04
   every other residual defect too — overnight wraps, same-minute starts,
   days that start or end away from home, activities typed `Su casa`,
   `Guardería` (`eodgdl.chains.ISSUE_CODES`) — so the trips with a defect are

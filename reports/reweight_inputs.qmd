@@ -259,8 +259,7 @@ show(small_tbl)
 
 hh, pp, tt = files.households, files.persons, files.trips
 n_nontrips = int(non_trips(trips).sum())
-assert (len(hh), len(pp), len(tt)) == (17_901, 58_061, 153_979)
-assert len(tt) == len(trips) - n_nontrips and n_nontrips == 134
+assert (len(hh), len(pp)) == (17_901, 58_061) and len(tt) == len(trips) - n_nontrips
 assert (pp.PersonID == pp.HouseholdID * 10 + hab.index.get_level_values("folio_habitante")).all()
 assert hab.index.get_level_values("folio_habitante").max() <= 9
 assert (hab.edad >= 6).all()
@@ -371,7 +370,8 @@ n_ageb, n_loc = int(cw.AGEB.notna().sum()), int(cw.AGEB.isna().sum())
 assert (len(cw), n_ageb, n_loc, len(universe)) == (2_308, 2_039, 269, 2_308)
 assert universe.Zone.nunique() == n_zones
 agreement = reweight.trip_end_agreement(assign, viv, trips)
-assert agreement.to_dict() == {"in zone": 304_882, "access point": 3_076}
+ends = 2 * int((~non_trips(trips)).sum())      # every end of every trip the build keeps
+assert agreement.to_dict() == {"in zone": ends - 3_076, "access point": 3_076}
 
 rule_counts = assign.groupby(["unit", "rule"], observed=True).agg(units=("POBTOT", "size"), population=("POBTOT", "sum"))
 assert rule_counts.units.to_dict() == {

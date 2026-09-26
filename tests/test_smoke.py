@@ -23,13 +23,12 @@ def test_rename_map_bundled():
     assert all(isinstance(v, str) for table in m.values() for v in table.values())
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_load_eod_local():
+def test_load_eod_local(stages):
+    # the default load is the last of load_stages' three, table for table
     t = eodgdl.load_eod(DATA_DIR)
-    assert t.viv.shape[0] > 0
-    assert t.hab.shape[0] > 0
-    assert t.trips.shape[0] > 0
-    assert t.legs.shape[0] > 0
+    assert all(len(df) > 0 for df in t)
+    assert all(a.equals(b) for a, b in zip(t, stages.revised))
+    assert [len(s.trips) for s in stages] == [154_662, 154_662 - 38, len(t.trips)]
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")

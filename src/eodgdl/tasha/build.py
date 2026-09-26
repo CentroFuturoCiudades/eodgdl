@@ -27,7 +27,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from eodgdl.chains import non_trips
+from eodgdl.chains import days_past_midnight, non_trips
 from eodgdl.tasha._schema import build_map, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
@@ -141,7 +141,8 @@ def build_trips(
 
     The rows ``load_eod`` marked as non-trips (``eodgdl.chains.non_trips``) are
     left out; ``TripNumber`` is renumbered over them and over the gaps in
-    ``folio_viaje``.
+    ``folio_viaje``. ``StartTime`` counts past 2400 once the person's day has
+    passed midnight (``eodgdl.chains.days_past_midnight``).
     """
     untimed = int((trips.hora_inicio_h.isna() | trips.hora_inicio_m.isna()).sum())
     if untimed:
@@ -181,7 +182,9 @@ def build_trips(
         "PersonNumber": trips.index.get_level_values("folio_habitante"),
         # Renumbered over the non-trips left out and the gaps in folio_viaje.
         "TripNumber": trips.groupby(level=PERSON).cumcount().to_numpy() + 1,
-        "StartTime": (trips.hora_inicio_h * 100 + trips.hora_inicio_m).astype(int).to_numpy(),
+        # hhmm on the diary's day, past 2400 from the trip where the day passes midnight on
+        "StartTime": (trips.hora_inicio_h * 100 + trips.hora_inicio_m
+                      + 2400 * days_past_midnight(trips)).astype(int).to_numpy(),
         "Mode": mode.to_numpy(),
         "PurposeOrigin": origin.to_numpy(),
         "ZoneOrigin": trips.origen.astype(str).to_numpy(),

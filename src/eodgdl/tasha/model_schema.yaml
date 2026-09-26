@@ -292,14 +292,18 @@ tables:
         role: attribute
         required: true
         format: hour * 100 + minute
-        description: 08:00 is 800; 17:45 is 1745.
-        range: [0, 2359]
+        description: >-
+          08:00 is 800; 17:45 is 1745. The hours run on past midnight: a trip
+          on the next calendar day of a person's diary carries 24 more hours,
+          so 01:30 after a 22:00 trip is 2530.
+        range: [0, 4759]
         notes: >-
-          A reported attribute, not the chain's ordering key. It need not
-          increase along a person's chain: a trip that starts before its
-          predecessor is a defect in the reported time, to be repaired or
-          tolerated, never a reason to reorder the trips. A producer says how
-          many such trips remain (tasha.chain_report).
+          A reported attribute, not the chain's ordering key. The range allows
+          one midnight, all a one-day diary passes: hours 0 to 47, minutes 0 to
+          59. It need not increase along a person's chain: a trip that starts
+          before its predecessor is a defect in the reported time, to be
+          repaired or tolerated, never a reason to reorder the trips. A producer
+          says how many such trips remain (tasha.chain_report).
 
       Mode:
         dtype: str

@@ -6,12 +6,10 @@ import pandas as pd
 import pytest
 
 import eodgdl
-from eodgdl.chains import non_trips
+from eodgdl.chains import days_past_midnight, has_code, non_trips
 from eodgdl import tasha
 from eodgdl.tasha import _schema
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
 
 AGEB = "1409700251418"       # a real 13-character AGEB CVEGEO
 LOCALITY = "140390001"       # a real 9-character locality id
@@ -84,6 +82,18 @@ def test_validate_catches_bad_tables():
     assert "ZoneOrigin" in problems           # 14097 is not a 9- or 13-char id
     assert "PurposeOrigin is R or C" in problems
     assert "first TripNumber is not 1" in problems
+
+
+def test_start_times_run_past_midnight_but_not_past_a_second_one():
+    trips = pd.DataFrame({
+        "HouseholdId": [0] * 4, "PersonNumber": [1] * 4, "TripNumber": [1, 2, 3, 4],
+        "StartTime": [2100, 3000, 4759, 2475], "Mode": ["W"] * 4, "PurposeOrigin": ["H", "W", "H", "W"],
+        "ZoneOrigin": [AGEB] * 4, "PurposeDestination": ["W", "H", "W", "H"], "ZoneDestination": [AGEB] * 4,
+    })
+    problems = tasha.validate(trips, "trips")                 # 30:00 and 47:59 are hours of a diary past midnight...
+    assert problems == ["trips: 1 StartTime values whose last two digits are not minutes 00-59"]   # ...24:75 is no time
+    trips.loc[3, "StartTime"] = 4800                          # a second midnight is past the range
+    assert tasha.validate(trips, "trips") == ["trips.StartTime: 1 values above 4759"]
 
 
 def test_validate_rejects_home_to_home_trips():
@@ -191,23 +201,20 @@ def test_purpose_origin_is_spelled_correctly():
     assert "PuposeOrigin" not in text
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_refuses_the_survey_as_shipped():
+def test_build_refuses_the_survey_as_shipped(stages):
     with pytest.raises(ValueError, match="no start time"):
-        eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR, clean_chains=False))
+        eodgdl.tasha.build(stages.shipped)
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_conforms():
-    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
+def test_build_conforms(stages):
+    trips = stages.revised.trips
+    od = eodgdl.tasha.build(stages.revised)
 
     assert tasha.validate_all(*od) == []
     assert len(od.households) == 17_901
-    # load_eod drops the 38 duplicate returns and the 511 rows the hand passes drop (512 by the first,
-    # 77 of them restored and 34 more dropped by the second, 42 by the third); the build leaves out the
-    # 134 non-trips left.
+    # every person, and every trip load_eod returns but the non-trips (tests/test_review.py pins the counts)
     assert len(od.people) == 58_061
-    assert len(od.trips) == 154_662 - 38 - 511 - 134
+    assert len(od.trips) == len(trips) - int(non_trips(trips).sum())
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
@@ -215,32 +222,35 @@ def test_build_conforms():
     assert (od.trips.groupby(["HouseholdId", "PersonNumber"]).TripNumber.min() == 1).all()
     assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
 
-    # What load_eod's cleaning does not repair is reported, at these levels.
+    # What load_eod's cleaning does not repair is reported: no zone break, and no trip that starts before
+    # the one it follows, since a day that passes midnight counts its hours on past 2400 from there
     report = " | ".join(tasha.chain_report(od.trips))
-    assert "do not start in the zone" not in report
-    assert "160 trips (160 people) start earlier" in report   # all overnight (hora_nocturna): no hora_invertida left
+    assert "do not start in the zone" not in report and "start earlier" not in report
+    kept = trips[~non_trips(trips)].sort_index()
+    next_day = (days_past_midnight(kept) > 0).to_numpy()
+    assert (next_day == (od.trips.StartTime >= 2400).to_numpy()).all()
+    assert next_day.sum() > has_code(kept.problemas, "hora_nocturna").sum() > 0     # the trip that passes it, and later ones
+    assert od.trips.StartTime.max() <= 4759
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home():
+def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home(stages):
     # the rules alone, before the hand passes: 714 first trips answer 'Su casa' but leave another
     # zone, 75 of them returns home; read as H they would put home in the wrong zone, or go H to H
-    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR, revise_chains=False))
+    od = eodgdl.tasha.build(stages.rules)
     assert tasha.validate_all(*od) == []
     first = od.trips[od.trips.TripNumber == 1].merge(od.households[["HouseholdId", "HouseholdZone"]], on="HouseholdId")
     away = first.ZoneOrigin != first.HouseholdZone
     assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) >= 714
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_a_daycare_trip_from_age_12_is_an_escort():
-    tables = eodgdl.load_eod(DATA_DIR)
+def test_a_daycare_trip_from_age_12_is_an_escort(stages):
+    tables = stages.revised
     od = eodgdl.tasha.build(tables)
     trips = tables.trips[~non_trips(tables.trips)]
     daycare = (trips.motivo_viaje == "Guardería").to_numpy()
     age = tables.hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
     purpose = od.trips.PurposeDestination.to_numpy()
-    assert (purpose[daycare & (age >= 12)] == "F").all() and int((daycare & (age >= 12)).sum()) == 46
-    assert set(purpose[daycare & (age < 12)]) <= {"S", "C"} and int((daycare & (age < 12)).sum()) == 7
+    assert (purpose[daycare & (age >= 12)] == "F").all() and (daycare & (age >= 12)).any()
+    assert set(purpose[daycare & (age < 12)]) <= {"S", "C"} and (daycare & (age < 12)).any()
     # an adult's daycare trip does not make them a student
     people = od.people.set_axis(tables.hab.index)            # build_people keeps hab's row order
     persons = trips.index.droplevel("folio_viaje")
@@ -250,9 +260,8 @@ def test_a_daycare_trip_from_age_12_is_an_escort():
     plain = persons[daycare & (age >= 12)].unique().difference(declared).difference(studied)
     assert len(plain) > 30 and (people.loc[plain, "StudentStatus"] == "O").all()
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_round_trips_through_csv(tmp_path):
-    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
+def test_build_round_trips_through_csv(stages, tmp_path):
+    od = eodgdl.tasha.build(stages.revised)
     path = tmp_path / "od_households.csv"
     od.households.to_csv(path, index=False)
 

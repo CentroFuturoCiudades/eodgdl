@@ -2,20 +2,21 @@
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 from eodgdl import clean_trip_chains, flag_repeated_diaries, load_eod
 from eodgdl.chains import (
     FIX_CODES,
     ISSUE_CODES,
+    TIME_ORDER_ISSUES,
     _donor_mask,
     _trip_features,
+    days_past_midnight,
     has_code,
+    mark_issues,
     non_trips,
 )
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
 
 AGEB = "1409700251418"          # the household's zone
 ELSEWHERE = "1409700251419"
@@ -251,6 +252,31 @@ def test_start_hour_search_declines_ambiguous_and_manufactured_readings():
     assert (cleaned.hora_inicio_h >= 5).all()
 
 
+def test_a_day_passes_midnight_where_a_start_is_read_as_the_next_day_s():
+    trips = _trips([
+        (1, 21, 0, "Trabajar", None, None, 30), (1, 2, 0, "Regresar a Casa", None, None, 30),   # a night shift...
+        (1, 8, 0, "Compras (comida)"), (1, 8, 30, "Regresar a Casa"),                          # ...and the morning after
+        (2, 14, 0, "Trabajar", None, None, 30), (2, 2, 0, "Regresar a Casa"),                  # a second shift's return
+        (3, 14, 0, "Trabajar", None, None, 30), (3, 2, 0, "Compras (comida)"),                 # not a return: inverted
+    ])
+    cleaned, _ = clean_trip_chains(trips, VIV)
+    days = days_past_midnight(cleaned)
+    assert days.tolist() == [0, 1, 1, 1, 0, 1, 0, 0]
+    # the trip where the day passes midnight is the one marked hora_nocturna
+    assert (days.groupby(level="folio_habitante").diff().fillna(days) == 1).equals(has_code(cleaned.problemas, "hora_nocturna"))
+
+
+def test_a_start_at_2301_as_reported_is_marked():
+    trips = _trips([
+        (1, 20, 0, "Trabajar"), (1, 23, 1, "Regresar a Casa"),                           # the survey's own 23:01
+        (2, 20, 0, "Trabajar", None, None, 30), (2, 11, 1, "Regresar a Casa"),          # 11:01 read as 23:01
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    assert cleaned.loc[(1, 1, 2), "problemas"] == "hora_2301"
+    assert cleaned.loc[(1, 2, 2), ["hora_inicio_h", "hora_inicio_m", "ajustes", "problemas"]].tolist() == [23, 1, "hora:+12h", ""]
+    assert counts["left_hora_2301"] == 1 and mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
 def test_every_residual_defect_is_a_code():
     trips = _trips([
         (1, 8, 0, "Trabajar"), (1, 17, 0, "Regresar a Casa"),                                   # clean
@@ -281,9 +307,8 @@ def test_every_residual_defect_is_a_code():
         "left_inicio_zona_ajena": 1, "left_fin_fuera_de_casa": 1, "left_actividad_en_casa": 1, "left_motivo_guarderia": 1}
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns():
-    viv, hab, trips, legs = load_eod(DATA_DIR, revise_chains=False)   # the rules alone
+def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages):
+    viv, hab, trips, legs = stages.rules   # load_eod(revise_chains=False): the rules alone
     assert (len(hab), len(trips), len(legs)) == (58_061, 154_662 - 38, 170_509 - 38)
     assert not trips.hora_inicio_h.isna().any() and not trips.motivo_viaje.isna().any()
     # every change and every defect left is on the row, in the documented vocabulary
@@ -298,32 +323,31 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns():
         "regreso_en_casa": 416, "hora_invertida": 870, "hora_nocturna": 108,
         "hora_anterior": 26, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 714,
-        "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217}
-    hora = sum(has_code(trips.problemas, c)
-               for c in ("hora_invertida", "hora_nocturna", "hora_anterior", "hora_repetida", "hora_traslapada"))
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_735 + 416
+        "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217, "hora_2301": 98}
+    hora = sum(has_code(trips.problemas, c) for c in TIME_ORDER_ISSUES)
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_818 + 416
     # hab and trips stay in step: viajes_contados follows the 38 dropped duplicates and the legs follow the trips
     counted = trips.groupby(level=PERSON).size()
     assert (hab.viajes_contados == counted.reindex(hab.index).fillna(0)).all()
-    assert hab.viajes_contados.sum() == load_eod(DATA_DIR, clean_chains=False).hab.viajes_contados.sum() - 38
+    assert hab.viajes_contados.sum() == stages.shipped.hab.viajes_contados.sum() - 38
     assert legs.index.droplevel("folio_traslado").isin(trips.index).all()
     # the categoricals survive the imputation, with the imputed values inside their levels
     assert str(trips.motivo_viaje.dtype) == "category" and str(trips.tipo_lugar_destino.dtype) == "category"
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_load_eod_can_return_the_survey_as_shipped():
-    viv, hab, trips, legs = load_eod(DATA_DIR, clean_chains=False)
+def test_load_eod_can_return_the_survey_as_shipped(stages):
+    viv, hab, trips, legs = stages.shipped
     assert (len(hab), len(trips), len(legs)) == (58_061, 154_662, 170_509)
+    # load_eod's switch stops at the stage load_stages returns first
+    assert all(a.equals(b) for a, b in zip(load_eod(DATA_DIR, clean_chains=False), stages.shipped))
     assert trips.ponderador.sum() == 11_796_386        # the published trip total
     assert trips.hora_inicio_h.isna().sum() == 325
     assert "ajustes" not in trips.columns and not non_trips(trips).any()
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_legs_unpivot_is_lossless():
+def test_legs_unpivot_is_lossless(stages):
     """Every filled traslado slot becomes a leg, in order, with a mode and minutes."""
-    viv, hab, trips, legs = load_eod(DATA_DIR, clean_chains=False)
+    viv, hab, trips, legs = stages.shipped
     trip_levels = ["folio_vivienda", "folio_habitante", "folio_viaje"]
     per_trip = legs.groupby(level=trip_levels).size()
     assert (per_trip.reindex(trips.index).fillna(0) == trips.n_traslados).all()
@@ -390,9 +414,8 @@ def test_a_diary_repeated_in_another_household_with_nudged_times_is_flagged():
     assert flag[flag].index.tolist() == [(1, 1), (2, 1)]
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_load_eod_flags_repeated_diaries_and_drops_none():
-    viv, hab, trips, legs = load_eod(DATA_DIR, clean_chains=False)
+def test_load_eod_flags_repeated_diaries_and_drops_none(stages):
+    viv, hab, trips, legs = stages.shipped
     assert hab.diario_repetido.dtype == bool
     assert hab.diario_repetido.sum() == 1_793
     assert len(hab) == 58_061 and len(trips) == 154_662
@@ -401,6 +424,5 @@ def test_load_eod_flags_repeated_diaries_and_drops_none():
     assert not hab.loc[(9560, 4), "diario_repetido"] and not hab.loc[(879, 7), "diario_repetido"]
     # the same rule reads the legs table once the traslado columns are gone
     assert flag_repeated_diaries(trips, hab, viv, legs).equals(hab.diario_repetido)
-    # the flag is set on the survey as shipped and survives the chain rules
-    cleaned = load_eod(DATA_DIR)
-    assert cleaned.hab.diario_repetido.sum() == 1_793
+    # the flag is set on the survey as shipped and survives the chain rules and the hand passes
+    assert stages.revised.hab.diario_repetido.sum() == 1_793

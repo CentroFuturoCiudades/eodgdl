@@ -330,7 +330,13 @@ trips:
 
   StartTime:
     source: [hora_inicio_h, hora_inicio_m]
-    derivation: hora_inicio_h * 100 + hora_inicio_m.
+    derivation: >-
+      hora_inicio_h * 100 + hora_inicio_m, plus 2400 from the trip where the
+      person's day passes midnight on (eodgdl.chains.days_past_midnight): a
+      start by 06:00 after a trip that started at or after 18:00, or a return
+      home by 06:00 after one that started at or after noon, is the next
+      day's — the trip load_eod marks hora_nocturna — and so is every trip
+      after it. A 06:00 return from a 21:00 night shift is 3000.
     note: >-
       The hours are the ones load_eod returns, after its chain cleaning: the
       325 trips with no start time are imputed (37 from the home-to-home
@@ -351,8 +357,12 @@ trips:
       previous trip's rounded leg minutes (hora_traslapada) are marked too,
       one time code per row at most. The hand passes under
       eodgdl/revisions/ resolve every hora_invertida and hora_anterior, so
-      load_eod() returns 160 hora_nocturna and 6 hora_traslapada and no other
-      time code; tasha.chain_report counts them on every build. The rules, their
+      the only time-order codes load_eod() returns are hora_nocturna (overnight,
+      which the derivation codes past 2400) and hora_traslapada (rounding):
+      StartTime runs forward along every chain, the days that pass midnight
+      included, and none spans more than 24 hours; tasha.chain_report counts
+      what is left on every build. hora_2301 marks a start of 23:01 as reported, the minute the survey
+      heaps its late returns on: the return came then or later. The rules, their
       evidence and the rejected alternatives — dropping those people,
       re-sequencing tours — are documented in eodgdl.chains. The builder refuses
       a trip table with untimed rows rather than guess.
@@ -468,12 +478,13 @@ trips:
       every W after the first becomes R, every S after the first becomes C.
     note: >-
       LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
-      all collapse into O. Guardería: 217 trips in the shipped survey, 53 after
-      the hand passes (which recoded most adults' to 'Llevar o recoger a
-      alguien', and returns home typed Guardería to 'Regresar a Casa'); 7 are
-      by children under 12, the other 46 become F by the derivation. load_eod marks them all motivo_guarderia in trips.problemas.
-      The 787 activity trips typed 'Su casa' after the rules (462 after the hand
-      passes, which recode the returns among them) carry
+      all collapse into O. Guardería: 217 trips in the shipped survey. The hand
+      passes recode most adults' to 'Llevar o recoger a alguien' and returns home
+      typed Guardería to 'Regresar a Casa', and keep children's (pass 7 put back
+      the 23 that pass 1 had recoded as escorts); the ones left from age 12 become
+      F by the derivation. load_eod marks them all motivo_guarderia in
+      trips.problemas. The 787 activity trips typed 'Su casa' after the rules
+      (fewer after the hand passes, which recode the returns among them) carry
       actividad_en_casa there. 7 trips have
       no motivo_viaje and fall to the default O. Two of load_eod's chain rules
       shape this column upstream (eodgdl.chains): 84 'Regresar a Casa' trips

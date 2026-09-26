@@ -71,6 +71,14 @@ class EODTables(NamedTuple):
     legs: pd.DataFrame  # trip legs, indexed by (..., folio_viaje, folio_traslado)
 
 
+class EODStages(NamedTuple):
+    """The survey at the three points ``load_eod`` can stop at, from one read of the files."""
+
+    shipped: EODTables  # load_eod(clean_chains=False): as shipped, typed and linked
+    rules: EODTables  # load_eod(revise_chains=False): the chain rules applied
+    revised: EODTables  # load_eod(): the hand revisions applied on top
+
+
 def rename_imeplan(df: pd.DataFrame, table: str) -> pd.DataFrame:
     """Rename raw IMEPLAN columns to snake_case.
 
@@ -268,6 +276,18 @@ def _split_legs(trips: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return trips, legs
 
 
+def load_stages(eod_path: Path | None = None, *, verbose: bool = False) -> EODStages:
+    """The survey as shipped, after the chain rules and after the hand revisions, from one read of the files.
+
+    The three tables ``load_eod`` returns with ``clean_chains=False``, with
+    ``revise_chains=False`` and by default, for the price of the last: a
+    caller that compares stages — a review sheet, the chain browser, a
+    report — reads and cleans the survey once. The stages share ``viv``;
+    treat them as read-only.
+    """
+    return EODStages(*_load(eod_path, "revised", verbose))
+
+
 def load_eod(
     eod_path: Path | None = None,
     *,
@@ -279,6 +299,7 @@ def load_eod(
 
     With no argument the three master CSVs are fetched from the data mirror (and cached);
     pass ``eod_path`` (or set ``$EODGDL_DATA_DIR``) to read them from a local directory.
+    :func:`load_stages` returns all three stages below from one read.
 
     By default the trip chains are cleaned (:func:`eodgdl.chains.clean_trip_chains`): the
     325 trips with no start time (and no motive) are imputed — 37 from the
@@ -302,10 +323,12 @@ def load_eod(
     After the rules come the hand revisions (``revise_chains``, on by
     default, ignored without ``clean_chains``): the passes frozen under
     ``eodgdl/revisions/``, each the edits of one review sheet
-    (:mod:`eodgdl.review`), are applied in order. An edited field carries a
-    ``<field>:revision`` code in ``ajustes``, a row dropped by hand is gone
-    (its legs too, ``viajes_contados`` kept in step), and ``problemas`` is
-    recomputed. Pass ``revise_chains=False`` for the rules' output alone.
+    (:mod:`eodgdl.review`), are applied in order. A row dropped by hand is
+    gone (its legs too, ``viajes_contados`` kept in step), ``ajustes`` then
+    says field by field whether a value that differs from the shipped one is
+    the rules' (their code) or was set by hand (``<field>:revision``), and
+    ``problemas`` is recomputed. Pass ``revise_chains=False`` for the rules'
+    output alone.
 
     Either way ``hab`` carries a boolean ``diario_repetido`` column
     (:func:`flag_repeated_diaries`): True for the persons whose whole diary is
@@ -320,6 +343,12 @@ def load_eod(
 
     Returns an :class:`EODTables` named tuple ``(viv, hab, trips, legs)``.
     """
+    stop = "revised" if clean_chains and revise_chains else "rules" if clean_chains else "shipped"
+    return _load(eod_path, stop, verbose)[-1]
+
+
+def _load(eod_path: Path | None, stop: str, verbose: bool) -> list[EODTables]:
+    """The stages up to ``stop`` (``shipped``, ``rules`` or ``revised``), in that order, from one read."""
     viv_csv = _resolve_csv(eod_path, VIVIENDAS_CSV)
     hab_csv = _resolve_csv(eod_path, HABITANTES_CSV)
     trips_csv = _resolve_csv(eod_path, VIAJES_CSV)
@@ -380,38 +409,25 @@ def load_eod(
     df_hab[DIARY_FLAG] = flag_repeated_diaries(df_trips, df_hab, df_viv)
     log.info("repeated diaries flagged: %d persons", int(df_hab[DIARY_FLAG].sum()))
 
-    shipped_trips, shipped_hab = df_trips, df_hab.copy()
-    if clean_chains:
-        shipped = df_trips.index
-        df_trips, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab)
+    stages = [EODTables(df_viv, df_hab.copy(), *_split_legs(df_trips))]
+    if stop != "shipped":
+        cleaned, counts = clean_trip_chains(df_trips, df_viv, hab=df_hab)
         # the dropped duplicates leave viajes_contados one too high for their persons
         lost = (
-            shipped.difference(df_trips.index).droplevel("folio_viaje").value_counts()
+            df_trips.index.difference(cleaned.index).droplevel("folio_viaje").value_counts()
         )
         df_hab.loc[lost.index, "viajes_contados"] -= lost.to_numpy()
         log.info("trip chains cleaned: %s", counts)
         if verbose:
             print("Trip chains cleaned:", counts)
-
-    df_trips, df_legs = _split_legs(df_trips)
-    tables = EODTables(df_viv, df_hab, df_trips, df_legs)
-
-    if clean_chains and revise_chains:
+        stages.append(EODTables(df_viv, df_hab, *_split_legs(cleaned)))
+    if stop == "revised":
         # imported here: eodgdl.review builds on EODTables
         from eodgdl.review import apply_revisions
 
-        shipped_tables = EODTables(df_viv, shipped_hab, *_split_legs(shipped_trips))
-        tables = apply_revisions(tables, shipped_tables)
-        df_hab, df_trips, df_legs = tables.hab, tables.trips, tables.legs
-        log.info("hand revisions applied: %d trips", len(df_trips))
+        stages.append(apply_revisions(stages[1], stages[0]))
+        log.info("hand revisions applied: %d trips", len(stages[-1].trips))
 
     if verbose:
-        print(
-            "DF shapes viv/hab/viaj/legs",
-            df_viv.shape,
-            df_hab.shape,
-            df_trips.shape,
-            df_legs.shape,
-        )
-
-    return tables
+        print("DF shapes viv/hab/viaj/legs", *(df.shape for df in stages[-1]))
+    return stages

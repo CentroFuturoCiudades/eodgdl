@@ -53,6 +53,12 @@ def main() -> None:
     ver_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
     ver_p.add_argument("--edits", default=None, help="Write the recovered edits to this CSV")
     ver_p.add_argument("--out", default=None, help="Write the edited persons' sheet, after the edits, to this CSV")
+    frz_p = review_sub.add_parser(
+        "freeze", help="Freeze an edited sheet as the next pass load_eod applies (eodgdl/revisions/chains_<n>.csv.gz)"
+    )
+    frz_p.add_argument("sheet", help="The edited review sheet, exported from the tables load_eod() returns now")
+    frz_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    frz_p.add_argument("--out", default=None, help="Where to write (default: the next chains_<n>.csv.gz)")
 
     rew_p = sub.add_parser("reweight", help="Inputs for TMG.SurveyReweight: records, zone system, census targets")
     rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
@@ -169,11 +175,11 @@ def _tasha(args) -> int:
 def _review(args) -> int:
     import pandas as pd
 
-    from eodgdl import load_eod, review
+    from eodgdl import load_stages, review
     from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, has_code
 
-    shipped = load_eod(args.data, clean_chains=False)
-    cleaned = load_eod(args.data)
+    stages = load_stages(args.data)  # the survey as shipped, after the rules and after the passes, from one read
+    shipped, rules, cleaned = stages
 
     if args.review_cmd == "export":
         rows = review.chain_rows(cleaned, shipped)
@@ -189,22 +195,44 @@ def _review(args) -> int:
             "persons": {c: int(has_code(selected.problemas, c).groupby(level=PERSON).any().sum()) for c in ISSUE_CODES},
         }).rename_axis("problemas")
         counts["group"] = ["breaking" if c in BREAKING_ISSUES else "tolerated" for c in counts.index]
-        print(counts.loc[counts["rows"] > 0].to_string())
+        left = counts.loc[counts["rows"] > 0]
+        print(left.to_string() if len(left) else "no chain carries those codes")
         return 0
 
-    edited = review.read_sheet(args.sheet)
     try:
+        edited = review.read_sheet(args.sheet)
         edits = review.sheet_edits(edited)
     except ValueError as err:
         print(err)
         return 1
     print(f"read {args.sheet}  ({len(edited):,} rows, {len(edits):,} edits)")
+    if args.review_cmd == "freeze":
+        try:
+            frozen = review.freeze_edits(edits, cleaned, shipped, rules)
+        except ValueError as err:
+            print(err)
+            return 1
+        if frozen.empty:
+            print("nothing to freeze: every edit already holds or is moot")
+            return 1
+        verified = review.verify_edits(cleaned, shipped, frozen, rules)
+        path = review.write_pass(frozen, args.out or review.next_pass_path())
+        s = verified.summary
+        print(f"wrote {path}  ({len(frozen):,} edits of {len(edits):,}; the rest already held, were moot or were notes)")
+        print()
+        for key, value in s.items():
+            print(f"  {key:<26} {value:>7,}")
+        what = [f"{s['cells']:,} cells"] + [
+            f"{s[k]:,} rows {k.split('_')[1]}" for k in ("rows_dropped", "rows_restored") if s[k]
+        ]
+        print("\nthe line for eodgdl/revisions/README.md:")
+        print(f"| `{path.name}` | `{args.sheet}` (…) | {s['persons']:,} | {', '.join(what)} |")
+        return 0
     if args.edits:
         edits.to_csv(args.edits, index=False, encoding="utf-8-sig")
         print(f"wrote {args.edits}")
     if edits.empty:
         return 0
-    rules = load_eod(args.data, revise_chains=False)  # a restored row comes back as the rules left it
     try:
         verified = review.verify_edits(cleaned, shipped, edits, rules)
     except ValueError as err:

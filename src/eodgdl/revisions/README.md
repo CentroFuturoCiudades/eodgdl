@@ -2,14 +2,42 @@
 
 `load_eod()` applies these files, in order, after the chain rules
 (`eodgdl.review.apply_revisions`; `load_eod(revise_chains=False)` stops before them).
-Each is one hand pass over a review sheet (`eodgdl review export`), frozen as the edits
-`eodgdl.review.sheet_edits` recovers from it: one row per changed cell, columns
+Each is one hand pass over a review sheet (`eodgdl review export`), frozen with `eodgdl review
+freeze` as the edits that change something: one row per changed cell, columns
 `household, person, trip, field, before, after, note`. `before` is what the sheet showed,
-`after` the value applied, `note` the reviewer's reason (once per trip, on its first edit).
-Every applied value leaves a `<field>:revision` code in `trips.ajustes`.
+`after` the value applied (`HH:MM`, a level's own label, a zone id or `home`, `dropped` or
+`restored`), `note` the reviewer's reason (once per trip, on its first edit). Passes 1–6 were
+frozen by hand before the command existed.
 
 A later pass is exported from the tables with the earlier passes applied, so its `before`
-is the earlier pass's `after`. Never edit a frozen pass: correct it with a new pass.
+is the earlier pass's `after`. Never edit a frozen pass: correct it with a new pass. A pass
+whose criterion is a rule rather than a call per chain keeps the script that wrote its sheet
+under `scripts/revisions/` (from pass 7 on), so the criterion is code and a second run finds
+nothing left to do.
+
+## How a pass is read
+
+`eodgdl.review.apply_edits`, since the review of the chain fixes (2026-09-25):
+
+- **Every edit is checked against the tables it is applied to.** Its `before` must be what the
+  sheet showed — the current value, or the shipped one on a row the same pass restores — or
+  the pass was made against another version of the tables and the load fails, naming the
+  edit. A value that already holds is skipped. Every edit of the seven passes holds, so a
+  change to the chain rules that moves a value a pass was made against now fails the load
+  instead of being overwritten.
+- **The origin type is one answer per person** ("¿En qué tipo de lugar inició su primer
+  viaje?"). An `orig. type` edit on the person's first trip changes it on every row; one on any
+  other trip is moot. Pass 1 typed 6,357 per trip (the previous trip's destination type);
+  they are moot, which changes no first trip and so nothing the chain rules, the model build
+  or the reweighting read. The sheet shows the answer on the first trip only.
+- **A mode edit keeps the trip on its legs**: on a one-leg trip the leg takes the new mode,
+  on a trip of several legs the new mode must be one of theirs, since the model build reads
+  the main mode and the reweighting the legs.
+- **`ajustes` is net.** Field by field, a value that is the rules' carries the rules' codes,
+  one a pass set carries `<field>:revision`, and one that is the shipped value again carries
+  nothing; `fila:revision` marks a row the rules dropped and a pass restored. The history —
+  a value set by pass 1 and put back by pass 3, a row dropped and restored — is in these
+  files, not on the rows.
 
 | file | sheet | persons | edits |
 |---|---|---|---|
@@ -19,6 +47,7 @@ is the earlier pass's `after`. Never edit a frozen pass: correct it with a new p
 | `chains_4.csv.gz` | `notebooks/chain_review_4.csv` (the non-trips pass 1 made out of real trips; filled 2026-09-25) | 3 | 9 cells |
 | `chains_5.csv.gz` | `notebooks/chain_review_5.csv` (first trips whose recorded origin pass 1 replaced with home; filled 2026-09-25) | 52 | 124 cells |
 | `chains_6.csv.gz` | `notebooks/chain_review_6.csv` (activity trips that arrive home, `actividad_en_casa`; filled 2026-09-25) | 138 | 141 cells |
+| `chains_7.csv.gz` | `notebooks/chain_review_7.csv` (three kinds of pass-1 edit undone, written by `scripts/revisions/chains_7.py`; 2026-09-25) | 38 | 25 cells, 23 rows restored |
 
 Pass 1 was frozen with 26 values normalized from the sheet: 21 starts written `HH:MM:00`,
 one `22.13` (household 7791, person 4, trip 4, read 22:13), four `Regresar a casa`. It was
@@ -104,3 +133,17 @@ to the home AGEB — 372 recorded so by the survey, often a whole tour ("to work
 home to home, 20–40 minutes by bus) whose place was never recorded, so the activity stays in
 the home zone for the model — and 87 whose 'Su casa' lies in another AGEB, where only the
 type label is odd and the model's purpose and zone are right.
+
+Pass 7 (Claude, 2026-09-25, from a review of the chain fixes; the criteria are
+`scripts/revisions/chains_7.py`) undoes three kinds of pass-1 edit:
+- **Home-to-home tours** (13 persons, 23 rows): pass 1 dropped 15 activity trips from the
+  home AGEB to the home AGEB and the 8 returns closing them as "no corresponde a un viaje
+  real". Seven are commutes to work by light rail, bus or car of 20–75 minutes each way, and
+  five persons (18/1, 31/7, 504/2, 633/2, 646/1) had lost every trip. Pass 6 keeps 375 trips of
+  that shape — the place was never recorded, so the activity stays in the home zone for the
+  model — and these come back as the rules left them.
+- **Children's daycare trips** (23): pass 1 recoded 'Guardería' as 'Llevar o recoger a
+  alguien' for students aged 6–11, the reading it gave the adults. A child in daycare attends
+  it; the motive goes back, and the model reads it as school under 12.
+- **Two modes** (2338/1/7, 3005/2/1): pass 1 changed the main mode of two one-leg trips with no
+  evidence, away from the leg the reweighting reads; both go back to the survey's.

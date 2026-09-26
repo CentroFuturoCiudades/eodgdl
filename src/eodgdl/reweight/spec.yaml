@@ -237,7 +237,7 @@ attributes:
     Trips:
       constant: 1
       note: >-
-        One per trip row as load_eod returns them, without the 134 rows it marks as
+        One per trip row as load_eod returns them, without the rows it marks as
         non-trips (the same filter as tasha.build).
 
     BusBoardings:
