@@ -18,6 +18,7 @@ is the earlier pass's `after`. Never edit a frozen pass: correct it with a new p
 | `chains_3.csv.gz` | `notebooks/chain_review_3.csv` (a second look at pass 2's judgment calls; filled 2026-09-25) | 67 | 51 cells, 42 rows dropped |
 | `chains_4.csv.gz` | `notebooks/chain_review_4.csv` (the non-trips pass 1 made out of real trips; filled 2026-09-25) | 3 | 9 cells |
 | `chains_5.csv.gz` | `notebooks/chain_review_5.csv` (first trips whose recorded origin pass 1 replaced with home; filled 2026-09-25) | 52 | 124 cells |
+| `chains_6.csv.gz` | `notebooks/chain_review_6.csv` (activity trips that arrive home, `actividad_en_casa`; filled 2026-09-25) | 138 | 141 cells |
 
 Pass 1 was frozen with 26 values normalized from the sheet: 21 starts written `HH:MM:00`,
 one `22.13` (household 7791, person 4, trip 4, read 22:13), four `Regresar a casa`. It was
@@ -91,3 +92,15 @@ all three groups the trip's reported minutes fit a trip from home (87–92%). Wh
   tell; the recorded origin and answer come back (the day starts away from home).
 The other first trips keep pass 1's reading, as do those whose minutes favour home, whose
 place recurs later in the day, or whose AGEB has no census geometry to measure.
+
+Pass 6 (Claude, 2026-09-25) takes the 603 activity trips that end at a place typed 'Su casa'
+(`actividad_en_casa`). The 141 that arrive at the household's AGEB from elsewhere — nearly
+all right after an activity at their origin and followed by a trip that leaves home — are
+the return home typed with the activity's motive, and are recoded 'Regresar a Casa' (the
+model's purpose on arriving home is H, whatever the person does there). In 85 of them the
+next row repeats that return from home with the same mode and minutes, the double-recorded
+return of pass 4, and becomes a non-trip. Left as they are: 375 that go from the home AGEB
+to the home AGEB — 372 recorded so by the survey, often a whole tour ("to work" and back,
+home to home, 20–40 minutes by bus) whose place was never recorded, so the activity stays in
+the home zone for the model — and 87 whose 'Su casa' lies in another AGEB, where only the
+type label is odd and the model's purpose and zone are right.

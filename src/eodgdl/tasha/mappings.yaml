@@ -468,11 +468,12 @@ trips:
       every W after the first becomes R, every S after the first becomes C.
     note: >-
       LOSSY: visiting (3,780), health (1,990), errands (633) and banking (506)
-      all collapse into O. Guardería: 217 trips in the shipped survey, 61 after
+      all collapse into O. Guardería: 217 trips in the shipped survey, 53 after
       the hand passes (which recoded most adults' to 'Llevar o recoger a
-      alguien'); 7 are by children under 12, the other 54 become F by the
-      derivation. load_eod marks them all motivo_guarderia in trips.problemas.
-      The 787 activity trips typed 'Su casa' carry
+      alguien', and returns home typed Guardería to 'Regresar a Casa'); 7 are
+      by children under 12, the other 46 become F by the derivation. load_eod marks them all motivo_guarderia in trips.problemas.
+      The 787 activity trips typed 'Su casa' after the rules (462 after the hand
+      passes, which recode the returns among them) carry
       actividad_en_casa there. 7 trips have
       no motivo_viaje and fall to the default O. Two of load_eod's chain rules
       shape this column upstream (eodgdl.chains): 84 'Regresar a Casa' trips

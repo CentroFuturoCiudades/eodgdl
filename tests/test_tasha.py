@@ -205,9 +205,9 @@ def test_build_conforms():
     assert len(od.households) == 17_901
     # load_eod drops the 38 duplicate returns and the 511 rows the hand passes drop (512 by the first,
     # 77 of them restored and 34 more dropped by the second, 42 by the third); the build leaves out the
-    # 47 non-trips left.
+    # 134 non-trips left.
     assert len(od.people) == 58_061
-    assert len(od.trips) == 154_662 - 38 - 511 - 47
+    assert len(od.trips) == 154_662 - 38 - 511 - 134
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
@@ -239,7 +239,7 @@ def test_a_daycare_trip_from_age_12_is_an_escort():
     daycare = (trips.motivo_viaje == "Guardería").to_numpy()
     age = tables.hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
     purpose = od.trips.PurposeDestination.to_numpy()
-    assert (purpose[daycare & (age >= 12)] == "F").all() and int((daycare & (age >= 12)).sum()) == 54
+    assert (purpose[daycare & (age >= 12)] == "F").all() and int((daycare & (age >= 12)).sum()) == 46
     assert set(purpose[daycare & (age < 12)]) <= {"S", "C"} and int((daycare & (age < 12)).sum()) == 7
     # an adult's daycare trip does not make them a student
     people = od.people.set_axis(tables.hab.index)            # build_people keeps hab's row order

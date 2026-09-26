@@ -79,7 +79,7 @@ def test_records_have_the_survey_s_rows_and_integer_keys(files):
     hh, pp, tt = files.households, files.persons, files.trips
     assert len(hh) == 17_901
     assert len(pp) == 58_061
-    assert len(tt) == 154_662 - 38 - 511 - 47  # load_eod drops the duplicates and the rows dropped by hand, build leaves out the non-trips
+    assert len(tt) == 154_662 - 38 - 511 - 134  # load_eod drops the duplicates and the rows dropped by hand, build leaves out the non-trips
     for df, key in ((hh, "HouseholdID"), (pp, "PersonID")):
         assert pd.api.types.is_integer_dtype(df[key]) and not df[key].duplicated().any()
     assert tt.PersonID.isin(pp.PersonID).all()
@@ -232,7 +232,7 @@ def test_every_trip_end_is_in_its_ageb_s_zone(files, viv, trips):
     # localities). Only the access points, the airport and six road gateways, are not.
     a = files.zone_assignment.set_index("CVEGEO")
     agreement = reweight.trip_end_agreement(a, viv, trips)
-    assert agreement.to_dict() == {"in zone": 305_056, "access point": 3_076}
+    assert agreement.to_dict() == {"in zone": 304_882, "access point": 3_076}
     # the survey's zone is a function of the AGEB code: one zone per code, across its
     # dwellings, origins and destinations
     codes = reweight.survey_codes(viv, trips)
