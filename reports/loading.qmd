@@ -991,7 +991,7 @@ from eodgdl import load_eod, rename_imeplan, clean_eod, imeplan_rename_map
 from eodgdl.schemas import viv_schema, hab_schema, trips_schema
 
 shipped = load_eod(clean_chains=False)   # every step in this note, no chain rules
-clean = load_eod(revise_chains=False)     # ...plus the five chain rules (load_eod() adds the hand revisions)
+clean = load_eod(revise_chains=False)     # ...plus the chain rules (load_eod() adds the hand revisions)
 
 # the steps one at a time, for the trips file
 import pandas as pd

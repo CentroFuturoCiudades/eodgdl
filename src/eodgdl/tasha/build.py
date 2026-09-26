@@ -28,13 +28,13 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from eodgdl.chains import days_past_midnight, non_trips
+from eodgdl.chains import DAYCARE, ESCORT_FROM_AGE, days_past_midnight, non_trips
 from eodgdl.tasha._schema import build_map, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
 NO_ZONE = "0"  # sentinel for EmploymentZone / SchoolZone
-DAYCARE = "Guardería"
-ESCORT_FROM_AGE = 12  # a Guardería trip from this age on is an escort (PurposeDestination, StudentStatus)
+# DAYCARE, ESCORT_FROM_AGE: a Guardería trip from this age on is an escort (PurposeDestination, StudentStatus);
+# load_eod's chain rules already recode it so (motivo:guarderia), and the build reads the age the same way
 
 
 class ODTables(NamedTuple):

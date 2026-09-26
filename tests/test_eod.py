@@ -9,6 +9,7 @@ from eodgdl.chains import (
     ISSUE_CODES,
     TIME_ORDER_ISSUES,
     _donor_mask,
+    _start_at_arrival,
     _trip_features,
     days_past_midnight,
     has_code,
@@ -131,19 +132,22 @@ def test_a_return_home_made_from_home_is_not_a_trip():
         (3, 14, 0, "Regresar a Casa"), (3, 16, 0, "Compras (comida)"), (3, 17, 0, "Regresar a Casa"),
         (4, 14, 0, "Regresar a Casa"),
     ])
-    # the day's answer is 'Su casa' but the first return leaves another zone: made away from home, a trip
+    # the day's answer is 'Su casa' but the first return leaves another zone: made away from home, a trip; the day
+    # started there, at the place the person's own trips give that zone (a shop), whatever the answer said
     trips.loc[(1, 3, 1), "origen"] = ELSEWHERE
     # the first return leaves the home zone but the day started at another dwelling: a trip too
     trips.loc[(1, 4), "tipo_lugar_origen"] = "Otra vivienda"
     cleaned, counts = clean_trip_chains(trips, VIV)
-    assert counts["home_to_home"] == 3
-    assert cleaned.loc[(1, 3, 1), "problemas"] == "inicio_zona_ajena"       # the answer and the zone disagree
+    assert counts["home_to_home"] == 3 and counts["first_return_answers"] == 1
+    assert cleaned.loc[(1, 3, 1), "problemas"] == "inicio_fuera_de_casa"
+    assert (cleaned.loc[(1, 3)].tipo_lugar_origen == SHOP).all() and (cleaned.loc[(1, 3)].ajustes == "tipo_origen:regreso").all()
     assert cleaned.loc[(1, 4, 1), "problemas"] == "inicio_fuera_de_casa"
     # nothing is dropped: the rows stay, marked, and the model build leaves them out
     assert len(cleaned) == len(trips)
     assert cleaned.loc[(1, 1)].problemas.tolist() == ["regreso_en_casa", "", "", "regreso_en_casa", "regreso_en_casa"]
     assert non_trips(cleaned).sum() == 3
-    assert (cleaned.loc[(1, 2)].problemas == "").all() and (cleaned.ajustes == "").all()
+    assert (cleaned.loc[(1, 2)].problemas == "").all()
+    assert (cleaned.drop(index=3, level="folio_habitante").ajustes == "").all()
     assert (cleaned.loc[(1, 3)].problemas.tolist()[1:] == ["", ""])
 
 
@@ -188,23 +192,30 @@ def test_a_return_that_did_not_reach_home_takes_its_destination_type():
     assert cleaned.loc[(1, 2)].problemas.tolist() == ["", "tipo_destino_dudoso", "regreso_en_casa"]
 
 
-def test_a_trip_after_a_return_home_starts_at_home():
+def test_every_trip_starts_where_the_previous_one_ended():
     trips = _trips([
         (1, 8, 0, "Trabajar"), (1, 17, 0, "Regresar a Casa"),
         (1, 18, 0, "Compras (comida)"), (1, 19, 0, "Regresar a Casa"),
-        (2, 8, 0, "Trabajar", "Fábrica o taller", ELSEWHERE),   # a return that did not reach home...
+        (2, 8, 0, "Trabajar", "Fábrica o taller", ELSEWHERE),   # a return recorded ending in its own origin's AGEB...
         (2, 17, 0, "Regresar a Casa", "Su casa", ELSEWHERE),
         (2, 18, 0, "Compras (comida)"), (2, 19, 0, "Regresar a Casa"),
+        (3, 8, 0, "Trabajar", "Fábrica o taller", ELSEWHERE),   # work, then a trip recorded leaving home: the
+        (3, 18, 0, "Compras (comida)", None, OTHER), (3, 19, 0, "Regresar a Casa"),   # return home was not recorded
     ])
     trips.loc[(1, 1, 3), "origen"] = ELSEWHERE     # carried over from the morning stop
     trips.loc[(1, 2, 3), "origen"] = AGEB          # ...followed by a trip that says it left from home
+    trips.loc[(1, 3, 2), "origen"] = AGEB
     cleaned, counts = clean_trip_chains(trips, VIV)
-    assert counts["origins_repaired"] == 1
+    assert counts["origins_repaired"] == 1 and counts["returns_copying_origin"] == 1 and counts["origins_continued"] == 1
     assert cleaned.loc[(1, 1, 3), "origen"] == AGEB and cleaned.loc[(1, 1, 3), "ajustes"] == "origen:casa"
-    # ...leaves the next origin alone, since either side could be wrong, and says so
-    assert cleaned.loc[(1, 2, 3), "origen"] == AGEB
-    assert cleaned.loc[(1, 2)].problemas.tolist() == ["", "regreso_sin_llegar", "origen_discontinuo", ""]
-    assert counts["left_origen_discontinuo"] == 1 and counts["left_regreso_sin_llegar"] == 1
+    # ...went home: the next trip leaves from there, as recorded
+    assert cleaned.loc[(1, 2, 2), ["destino", "ajustes"]].tolist() == [AGEB, "destino:copia"]
+    assert (cleaned.loc[(1, 2)].problemas == "").all()
+    # ...sets out from where the last trip left the person
+    assert cleaned.loc[(1, 3, 2), ["origen", "ajustes"]].tolist() == [ELSEWHERE, "origen:anterior"]
+    assert (cleaned.loc[(1, 3)].problemas == "").all() and counts["left_origen_discontinuo"] == 0
+    # an origin break is still a code where a hand edit leaves one
+    assert mark_issues(trips, VIV).loc[(1, 3, 2)] == "origen_discontinuo"
 
 
 def test_start_hours_are_repaired_by_the_fewest_typo_edits():
@@ -217,7 +228,7 @@ def test_start_hours_are_repaired_by_the_fewest_typo_edits():
         (4, 13, 0, "Compras (comida)"), (4, 14, 0, "Regresar a Casa"),   # no reading within the cost cap
         (5, 7, 24, "Compras (comida)"), (5, 7, 37, "Regresar a Casa"),
         (5, 19, 0, "Trabajar"), (5, 16, 30, "Regresar a Casa"),          # 19:00 -> 9:00, an extra leading 1
-        (6, 14, 0, "Trabajar"), (6, 13, 50, "Regresar a Casa"),          # ten minutes back: minute noise
+        (6, 14, 0, "Trabajar", None, None, 5), (6, 13, 50, "Regresar a Casa", None, None, 5),   # minute noise
         (7, 11, 0, "Trabajar"), (7, 8, 0, "Regresar a Casa"),
         (7, 18, 13, "Llevar o recoger a alguien"), (7, 18, 22, "Regresar a Casa"),  # 8:00 -> 18:00: 20:00 would overtake
     ])
@@ -230,10 +241,10 @@ def test_start_hours_are_repaired_by_the_fewest_typo_edits():
     assert hours[3] == [19, 1] and fixes[3] == ["", ""] and issues[3] == ["", "hora_nocturna"]   # left, and said so
     assert hours[4] == [8, 7, 13, 14] and issues[4] == ["", "hora_invertida", "", ""]
     assert hours[5] == [7, 7, 9, 16] and fixes[5] == ["", "", "hora:-10h", ""]
-    assert hours[6] == [14, 13] and issues[6] == ["", "hora_anterior"]
+    assert hours[6] == [14, 14] and fixes[6] == ["", "hora:llegada"] and issues[6] == ["", ""]   # ten minutes: to the arrival
     assert hours[7] == [11, 18, 18, 18] and fixes[7] == ["", "hora:+10h", "", ""]
-    assert counts["start_times_edited"] == 6 and counts["chains_repaired"] == 4
-    assert counts["left_hora_invertida"] == 1 and counts["left_hora_nocturna"] == 1 and counts["left_hora_anterior"] == 1
+    assert counts["start_times_edited"] == 6 and counts["chains_repaired"] == 4 and counts["starts_at_arrival"] == 1
+    assert counts["left_hora_invertida"] == 1 and counts["left_hora_nocturna"] == 1 and counts["left_hora_anterior"] == 0
 
 
 def test_a_trip_cannot_start_before_the_previous_one_arrived():
@@ -301,21 +312,143 @@ def test_every_residual_defect_is_a_code():
         (8, 8, 0, "Trabajar", None, None, 30), (8, 8, 20, "Regresar a Casa", None, None, 30),   # back ten minutes before the leg ends
     ])
     trips.loc[trips.index.get_level_values("folio_habitante") == 2, "tipo_lugar_origen"] = SHOP
-    trips.loc[(1, 3, 1), "origen"] = ELSEWHERE
+    trips.loc[(1, 3, 1), "origen"] = OTHER                     # not its destination's AGEB: a place of its own
     cleaned, counts = clean_trip_chains(trips, VIV)
     issues = cleaned.problemas.groupby(level="folio_habitante").apply(list)
     assert issues[1] == ["", ""]
     assert issues[2] == ["inicio_fuera_de_casa", ""]
-    assert issues[3] == ["inicio_zona_ajena", ""]
+    assert issues[3] == ["", ""]                                # the answer says home: the day starts there
     assert issues[4] == ["", "", "fin_fuera_de_casa"]
     assert issues[5] == ["actividad_en_casa", "", ""]
     assert issues[6] == ["motivo_guarderia", "hora_repetida"]
     assert issues[7] == ["", "hora_invertida", "", ""]          # one time code per row: the severe one
-    assert issues[8] == ["", "hora_traslapada"]                 # within the tolerance: rounding, not repaired
-    assert (cleaned.ajustes == "").all() and not non_trips(cleaned).any()
+    assert issues[8] == ["", ""]                                # within the tolerance: moved to the arrival
+    assert cleaned.ajustes[cleaned.ajustes != ""].to_dict() == {
+        (1, 3, 1): "origen:respuesta", (1, 8, 2): "hora:llegada"} and not non_trips(cleaned).any()
     assert {k: v for k, v in counts.items() if k.startswith("left_") and v} == {
-        "left_hora_invertida": 1, "left_hora_repetida": 1, "left_hora_traslapada": 1, "left_inicio_fuera_de_casa": 1,
-        "left_inicio_zona_ajena": 1, "left_fin_fuera_de_casa": 1, "left_actividad_en_casa": 1, "left_motivo_guarderia": 1}
+        "left_hora_invertida": 1, "left_hora_repetida": 1, "left_inicio_fuera_de_casa": 1,
+        "left_fin_fuera_de_casa": 1, "left_actividad_en_casa": 1, "left_motivo_guarderia": 1}
+    # an overlap the rules move to the arrival, and a first trip from 'Su casa' in another zone, are still codes
+    # where a hand edit leaves one
+    assert mark_issues(trips, VIV).loc[(1, 8, 2)] == "hora_traslapada"
+    assert mark_issues(trips, VIV).loc[(1, 3, 1)] == "inicio_zona_ajena"
+    before_start = _trips([(1, 10, 0, "Trabajar", None, None, 5), (1, 9, 55, "Regresar a Casa")])
+    assert mark_issues(before_start, VIV).tolist() == ["", "hora_anterior"]
+
+
+def test_a_first_trip_that_copies_home_away_starts_at_home():
+    trips = _trips([
+        (1, 8, 0, "Trabajar"), (1, 17, 0, "Regresar a Casa"),                  # leaves the AGEB it goes to: a copy
+        (2, 8, 0, "Trabajar"), (2, 17, 0, "Regresar a Casa"),                  # leaves another dwelling: kept
+        (3, 7, 0, "Regresar a Casa"), (3, 20, 0, "Trabajar"),                   # a return from elsewhere: kept
+        (4, 8, 0, "Trabajar"), (4, 17, 0, "Regresar a Casa"),                  # the answer says home
+        (5, 8, 0, "Trabajar"), (5, 17, 0, "Regresar a Casa"),                  # the answer copies the place type
+    ])
+    trips.loc[(1, 1, 1), "origen"] = ELSEWHERE           # the destination copied into the origin
+    trips.loc[(1, 1), "tipo_lugar_origen"] = SHOP        # ...and its type into the day-start answer
+    trips.loc[(1, 2, 1), "origen"] = OTHER
+    trips.loc[(1, 2), "tipo_lugar_origen"] = "Otra vivienda"   # somebody spends the night there
+    trips.loc[(1, 3, 1), "origen"] = ELSEWHERE
+    trips.loc[(1, 3), "tipo_lugar_origen"] = "Fábrica o taller"   # the night shift's workplace
+    trips.loc[(1, 4, 1), "origen"] = OTHER
+    trips.loc[(1, 5, 1), "origen"] = OTHER
+    trips.loc[(1, 5), "tipo_lugar_origen"] = SHOP        # the trip goes to a shop, and the day 'started at a shop'
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    assert cleaned.loc[(1, 1, 1), "origen"] == AGEB and (cleaned.loc[(1, 1)].tipo_lugar_origen == "Su casa").all()
+    assert cleaned.loc[(1, 1)].ajustes.tolist() == ["origen:copia;tipo_origen:copia", "tipo_origen:copia"]
+    assert cleaned.loc[(1, 1)].problemas.tolist() == ["", ""]
+    assert cleaned.loc[(1, 2, 1), "origen"] == OTHER and cleaned.loc[(1, 2, 1), "problemas"] == "inicio_fuera_de_casa"
+    assert cleaned.loc[(1, 3, 1), "origen"] == ELSEWHERE and (cleaned.loc[(1, 3)].ajustes == "").all()
+    assert cleaned.loc[(1, 4, 1), ["origen", "ajustes", "problemas"]].tolist() == [AGEB, "origen:respuesta", ""]
+    assert cleaned.loc[(1, 5, 1), ["origen", "ajustes", "problemas"]].tolist() == [
+        AGEB, "origen:tipo_copia;tipo_origen:copia", ""]
+    assert (cleaned.loc[(1, 5)].tipo_lugar_origen == "Su casa").all()
+    assert (counts["first_origins_copied"], counts["first_origins_answered"], counts["first_origins_typed"]) == (1, 1, 1)
+    assert counts["answers_set_home"] == 2
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
+def test_a_start_before_the_previous_arrival_by_the_tolerance_or_less_moves_to_it():
+    trips = _trips([
+        (1, 8, 0, "Trabajar", None, None, 30), (1, 8, 20, "Regresar a Casa", None, None, 30),     # ten minutes early
+        (2, 8, 0, "Trabajar", None, None, 30), (2, 8, 25, "Compras (comida)", None, None, 30),    # five minutes early...
+        (2, 8, 58, "Regresar a Casa", None, None, 10),                                             # ...and this one with it
+        (3, 21, 0, "Trabajar", None, None, 30), (3, 21, 10, "Regresar a Casa", None, None, 30),   # 21:00 is 09:00
+        (4, 22, 0, "Trabajar", None, None, 30), (4, 1, 0, "Regresar a Casa", None, None, 30),     # overnight: left
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    starts = (cleaned.hora_inicio_h * 60 + cleaned.hora_inicio_m).groupby(level="folio_habitante").apply(list)
+    fixes = cleaned.ajustes.groupby(level="folio_habitante").apply(list)
+    assert starts[1] == [480, 510] and fixes[1] == ["", "hora:llegada"]
+    assert starts[2] == [480, 510, 540] and fixes[2] == ["", "hora:llegada", "hora:llegada"]
+    assert starts[3] == [540, 1270] and fixes[3] == ["hora:-12h", ""]      # the second menu: a morning typed as evening
+    assert starts[4] == [1320, 60] and cleaned.loc[(1, 4, 2), "problemas"] == "hora_nocturna"
+    assert counts["starts_at_arrival"] == 3 and mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
+def test_a_start_up_to_an_hour_before_the_arrival_moves_to_it_but_not_after_work():
+    trips = _trips([
+        (1, 10, 0, "Compras (comida)", None, None, 30), (1, 10, 10, "Regresar a Casa", None, None, 5),   # 20 min
+        (2, 10, 0, "Trabajar", None, None, 30), (2, 10, 10, "Regresar a Casa", None, None, 5),           # after work
+        (3, 10, 0, "Compras (comida)", None, None, 90), (3, 10, 10, "Regresar a Casa", None, None, 5),   # 80 min
+    ])
+    slid, moved = _start_at_arrival(trips, None)
+    assert (slid.hora_inicio_h * 60 + slid.hora_inicio_m).tolist() == [600, 630, 600, 610, 600, 610]
+    assert moved.tolist() == [False, True, False, False, False, False]
+
+
+def test_a_night_shift_return_is_the_next_morning():
+    trips = _trips([
+        (1, 20, 0, "Trabajar", None, None, 30), (1, 8, 0, "Regresar a Casa", None, None, 30),     # a night shift
+        (2, 7, 0, "Regresar a Casa", "Su casa", None, 30), (2, 20, 0, "Trabajar", None, None, 30),
+        (2, 20, 30, "Regresar a Casa", None, None, 30),                                         # the next morning's
+    ])
+    trips.loc[(1, 2, 1), "origen"] = ELSEWHERE           # the day opens with the return from the job
+    trips.loc[(1, 2), "tipo_lugar_origen"] = "Fábrica o taller"
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    assert (cleaned.loc[(1, 1)].ajustes == "").all()     # no reading of the hours: the typo search leaves it
+    assert cleaned.loc[(1, 1)].problemas.tolist() == ["", "hora_nocturna"]
+    assert days_past_midnight(cleaned.loc[[(1, 1, 1), (1, 1, 2)]]).tolist() == [0, 1]
+    assert cleaned.loc[(1, 2)].problemas.tolist() == ["inicio_fuera_de_casa", "fin_fuera_de_casa", "regreso_dia_siguiente"]
+    assert non_trips(cleaned).tolist() == [False, False, False, False, True] and counts["next_morning_returns"] == 1
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
+def test_the_motives_the_chain_implies():
+    trips = _trips([
+        (1, 8, 0, "Trabajar"), (1, 17, 0, "Compras (comida)", "Su casa", AGEB),     # arrives home: a return
+        (2, 8, 0, "Trabajar", None, OTHER), (2, 13, 0, "Compras (comida)"),
+        (2, 14, 0, "Regresar a Casa", "Su casa", OTHER), (2, 18, 0, "Regresar a Casa"),  # back to work's AGEB: work
+        (3, 8, 0, "Guardería"), (3, 9, 0, "Regresar a Casa"),                        # an adult: the escort
+        (4, 8, 0, "Guardería"), (4, 9, 0, "Regresar a Casa"),                        # a child: attends
+    ])
+    hab = pd.DataFrame({"edad": [40, 30, 35, 8], "sexo_nacimiento": "Mujeres", "ocupacion": "Empleado"},
+                       index=pd.MultiIndex.from_tuples([(1, 1), (1, 2), (1, 3), (1, 4)], names=PERSON))
+    cleaned, counts = clean_trip_chains(trips, VIV, hab=hab)
+    assert cleaned.loc[(1, 1, 2), ["motivo_viaje", "ajustes", "problemas"]].tolist() == ["Regresar a Casa", "motivo:casa", ""]
+    assert cleaned.loc[(1, 2, 3), ["motivo_viaje", "tipo_lugar_destino", "ajustes"]].tolist() == [
+        "Trabajar", SHOP, "motivo:lugar"]
+    assert (cleaned.loc[(1, 2)].problemas == "").all()
+    assert cleaned.loc[(1, 3, 1), ["motivo_viaje", "ajustes", "problemas"]].tolist() == [
+        "Llevar o recoger a alguien", "motivo:guarderia", ""]
+    assert cleaned.loc[(1, 4, 1), ["motivo_viaje", "problemas"]].tolist() == ["Guardería", "motivo_guarderia"]
+    assert (counts["arrivals_home"], counts["returns_elsewhere"], counts["daycare_escorts"]) == (1, 1, 1)
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
+def test_a_day_that_starts_in_the_small_hours_with_a_long_stay_is_read_by_the_typo_search():
+    trips = _trips([
+        (1, 1, 8, "Estudiar", None, None, 60), (1, 20, 7, "Regresar a Casa", None, None, 60),         # afternoon school
+        (2, 4, 30, "Compras (comida)", None, None, 20), (2, 6, 0, "Regresar a Casa", None, None, 20),  # an early market trip
+        (3, 3, 0, "Trabajar", None, None, 30), (3, 17, 0, "Regresar a Casa", None, None, 30),         # work at three
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    hours = cleaned.hora_inicio_h.groupby(level="folio_habitante").apply(list)
+    assert hours[1] == [13, 20] and cleaned.loc[(1, 1)].ajustes.tolist() == ["hora:+12h", ""]
+    assert hours[2] == [4, 6] and cleaned.loc[(1, 2)].problemas.tolist() == ["hora_madrugada", ""]   # left, and said so
+    assert hours[3] == [3, 17] and (cleaned.loc[(1, 3)].problemas == "").all()
+    assert counts["early_starts_read"] == 1 and counts["left_hora_madrugada"] == 1
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
 
 
 def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages):
@@ -328,15 +461,26 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages)
     assert fixes <= set(FIX_CODES) and issues <= set(ISSUE_CODES)
     assert has_code(trips.ajustes, "hora:duplicado").sum() == 37 and has_code(trips.ajustes, "hora:vecinos").sum() == 288
     assert has_code(trips.ajustes, "motivo:vecinos").sum() == 294 and has_code(trips.ajustes, "motivo:duplicado").sum() == 38
-    assert non_trips(trips).sum() == 402
+    assert non_trips(trips).sum() == 556 + 75
     # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
     assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
-        "regreso_en_casa": 402, "hora_invertida": 870, "hora_nocturna": 108,
-        "hora_anterior": 26, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 31, "regreso_sin_llegar": 164,
-        "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 714,
-        "fin_fuera_de_casa": 502, "actividad_en_casa": 787, "motivo_guarderia": 217, "hora_2301": 98}
+        "regreso_en_casa": 556, "regreso_dia_siguiente": 75, "hora_invertida": 355, "hora_nocturna": 195,
+        "hora_anterior": 0, "hora_repetida": 0, "hora_traslapada": 0, "origen_discontinuo": 0, "regreso_sin_llegar": 29,
+        "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 412, "inicio_zona_ajena": 16,
+        "fin_fuera_de_casa": 502, "actividad_en_casa": 556, "motivo_guarderia": 30, "hora_2301": 94, "hora_madrugada": 59}
+    # every change a rule makes, at these counts (the fourth review of the chains added ten of them, 2026-09-26)
+    assert {c: int(has_code(trips.ajustes, c).sum()) for c in FIX_CODES if not c.endswith(":revision")} == {
+        "hora:duplicado": 37, "hora:vecinos": 288, "motivo:duplicado": 38, "motivo:vecinos": 294,
+        "motivo:tipo_destino": 84, "destino:copia": 69, "motivo:casa": 231, "motivo:lugar": 67, "motivo:guarderia": 163,
+        "origen:casa": 147, "origen:anterior": 31, "origen:copia": 955, "origen:respuesta": 86, "origen:tipo_copia": 151,
+        "tipo_origen:copia": 1_526, "tipo_origen:regreso": 113, "hora:+12h": 718, "hora:-12h": 383, "hora:-10h": 391,
+        "hora:+10h": 156, "hora:-10h+12h": 837, "hora:llegada": 816}
     hora = sum(has_code(trips.problemas, c) for c in TIME_ORDER_ISSUES)
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_819 + 402
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 2_156 + 631
+    # the zone follows the AGEB on every trip end, the ones the rules moved home among them
+    ends = pd.concat([pd.DataFrame({"ageb": trips[p].astype(str), "zone": trips[z].astype(str)})
+                      for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])
+    assert (ends.groupby("ageb").zone.nunique() == 1).all()
     # hab and trips stay in step: viajes_contados follows the 38 dropped duplicates and the legs follow the trips
     counted = trips.groupby(level=PERSON).size()
     assert (hab.viajes_contados == counted.reindex(hab.index).fillna(0)).all()

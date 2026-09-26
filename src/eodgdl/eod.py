@@ -311,10 +311,18 @@ def load_eod(
     325 trips with no start time (and no motive) are imputed — 37 from the
     home-to-home return that duplicates them, the rest from their nearest
     timed trips — as are the 7 timed trips with no motive; 84 mislabelled
-    'Regresar a Casa' trips take their destination type's motive; 402
-    returns home made from home are kept and marked as non-trips; 124 trips
-    that follow a return home start in the home zone; and 2,037 mistyped
-    start hours in 1,557 chains are repaired. One kind of row is dropped: the
+    'Regresar a Casa' trips take their destination type's motive, 69 that end
+    in their own origin's AGEB go home, 67 that end elsewhere take the motive
+    of the place, 231 activity trips that arrive home become returns and 163
+    daycare trips from age 12 escorts; 556 returns home made from home, and
+    the 75 next-morning returns that close a night-shift day, are kept and
+    marked as non-trips; every trip starts where the previous one ended (147
+    at home after a return, 31 elsewhere), and 1,192 first trips recorded
+    leaving another zone — their destination's AGEB, an answer 'Su casa', the
+    destination's place type as the answer — start at home; 2,485 mistyped
+    start hours in 1,927 chains are repaired; and 816 starts that fall before
+    the previous trip's arrival by 15 minutes or less, or by up to an hour
+    where no reading of the hours fits, move to it. One kind of row is dropped: the
     38 home-to-home returns that duplicate an imputed return, whose time and
     motive now sit on the return they repeat; ``hab.viajes_contados`` is
     reduced by one for those persons so it still counts the person's trip
@@ -330,7 +338,8 @@ def load_eod(
     default, ignored without ``clean_chains``): the hand decisions in
     ``eodgdl/revisions/chains.csv.gz``, one per trip and field, each made
     against the rules' output and merged there from the review sheets
-    (:mod:`eodgdl.review`), are applied in one pass. A row dropped by hand is
+    (:mod:`eodgdl.review`; the day-start answer is one per person, trip 0),
+    are applied in one pass. A row dropped by hand is
     gone (its legs too, ``viajes_contados`` kept in step), ``ajustes`` then
     says field by field whether a value that differs from the shipped one is
     the rules' (their code) or was set by hand (``<field>:revision``), and

@@ -111,7 +111,7 @@ def test_dummies_partition(files):
     assert (pp[ages].sum(axis=1) == pp.Persons).all()
     assert (pp.Employed + pp.Unemployed + pp.Inactive <= pp.Persons).all()
     assert ((pp.Employed + pp.NotEmployed) == (pp.Age6_11 == 0).astype(float)).all()  # partitions the 12+
-    assert pp.Cyclist.sum() == 560   # 561 before the hand revisions made one bicycle commute a return from home
+    assert pp.Cyclist.sum() == 561   # the survey's bicycle commuters with a trip on the chain the model reads
     boardings = ["BusBoardings", "RailBoardings", "BRTBoardings", "SitrenBoardings", "OtherTransitBoardings"]
     assert (tt[boardings].sum(axis=1) == tt.TransitBoardings).all()
     assert tt.BicycleTrip.isin([0, 1]).all()

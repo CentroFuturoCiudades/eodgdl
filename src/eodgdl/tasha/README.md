@@ -45,12 +45,14 @@ The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
 `eodgdl.chains.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
-imputed, 84 mislabelled returns recoded, 124 trips after a return home made
-to start at home, 2,037 mistyped start hours repaired — and refuses a trip
-table with untimed rows. Every change is named in `trips.ajustes` and every
+imputed; 545 motives recoded (returns that did not reach home, activity trips that did, daycare
+escorts) and 69 returns that copied their origin sent home; every trip made to start where the
+previous one ended and 1,192 first trips recorded leaving another zone made to start at home;
+2,485 mistyped start hours repaired and 816 starts moved to the previous arrival — and refuses a
+trip table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
-non-trips there (returns home made while already at home, most of which the hand decisions
-in `eodgdl/revisions/` drop; `eodgdl.chains.non_trips`), since the contract
+non-trips there (returns home made while already at home, and the next morning's return that
+closes a night-shift day; `eodgdl.chains.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
 another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: the
@@ -178,10 +180,11 @@ revisions) every trip then starts where the previous one ended and after the pre
 arrived — TASHA cannot schedule an overlap, and the hand decisions leave none
 (`tests/test_tasha.py` holds the build to it) — and a few hundred days start or end away
 from home. On the rules' output alone (`load_eod(revise_chains=False)`) the same report reads
-31 zone breaks, 732 trips that start earlier than the one before, 1,566 that start before the
-previous trip could have arrived, 127 same-minute starts, 1,620 days that do not start at home
-(the 714 first trips that answer 'Su casa' from another zone among them) and 502 that do not
-end there (a return that stops short of the home zone is O, not H).
+no zone break, 306 trips that start earlier than the one before, 355 that start before the
+previous trip could have arrived, 4 same-minute starts, 428 days that do not start at home and
+502 that do not end there (a return that stops short of the home zone is O, not H); on
+`load_eod()`'s, 387 days that do not start at home and 502 that do not end there, and nothing
+else.
 
 ## Open items
 
@@ -214,7 +217,7 @@ rather than about one column's coding, so nothing surfaces them automatically.
   a generated number, but the zones and times pin the sequence and the row
   order matches it for 99.9% of clean multi-trip days; re-sequencing tours by
   time was tested and rejected (under 10% of inversions, misreads night
-  shifts). The evidence and the five chain rules live with the loader,
+  shifts). The evidence and the chain rules live with the loader,
   `eodgdl.chains.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs

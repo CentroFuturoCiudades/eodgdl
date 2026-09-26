@@ -6,8 +6,9 @@ import pandas as pd
 import pytest
 
 import eodgdl
-from eodgdl.chains import days_past_midnight, has_code, non_trips
+from eodgdl.chains import PERSON, days_past_midnight, has_code, non_trips
 from eodgdl import tasha
+from eodgdl.eod import EODTables
 from eodgdl.tasha import _schema
 
 
@@ -234,17 +235,31 @@ def test_build_conforms(stages):
 
 
 def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home(stages):
-    # the rules alone, before the hand passes: 714 first trips answer 'Su casa' but leave another
-    # zone, 75 of them returns home; read as H they would put home in the wrong zone, or go H to H
-    od = eodgdl.tasha.build(stages.rules)
+    # the rules start at home most activity days that answer 'Su casa' (origen:respuesta) and give a day that opens
+    # with a return from elsewhere another answer (tipo_origen:regreso); the first trips that go to the home zone
+    # itself, and hand edits, can still leave 'Su casa' on a first trip from another zone, and read as H it would
+    # put home in the wrong zone, or go H to H
+    viv, hab, trips, legs = stages.rules
+    kept = trips[~non_trips(trips)]
+    first = kept.groupby(level=PERSON).head(1)
+    home = viv.ageb.astype(str).reindex(first.index.get_level_values(0)).to_numpy()
+    away = first.index[first.origen.astype(str).to_numpy() != home].droplevel("folio_viaje")
+    assert len(away) == 423
+    trips = trips.copy()
+    trips.loc[trips.index.droplevel("folio_viaje").isin(away), "tipo_lugar_origen"] = "Su casa"
+    od = eodgdl.tasha.build(EODTables(viv, hab, trips, legs))
     assert tasha.validate_all(*od) == []
     first = od.trips[od.trips.TripNumber == 1].merge(od.households[["HouseholdId", "HouseholdZone"]], on="HouseholdId")
     away = first.ZoneOrigin != first.HouseholdZone
-    assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) >= 714
+    assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) == 423
 
 def test_a_daycare_trip_from_age_12_is_an_escort(stages):
-    # the hand decisions recode every such trip, so the age rule is seen at work on the rules' output alone
-    tables = stages.rules
+    # the chain rules recode every such trip (motivo:guarderia), so the model build's age rule is seen at work on the
+    # rules' output with the survey's motive put back
+    viv, hab, trips, legs = stages.rules
+    trips = trips.copy()
+    trips.loc[has_code(trips.ajustes, "motivo:guarderia").to_numpy(), "motivo_viaje"] = "Guardería"
+    tables = EODTables(viv, hab, trips, legs)
     od = eodgdl.tasha.build(tables)
     trips = tables.trips[~non_trips(tables.trips)]
     daycare = (trips.motivo_viaje == "Guardería").to_numpy()
@@ -260,10 +275,10 @@ def test_a_daycare_trip_from_age_12_is_an_escort(stages):
     studied = persons[(trips.motivo_viaje == "Estudiar").to_numpy()].unique()
     plain = persons[daycare & (age >= 12)].unique().difference(declared).difference(studied)
     assert len(plain) > 30 and (people.loc[plain, "StudentStatus"] == "O").all()
-    # load_eod's tables: every daycare trip left is a child's
-    revised = stages.revised
-    left = revised.trips[revised.trips.motivo_viaje == "Guardería"]
-    assert len(left) and (revised.hab.edad.reindex(left.index.droplevel("folio_viaje")) < 12).all()
+    # load_eod's tables, and the rules' alone: every daycare trip left is a child's
+    for kept in (stages.rules, stages.revised):
+        left = kept.trips[kept.trips.motivo_viaje == "Guardería"]
+        assert len(left) and (kept.hab.edad.reindex(left.index.droplevel("folio_viaje")) < 12).all()
 
 
 def test_a_return_that_misses_the_home_zone_is_not_h(stages):
@@ -273,7 +288,7 @@ def test_a_return_that_misses_the_home_zone_is_not_h(stages):
     od = eodgdl.tasha.build(tables)
     trips = tables.trips[~non_trips(tables.trips)]
     missed = has_code(trips.problemas, "regreso_sin_llegar").to_numpy()
-    assert missed.sum() > 100 and (od.trips.PurposeDestination.to_numpy()[missed] == "O").all()
+    assert missed.sum() == 29 and (od.trips.PurposeDestination.to_numpy()[missed] == "O").all()
     after = pd.Series(missed, index=trips.index).groupby(level=["folio_vivienda", "folio_habitante"]).shift(1)
     assert (od.trips.PurposeOrigin.to_numpy()[after.fillna(False).to_numpy(bool)] == "O").all()
     assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()

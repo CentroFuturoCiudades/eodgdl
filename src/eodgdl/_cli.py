@@ -53,26 +53,39 @@ def main() -> None:
     exp_p.add_argument("--persons", default=None, help="Comma-separated household/person, e.g. 8992/1,11303/2")
     exp_p.add_argument(
         "--screen", default=None,
-        help="Comma-separated screens of a consistent chain gone implausible: zero_stay (a trip leaves the "
-        "minute the previous one arrives), long_workday (over 14 h at work), long_day (over 20 h)",
+        help="Comma-separated screens of a consistent chain gone implausible (eodgdl.review.SCREENS): zero_stay (a "
+        "trip leaves the minute the previous one arrives), zero_work, short_work (under 30 min at work or school), "
+        "long_workday (over 14 h at work), long_day (over 20 h), early_start (a first non-work trip before 05:00), "
+        "long_errand (8 h or more at an errand)",
     )
     exp_p.add_argument(
         "--stale", action="store_true",
         help="The persons with hand decisions a rule change left stale, each pre-filled for a new look",
     )
-    exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
-    ver_p = review_sub.add_parser("verify", help="Read an edited sheet: recover the edits, apply them, recompute problemas")
-    ver_p.add_argument("sheet", help="The edited review sheet")
-    ver_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
-    ver_p.add_argument("--edits", default=None, help="Write the recovered edits to this CSV")
-    ver_p.add_argument("--out", default=None, help="Write the edited persons' sheet, after the edits, to this CSV")
-    frz_p = review_sub.add_parser(
-        "freeze", help="Merge an edited sheet into the hand decisions load_eod applies (eodgdl/revisions/chains.csv.gz)"
+    exp_p.add_argument(
+        "--since", default=None,
+        help="A snapshot (`eodgdl review snapshot`): the persons whose values moved since it was taken",
     )
-    frz_p.add_argument("sheet", help="The edited review sheet, exported from the tables load_eod() returns now")
-    frz_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
-    frz_p.add_argument("--source", default=None, help="The review round's name on its decisions (default: the sheet's name)")
-    frz_p.add_argument("--out", default=None, help="Where to write (default: eodgdl/revisions/chains.csv.gz)")
+    exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    snap_p = review_sub.add_parser(
+        "snapshot", help="Write every trip's values as load_eod() gives them, to compare after a rule change"
+    )
+    snap_p.add_argument("--out", required=True, help="Where to write (a .csv.gz)")
+    snap_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    for name, help_text in (
+        ("verify", "Check an edited sheet as freeze does and say what it would change, writing nothing"),
+        ("freeze", "Merge an edited sheet into the hand decisions load_eod applies (eodgdl/revisions/chains.csv.gz)"),
+    ):
+        frz_p = review_sub.add_parser(name, help=help_text)
+        frz_p.add_argument("sheet", help="The edited review sheet, exported from the tables load_eod() returns now")
+        frz_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+        frz_p.add_argument("--source", default=None, help="The review round's name on its decisions (default: the sheet's name)")
+        frz_p.add_argument("--dry-run", action="store_true", default=name == "verify",
+                           help="Check and report, write no decisions (what verify does)")
+        frz_p.add_argument("--edits", default=None, help="Write the edits recovered from the sheet to this CSV")
+        frz_p.add_argument("--sheet-out", default=None,
+                           help="Write the edited persons' sheet, after the edits, to this CSV")
+        frz_p.add_argument("--out", default=None, help="Where to write the decisions (default: eodgdl/revisions/chains.csv.gz)")
 
     rew_p = sub.add_parser("reweight", help="Inputs for TMG.SurveyReweight: records, zone system, census targets")
     rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
@@ -215,11 +228,16 @@ def _review(args) -> int:
         print(f"{len(stale):,} hand decisions no longer apply to the rules' output (a rule changed under them) "
               "and are set aside; `eodgdl review export --stale` puts them on a sheet\n")
 
+    if args.review_cmd == "snapshot":
+        path = review.write_snapshot(review.snapshot(cleaned, shipped), args.out)
+        print(f"wrote {path}  ({len(shipped.trips):,} trips); after the change: eodgdl review export --since {path}")
+        return 0
+
     if args.review_cmd == "export":
         rows = review.chain_rows(cleaned, shipped)
         try:
             chosen = []
-            if args.codes or not (args.persons or args.screen or args.stale):
+            if args.codes or not (args.persons or args.screen or args.stale or args.since):
                 chosen += list(review.pending_persons(rows, [c.strip() for c in args.codes.split(",")] if args.codes else None))
             if args.persons:
                 chosen += _persons_arg(args.persons, cleaned.hab)
@@ -227,6 +245,10 @@ def _review(args) -> int:
                 chosen += list(review.screened_persons(cleaned, [s.strip() for s in args.screen.split(",")]))
             if args.stale:
                 chosen += list(zip(stale.household.astype(int), stale.person.astype(int)))
+            if args.since:
+                moved = review.changed_persons(review.read_snapshot(args.since), review.snapshot(cleaned, shipped))
+                print(f"{len(moved):,} persons' values moved since {args.since}")
+                chosen += list(moved)
         except ValueError as err:
             print(err)
             return 1
@@ -252,6 +274,7 @@ def _review(args) -> int:
               + ", ".join(f"{name} {int(picked[name].fillna(False).sum()):,}" for name in review.SCREENS))
         return 0
 
+    # verify and freeze: the same checks; verify (freeze --dry-run) writes no decisions
     try:
         edited = review.read_sheet(args.sheet)
         edits = review.sheet_edits(edited)
@@ -259,46 +282,35 @@ def _review(args) -> int:
         print(err)
         return 1
     print(f"read {args.sheet}  ({len(edited):,} rows, {len(edits):,} edits)")
-    if args.review_cmd == "freeze":
-        try:
-            done = review.freeze_round(
-                edits, stages, args.source or Path(args.sheet).stem, shown=review.sheet_keys(edited)
-            )
-        except ValueError as err:
-            print(err)
-            return 1
-        path = review.write_decisions(done.decisions, args.out or review.decisions_path())
-        change = done.changes
-        print(f"wrote {path}: {len(done.decisions):,} decisions ({change['added']:,} added, {change['changed']:,} "
-              f"changed, {change['removed']:,} removed) from {len(done.frozen):,} of the sheet's {len(edits):,} "
-              "edits; the rest already held, were moot or were notes")
-        if len(done.stale):
-            print(f"{len(done.stale):,} stale decisions decided again or let go")
-        if len(done.dead):
-            print(f"{len(done.dead):,} decisions that no longer changed anything removed")
-        if done.verified is not None:
-            print()
-            for key, value in done.verified.summary.items():
-                print(f"  {key:<26} {value:>7,}")
-        return 0
     if args.edits:
         edits.to_csv(args.edits, index=False, encoding="utf-8-sig")
         print(f"wrote {args.edits}")
-    if edits.empty:
-        return 0
     try:
-        verified = review.verify_edits(cleaned, shipped, edits, rules)
+        done = review.freeze_round(edits, stages, args.source or Path(args.sheet).stem, shown=review.sheet_keys(edited))
     except ValueError as err:
         print(err)
-        return 1
-    print()
-    print(verified.persons.to_string(index=False))
-    print()
-    for key, value in verified.summary.items():
-        print(f"  {key:<26} {value:>7,}")
-    if args.out:
-        review.write_sheet(verified.sheet, args.out)
-        print(f"\nwrote {args.out}  ({len(verified.sheet):,} rows)")
+        return 0 if args.dry_run and str(err).startswith("nothing to freeze") else 1
+    change = done.changes
+    what = "would write" if args.dry_run else "wrote"
+    path = args.out or review.decisions_path()
+    if not args.dry_run:
+        review.write_decisions(done.decisions, path)
+    print(f"{what} {path}: {len(done.decisions):,} decisions ({change['added']:,} added, {change['changed']:,} "
+          f"changed, {change['removed']:,} removed, {change['notes']:,} with a new note) from {len(done.frozen):,} of "
+          f"the sheet's {len(edits):,} edits; the rest already held, were moot or were notes")
+    if len(done.stale):
+        print(f"{len(done.stale):,} stale decisions decided again or let go")
+    if len(done.dead):
+        print(f"{len(done.dead):,} decisions that no longer changed anything removed")
+    if done.verified is not None:
+        print()
+        print(done.verified.persons.to_string(index=False))
+        print()
+        for key, value in done.verified.summary.items():
+            print(f"  {key:<34} {value:>7,}")
+        if args.sheet_out:
+            review.write_sheet(done.verified.sheet, args.sheet_out)
+            print(f"\nwrote {args.sheet_out}  ({len(done.verified.sheet):,} rows)")
     return 0
 
 
