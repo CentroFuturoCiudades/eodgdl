@@ -202,10 +202,11 @@ def test_build_conforms():
 
     assert tasha.validate_all(*od) == []
     assert len(od.households) == 17_901
-    # load_eod drops the 38 duplicate returns and the 469 rows the hand passes drop (512 by the first,
-    # 77 of them restored and 34 more dropped by the second); the build leaves out the 51 non-trips left.
+    # load_eod drops the 38 duplicate returns and the 511 rows the hand passes drop (512 by the first,
+    # 77 of them restored and 34 more dropped by the second, 42 by the third); the build leaves out the
+    # 51 non-trips left.
     assert len(od.people) == 58_061
-    assert len(od.trips) == 154_662 - 38 - 469 - 51
+    assert len(od.trips) == 154_662 - 38 - 511 - 51
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()

@@ -279,14 +279,14 @@ def test_load_eod_applies_the_frozen_hand_passes():
     rules, revised = load_eod(DATA_DIR, revise_chains=False), load_eod(DATA_DIR)
     t = revised.trips
     passes = chain_revisions()
-    assert [(name, len(edits)) for name, edits in passes] == [("chains_1.csv.gz", 11_669), ("chains_2.csv.gz", 260)]
-    # a row's last status wins: pass 1 drops 512, pass 2 restores 77 of them and drops 34 more
+    assert [(name, len(edits)) for name, edits in passes] == [("chains_1.csv.gz", 11_669), ("chains_2.csv.gz", 260), ("chains_3.csv.gz", 93)]
+    # a row's last status wins: pass 1 drops 512, pass 2 restores 77 of them and drops 34 more, pass 3 drops 42
     status = pd.concat([e[e.field == "status"] for _, e in passes]).drop_duplicates(review.KEYS, keep="last")
     gone = pd.MultiIndex.from_frame(status.loc[status.after == "dropped", review.KEYS])
     back = pd.MultiIndex.from_frame(status.loc[status.after == "restored", review.KEYS])
-    assert (len(gone), len(back)) == (469, 77)
+    assert (len(gone), len(back)) == (511, 77)
     assert not t.index.isin(gone).any() and back.isin(t.index).all()
-    assert len(t) == len(rules.trips) - 469 == 154_155 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
+    assert len(t) == len(rules.trips) - 511 == 154_113 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
     assert (revised.hab.viajes_contados == t.groupby(level=PERSON).size().reindex(revised.hab.index).fillna(0)).all()
     assert review.sheet_edits(review.chain_sheet(review.chain_rows(revised, shipped))).empty
     # the last pass again changes nothing: its values hold, its rows are gone or back
