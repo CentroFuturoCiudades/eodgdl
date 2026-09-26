@@ -387,6 +387,7 @@ def counts(tables, rules, shipped_trips: int, decisions: int) -> dict[str, int]:
         "horas_a_mano": by_hand.get("hora:revision", 0),
         "motivos_a_mano": by_hand.get("motivo:revision", 0),
         "origenes_a_mano": by_hand.get("origen:revision", 0),
+        "minutos_a_mano": by_hand.get("minutos:revision", 0),
         "destinos_a_mano": by_hand.get("destino:revision", 0),
         "tipos_origen_a_mano": int(
             tables.trips.index[revised.str.contains("tipo_origen:revision", regex=False)]
@@ -683,13 +684,17 @@ y ninguna etiqueta se recodificó salvo donde se indica.
    6. *Revisión a mano*: las cadenas que las reglas dejaron con algún defecto se revisaron a
       mano, persona por persona, y la revisión quedó en {c['decisiones']:,} decisiones, cada una
       con su motivo por escrito. Fijó {c['horas_a_mano']:,} horas de inicio, {c['motivos_a_mano']} motivos,
-      {c['origenes_a_mano']:,} orígenes y {c['destinos_a_mano']} destinos, cambió en
+      {c['origenes_a_mano']:,} orígenes, {c['destinos_a_mano']} destinos y los minutos de traslado de
+      {c['minutos_a_mano']} viajes (motorizados que reportaban el doble de lo que la encuesta suele reportar
+      para su medio a su distancia en línea recta y chocaban con la salida siguiente; los minutos se
+      repartieron entre sus traslados en proporción), cambió en
       {c['tipos_origen_a_mano']:,} personas la respuesta a dónde empezó su día y descartó
       {c['descartadas']} filas —sobre todo regresos a casa registrados dos veces y, en los
       turnos nocturnos, el regreso de la mañana siguiente, que cae fuera del día de la
       encuesta—; en total {c['filas_a_mano']:,} filas guardan un valor fijado a mano. Después de
-      ella ningún viaje empieza donde no terminó el anterior, y ninguno empieza más de 15
-      minutos antes de que hubiera podido llegar el anterior salvo los que cruzan la medianoche.
+      ella ningún viaje empieza donde no terminó el anterior, y ninguno empieza antes de que
+      hubiera podido llegar el anterior (su hora de inicio más sus minutos de traslado) salvo los
+      que cruzan la medianoche: el modelo de demanda no admite traslapes.
    7. *Diagnóstico de lo que queda*: cada defecto que queda —horas, anclas del día y motivos—
       se identifica fila por fila, con una tolerancia de 15 minutos al juzgar las horas. La
       sección siguiente los resume; {c['filas_con_problema']:,} de los {c['viajes']:,} viajes
@@ -722,8 +727,8 @@ Dos de ellos conviene tenerlos presentes al usar los datos:
   cadena de cada persona en el orden de `folio_viaje`: la persona empieza el día en casa si
   `tipo_lugar_origen` es 'Su casa' y su primer viaje sale de la AGEB de la vivienda (`origen`
   igual al `ageb` de `viviendas`), queda en casa después de cada `motivo_viaje` = 'Regresar a
-  Casa' y sale de casa con cualquier otro motivo; un 'Regresar a Casa' hecho mientras está en
-  casa es uno de estos registros.
+  Casa' que llega a la AGEB de la vivienda y sale de casa con cualquier otro viaje; un 'Regresar
+  a Casa' hecho mientras está en casa es uno de estos registros.
 - Las **{c['hora_nocturna']} filas nocturnas** empiezan de madrugada, antes que el viaje
   anterior: el día cruza la medianoche y la hora es la reportada. El orden de las filas es la
   cadena real; la hora es el dato ruidoso. No se reordenaron los viajes por hora: hacerlo rompe

@@ -276,7 +276,7 @@ def _split_legs(trips: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return trips, legs
 
 
-def load_stages(eod_path: Path | None = None, *, verbose: bool = False) -> EODStages:
+def load_stages(eod_path: Path | None = None, *, verbose: bool = False, skip_stale: bool = False) -> EODStages:
     """The survey as shipped, after the chain rules and after the hand revisions, from one read of the files.
 
     The three tables ``load_eod`` returns with ``clean_chains=False``, with
@@ -284,8 +284,14 @@ def load_stages(eod_path: Path | None = None, *, verbose: bool = False) -> EODSt
     caller that compares stages — a review sheet, the chain browser, a
     report — reads and cleans the survey once. The stages share ``viv``;
     treat them as read-only.
+
+    A hand decision the rules' output no longer supports — a change to the
+    rules moved the value it was made against — fails the load, as in
+    ``load_eod``; with ``skip_stale`` it is set aside with a warning and
+    ``revised`` holds the others, so the review tools can put the stale ones
+    on a sheet (:func:`eodgdl.review.stale_decisions`).
     """
-    return EODStages(*_load(eod_path, "revised", verbose))
+    return EODStages(*_load(eod_path, "revised", verbose, skip_stale))
 
 
 def load_eod(
@@ -305,10 +311,10 @@ def load_eod(
     325 trips with no start time (and no motive) are imputed — 37 from the
     home-to-home return that duplicates them, the rest from their nearest
     timed trips — as are the 7 timed trips with no motive; 84 mislabelled
-    'Regresar a Casa' trips take their destination type's motive; 416
+    'Regresar a Casa' trips take their destination type's motive; 402
     returns home made from home are kept and marked as non-trips; 124 trips
-    that follow a return home start in the home zone; and 2,033 mistyped
-    start hours in 1,553 chains are repaired. One kind of row is dropped: the
+    that follow a return home start in the home zone; and 2,037 mistyped
+    start hours in 1,557 chains are repaired. One kind of row is dropped: the
     38 home-to-home returns that duplicate an imputed return, whose time and
     motive now sit on the return they repeat; ``hab.viajes_contados`` is
     reduced by one for those persons so it still counts the person's trip
@@ -329,7 +335,10 @@ def load_eod(
     says field by field whether a value that differs from the shipped one is
     the rules' (their code) or was set by hand (``<field>:revision``), and
     ``problemas`` is recomputed. Pass ``revise_chains=False`` for the rules'
-    output alone.
+    output alone. A decision whose ``before`` the rules no longer give — a
+    rule changed under it — fails the load; ``load_stages(skip_stale=True)``
+    sets such decisions aside so that ``eodgdl review export --stale`` can put
+    them on a sheet to decide again.
 
     Either way ``hab`` carries a boolean ``diario_repetido`` column
     (:func:`flag_repeated_diaries`): True for the persons whose whole diary is
@@ -348,7 +357,7 @@ def load_eod(
     return _load(eod_path, stop, verbose)[-1]
 
 
-def _load(eod_path: Path | None, stop: str, verbose: bool) -> list[EODTables]:
+def _load(eod_path: Path | None, stop: str, verbose: bool, skip_stale: bool = False) -> list[EODTables]:
     """The stages up to ``stop`` (``shipped``, ``rules`` or ``revised``), in that order, from one read."""
     viv_csv = _resolve_csv(eod_path, VIVIENDAS_CSV)
     hab_csv = _resolve_csv(eod_path, HABITANTES_CSV)
@@ -426,7 +435,7 @@ def _load(eod_path: Path | None, stop: str, verbose: bool) -> list[EODTables]:
         # imported here: eodgdl.review builds on EODTables
         from eodgdl.review import apply_revisions
 
-        stages.append(apply_revisions(stages[1], stages[0]))
+        stages.append(apply_revisions(stages[1], stages[0], skip_stale=skip_stale))
         log.info("hand revisions applied: %d trips", len(stages[-1].trips))
 
     if verbose:

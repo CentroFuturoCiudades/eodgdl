@@ -113,6 +113,7 @@ FIX_CODES = {
     "origen:revision": "origin zone set by hand on a review sheet",
     "destino:revision": "destination zone set by hand on a review sheet",
     "modo:revision": "main mode set by hand on a review sheet",
+    "minutos:revision": "travel minutes set by hand on a review sheet, spread over the trip's legs in proportion",
     "fila:revision": "a row the chain rules dropped (a duplicate return), restored by hand on a review sheet",
 }
 ISSUE_CODES = {
@@ -129,11 +130,12 @@ ISSUE_CODES = {
     "shift or a mistyped hour, nothing says which. The day passes midnight here: the model build counts this "
     "trip's hours and the next ones' past 2400 (days_past_midnight)",
     "hora_anterior": "starts before the previous trip's start but within the tolerance of its arrival, so "
-    "not repaired: minute noise",
+    "not repaired: minute noise, which the model cannot schedule",
     "hora_repetida": "starts at the same minute as the previous trip, whose legs fit within the tolerance "
-    "(beyond it the row is hora_invertida instead)",
+    "(beyond it the row is hora_invertida instead); the model cannot schedule it",
     "hora_traslapada": "starts after the previous trip's start but before its reported arrival, by no more "
-    "than the tolerance: the leg minutes overrun the next start; rounding, not an hour error",
+    "than the tolerance: the leg minutes overrun the next start; rounding, not an hour error, but an "
+    "overlap the model cannot schedule",
     "inicio_fuera_de_casa": "the day's first trip does not leave from 'Su casa'",
     "inicio_zona_ajena": "the day's first trip leaves from 'Su casa' but not from the household's zone; "
     "the two disagree and nothing says which is right",
@@ -156,16 +158,21 @@ TIME_ORDER_ISSUES = (
     "hora_traslapada",
 )
 # ISSUE_CODES in two halves, for the hand review. A breaking issue leaves the
-# chain inconsistent — a trip starts before the one it follows, a trip end sits
-# in two places, a return home never reaches home, home is named where the home
-# zone is not — and is resolved by hand before the chain is modelled. A
-# tolerated issue leaves a consistent chain: a day that starts or ends away from
-# home, a start off by minutes, an overnight trip read as such, a motive and a
-# place type that disagree while the zones agree, a return from home the model
-# build leaves out.
+# chain inconsistent — a trip starts before the one it follows or before the
+# previous one arrives, a trip end sits in two places, a return home never
+# reaches home, home is named where the home zone is not — and is resolved by
+# hand before the chain is modelled. TASHA schedules each activity between one
+# trip's arrival and the next trip's start and cannot take an overlap, even one
+# of a few minutes of rounding (decided 2026-09-26), so every time-order code
+# but the overnight one is breaking. A tolerated issue leaves a consistent
+# chain: a day that starts or ends away from home, an overnight trip read as
+# such, a motive and a place type that disagree while the zones agree, a return
+# from home the model build leaves out.
 BREAKING_ISSUES = (
     "hora_invertida",
     "hora_anterior",
+    "hora_repetida",
+    "hora_traslapada",
     "origen_discontinuo",
     "regreso_sin_llegar",
     "inicio_zona_ajena",
@@ -617,10 +624,10 @@ def _home_to_home_returns(
 
     Walk each chain with an at-home flag: it starts as whether the first trip
     leaves from 'Su casa' and from the household's zone (``home``), and after
-    each trip it is whether that trip was a 'Regresar a Casa'. A return home
-    while the flag is set is not a trip; the flag stays set, so a run of such
-    rows is marked whole. Rows in ``skip`` (the duplicates of
-    ``_duplicate_returns``) are stepped over as if absent.
+    each trip it is whether that trip was a 'Regresar a Casa' that reached the
+    household's zone. A return home while the flag is set is not a trip; the
+    flag stays set, so a run of such rows is marked whole. Rows in ``skip``
+    (the duplicates of ``_duplicate_returns``) are stepped over as if absent.
 
     The origin type is one answer per person — the survey asks where the day
     started and repeats the answer on every row, so it is constant within all
@@ -629,19 +636,25 @@ def _home_to_home_returns(
     whatever the answer says. Until 2026-09-25 the type alone started the
     flag, and 75 such first trips were marked; they are trips (66 start after
     noon, 30 by students: most are the return of a day whose trip out was not
-    recorded) and now carry ``inicio_zona_ajena`` instead.
+    recorded) and now carry ``inicio_zona_ajena`` instead. For the same
+    reason a return that stops short of the home zone does not put the person
+    at home: until 2026-09-26 it did, and the return that followed it from
+    that other zone — the person's actual way home, or a trip on from there —
+    was marked; those 14 rows are trips now.
 
-    416 rows in the shipped survey once the untimed trips are imputed: 83
-    first trips coded 'Regresar a Casa' from home and 333 second and later
+    402 rows in the shipped survey once the untimed trips are imputed: 83
+    first trips coded 'Regresar a Casa' from home and 319 second and later
     members of consecutive returns. 314 start and end in the home zone and
     their leg minutes usually differ from the return they follow, so they are
     not literal duplicates — a within-zone errand coded as 'return home' is
     the likeliest reading. They are kept and marked ``regreso_en_casa``; the
     model build leaves them out. Returns the mask of the rows marked.
     """
+    home = np.asarray(home, dtype=object)
     to_home = (trips.motivo_viaje == HOME_MOTIVE).to_numpy()
+    reached = to_home & (trips.destino.astype(str).to_numpy() == home)
     from_home = (trips.tipo_lugar_origen == HOME_PLACE).to_numpy() & (
-        trips.origen.astype(str).to_numpy() == np.asarray(home, dtype=object)
+        trips.origen.astype(str).to_numpy() == home
     )
     skip = (
         np.zeros(len(trips), dtype=bool)
@@ -659,7 +672,7 @@ def _home_to_home_returns(
         if to_home[i] and at_home:
             marked[i] = True
         else:
-            at_home = to_home[i]
+            at_home = reached[i]
     return marked
 
 
@@ -679,7 +692,7 @@ def _start_from_home_after_return(
     other breaks (a return that did not reach home, an origin at home after a
     trip that went elsewhere) are left and marked ``origen_discontinuo``, since
     either side could be wrong. On the chain without its non-trips 124 of the
-    156 breaks are repaired and 32 left. The origin takes the previous trip's
+    155 breaks are repaired and 31 left. The origin takes the previous trip's
     destination AGEB and the zone the survey coded for it (``zona_origen`` from
     that trip's ``zona_destino``), so the AGEB and the zone stay one place.
     Returns the trips and the mask of origins repaired.
@@ -745,7 +758,8 @@ def days_past_midnight(trips: pd.DataFrame) -> pd.Series:
     day too. The model's ``StartTime`` adds 2400 per midnight, so a diary that
     runs into the next morning keeps counting its hours (a 06:00 return after a
     21:00 trip to work is 3000). On ``load_eod()``'s tables a day passes
-    midnight at most once — 160 do — and none then spans more than 24 hours.
+    midnight at most once and none then spans more than 24 hours
+    (``tests/test_tasha.py`` holds the build to the contract's 4759).
     """
     pid = _person_ids(trips)
     start = _start_minutes(trips)
@@ -846,12 +860,13 @@ def _repair_start_times(
     treat it as uncertain; ``locked`` rows (imputed start times) are never edited.
 
     On the survey, with the untimed trips imputed and the non-trips set
-    aside, 2,320 chains are infeasible; 1,553 get a unique reading and 2,033
-    rows change (+12h 662, an extra leading 1 432, both 787, a missing
+    aside, 2,324 chains are infeasible; 1,557 get a unique reading and 2,037
+    rows change (+12h 662, an extra leading 1 434, both 789, a missing
     leading 1 152), none of them to an hour before 05:00. The strict 12-hour
-    rule this replaced moved 579 rows; the search moves 536 of them
-    identically, reads 5 differently because the arrival constraint rules out
-    the 12-hour reading, and leaves 38 in chains it cannot resolve as a whole.
+    rule this replaced (2026-09-03) moved 579 rows; the search then moved 536
+    of them identically, read 5 differently because the arrival constraint
+    rules out the 12-hour reading, and left 38 in chains it could not resolve
+    as a whole.
     870 trips in 756 people still start before the previous trip could have
     arrived by more than the tolerance, not overnight, and are marked ``hora_invertida``;
     tasha.chain_report counts them again on the built table. Household 8,
@@ -914,12 +929,12 @@ def _remaining_issues(
     ``hora_traslapada`` (one time code per row at most: the mild codes are
     what ``hora_invertida`` does not cover; the overlaps within the tolerance
     spike at 5, 10 and 15 minutes, the rounding of the reported leg minutes,
-    and 221 of them follow a leg of more than an hour), 32
-    ``origen_discontinuo``, 163 ``regreso_sin_llegar``,
+    and 221 of them follow a leg of more than an hour), 31
+    ``origen_discontinuo``, 164 ``regreso_sin_llegar``,
     16 ``tipo_destino_dudoso``; 906 days start from somewhere other than 'Su
     casa' (``inicio_fuera_de_casa``), 714 from 'Su casa' in a zone that is
     not the household's (``inicio_zona_ajena``; 75 of them a return home
-    from another zone, most the only trip recorded that day) and 514 do not end with a
+    from another zone, most the only trip recorded that day) and 502 do not end with a
     return to the home zone (``fin_fuera_de_casa``) — second homes, nights
     spent elsewhere and geocoding slips all look alike here; 787 activity
     trips end at 'Su casa' (``actividad_en_casa``), 705 of them in the home

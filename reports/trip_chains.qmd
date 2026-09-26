@@ -264,12 +264,12 @@ cleaned_trips, counts = clean_trip_chains(raw.trips, raw.viv, raw.legs, raw.hab)
 assert counts == {"untimed_trips": 325, "untimed_persons": 281,
                   "times_from_duplicate": 37, "times_from_neighbours": 288,
                   "motives_from_duplicate": 38, "motives_from_neighbours": 294,
-                  "recoded_returns": 84, "home_to_home": 416, "duplicate_returns": 38,
-                  "origins_repaired": 124, "start_times_edited": 2_033, "chains_repaired": 1_553,
+                  "recoded_returns": 84, "home_to_home": 402, "duplicate_returns": 38,
+                  "origins_repaired": 124, "start_times_edited": 2_037, "chains_repaired": 1_557,
                   "left_hora_invertida": 870, "left_hora_nocturna": 108, "left_hora_anterior": 26,
-                  "left_hora_repetida": 101, "left_hora_traslapada": 569, "left_origen_discontinuo": 32,
-                  "left_regreso_sin_llegar": 163, "left_tipo_destino_dudoso": 16,
-                  "left_inicio_fuera_de_casa": 906, "left_inicio_zona_ajena": 714, "left_fin_fuera_de_casa": 514,
+                  "left_hora_repetida": 101, "left_hora_traslapada": 569, "left_origen_discontinuo": 31,
+                  "left_regreso_sin_llegar": 164, "left_tipo_destino_dudoso": 16,
+                  "left_inicio_fuera_de_casa": 906, "left_inicio_zona_ajena": 714, "left_fin_fuera_de_casa": 502,
                   "left_actividad_en_casa": 787, "left_motivo_guarderia": 217, "left_hora_2301": 98}
 assert len(clean.trips) == len(cleaned_trips) == n_trips - counts["duplicate_returns"]
 assert len(clean.hab) == n_hab
@@ -1552,6 +1552,7 @@ n_decisions = len(decisions)
 assert not decisions.duplicated(["household", "person", "trip", "field"]).any()   # one per trip and field
 V = revised.trips
 by_hand = V[FIX_FLAG].str.contains(":revision", regex=False)
+n_leg_minutes = int(has_code(V[FIX_FLAG], "minutos:revision").sum())
 n_rows_hand = int(by_hand.sum())
 n_persons_hand = int(V.index[by_hand].droplevel("folio_viaje").nunique())
 n_hand_dropped = len(clean.trips.index.difference(V.index))
@@ -1575,9 +1576,15 @@ On the tables they give, `{python} fmt(n_rows_hand)` rows of `{python} fmt(n_per
 people hold a value set by hand (a `<field>:revision` code in `ajustes`),
 `{python} n_hand_dropped` rows the rules kept are gone — most of them returns home recorded
 twice and, on night-shift days, the next morning's return, outside the survey day — and no
-breaking code is left (@tbl-revised). `load_eod` checks every decision against the rules'
-output, so a change to the rules that moves a value a decision was made against fails the
-load instead of being overwritten.
+breaking code is left (@tbl-revised). TASHA cannot schedule a trip that starts before the
+previous one arrives, so every overlap is breaking, even one of a few minutes of rounding
+(`hora_traslapada`, `hora_repetida`); where a motorised trip reports twice the survey's typical
+minutes for its mode over its straight-line distance, the decisions take its minutes down to the
+typical ones (`minutos:revision`, on `{python} fmt(n_leg_minutes)` trips) rather than move the next
+start, and elsewhere the start moves to the arrival, a stay of no minutes. `load_eod` checks every
+decision against the rules' output, so a change to the rules that moves a value a decision was
+made against fails the load instead of being overwritten; `load_stages(skip_stale=True)` sets
+such decisions aside, and `eodgdl review export --stale` puts them on a sheet to decide again.
 
 ```{python}
 #| label: tbl-revised
@@ -1656,9 +1663,10 @@ weakens any segmentation the scheduler needs.
 | mistyped start hours | fixed | fewest-edits typo search, unique readings only, edited rows marked `hora:+12h` and so on; the residual marked `hora_invertida` | `load_eod` |
 | knowing what was changed and what is left | fixed | every change on the row in `ajustes`, every defect left in `problemas`; filter with `has_code`, drop non-trips with `non_trips` | `load_eod` |
 | a trip after a return home starting elsewhere | fixed | set the origin to the home zone; the `{python} breaks_clean` breaks left are ambiguous, and the hand decisions resolve them (@sec-revised) | `load_eod` |
-| residual non-monotone times | fixed by hand | the hand decisions resolve every `hora_invertida` and `hora_anterior` (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward, or overlaps within the tolerance (`hora_traslapada`) | `eodgdl/revisions/`, `tasha.build` |
+| residual non-monotone times | fixed by hand | the hand decisions resolve every `hora_invertida` and `hora_anterior`, and every overlap (`hora_traslapada`, `hora_repetida`), which TASHA cannot schedule (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward | `eodgdl/revisions/`, `tasha.build` |
+| leg minutes too long for the distance | fixed by hand | a motorised trip reporting twice the survey's typical minutes for its mode and distance band, where it overlaps the next start or leaves no stay, takes the typical minutes, and the survey's own start comes back where it then fits (round 9) | `eodgdl/revisions/` |
 | days not home-based | open | drop from scheduler estimation; keep for mode choice; night shifts keep the evening trip to work and drop the next morning's return, outside the survey day (passes 2–3); the days are marked `inicio_fuera_de_casa` or `fin_fuera_de_casa` | estimation |
-| Guardería coded as school | fixed | from age 12 a Guardería trip is an escort (F) and does not make its traveller a student; under 12 it stays school, and pass 7 put back the 23 children's trips pass 1 had recoded as escorts; marked `motivo_guarderia` | `mappings.yaml`, `eodgdl/revisions/` |
+| Guardería coded as school | fixed | from age 12 a Guardería trip is an escort (F) and does not make its traveller a student: the hand decisions recode every one as 'Llevar o recoger a alguien' (passes 1 and round 9), and the model build reads the age where they do not; under 12 it stays school, and pass 7 put back the 23 children's trips pass 1 had recoded as escorts; marked `motivo_guarderia` | `mappings.yaml`, `eodgdl/revisions/` |
 | people whose every row is a marked non-trip | open | drop the `{python} n_zero_recoded` people from estimation rather than count them as non-travellers | estimation |
 | activities typed *Su casa* | decided | the ones arriving home from elsewhere are returns (pass 6); the ones from the home AGEB to the home AGEB stay activities in the home zone (passes 6–7); marked `actividad_en_casa` | `eodgdl/revisions/` |
 | late returns heaped on 23:01 | open | the return came at 23:01 or later; marked `hora_2301`; treat the evening activity's end as censored in estimation | estimation |

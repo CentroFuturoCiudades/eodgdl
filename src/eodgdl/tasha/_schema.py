@@ -483,7 +483,8 @@ def chain_report(trips):
         if early.any():
             lines.append(
                 f"trips: {int(early.sum())} trips ({people(early)} people) start before the "
-                "previous trip could have arrived, its StartTime plus its Duration"
+                "previous trip could have arrived, its StartTime plus its Duration; TASHA cannot "
+                "schedule an overlap"
             )
     ties = has_prev & (t.StartTime == prev_time)
     if ties.any():

@@ -243,7 +243,8 @@ def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home(stages):
     assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) >= 714
 
 def test_a_daycare_trip_from_age_12_is_an_escort(stages):
-    tables = stages.revised
+    # the hand decisions recode every such trip, so the age rule is seen at work on the rules' output alone
+    tables = stages.rules
     od = eodgdl.tasha.build(tables)
     trips = tables.trips[~non_trips(tables.trips)]
     daycare = (trips.motivo_viaje == "Guardería").to_numpy()
@@ -259,6 +260,33 @@ def test_a_daycare_trip_from_age_12_is_an_escort(stages):
     studied = persons[(trips.motivo_viaje == "Estudiar").to_numpy()].unique()
     plain = persons[daycare & (age >= 12)].unique().difference(declared).difference(studied)
     assert len(plain) > 30 and (people.loc[plain, "StudentStatus"] == "O").all()
+    # load_eod's tables: every daycare trip left is a child's
+    revised = stages.revised
+    left = revised.trips[revised.trips.motivo_viaje == "Guardería"]
+    assert len(left) and (revised.hab.edad.reindex(left.index.droplevel("folio_viaje")) < 12).all()
+
+
+def test_a_return_that_misses_the_home_zone_is_not_h(stages):
+    # on the rules' output, before the hand decisions resolve them: the return lands elsewhere, and so does the
+    # purpose; the trip after it leaves from O, so a second return from there is a trip home, not H to H
+    tables = stages.rules
+    od = eodgdl.tasha.build(tables)
+    trips = tables.trips[~non_trips(tables.trips)]
+    missed = has_code(trips.problemas, "regreso_sin_llegar").to_numpy()
+    assert missed.sum() > 100 and (od.trips.PurposeDestination.to_numpy()[missed] == "O").all()
+    after = pd.Series(missed, index=trips.index).groupby(level=["folio_vivienda", "folio_habitante"]).shift(1)
+    assert (od.trips.PurposeOrigin.to_numpy()[after.fillna(False).to_numpy(bool)] == "O").all()
+    assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
+
+
+def test_no_trip_starts_before_the_previous_one_arrives(stages):
+    # TASHA cannot schedule an overlap: on load_eod's tables every trip starts once the previous one has arrived
+    od = eodgdl.tasha.build(stages.revised).trips
+    minutes = (od.StartTime // 100) * 60 + od.StartTime % 100
+    arrival = (minutes + od.Duration).groupby([od.HouseholdId, od.PersonNumber]).shift(1)
+    assert not (minutes < arrival).any()
+    assert not any("could have arrived" in line for line in tasha.chain_report(od))
+
 
 def test_build_round_trips_through_csv(stages, tmp_path):
     od = eodgdl.tasha.build(stages.revised)

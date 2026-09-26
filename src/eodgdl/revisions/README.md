@@ -6,7 +6,8 @@ row is one decision, columns `household, person, trip, field, before, after, not
 
 - `before` is the rules' value as a review sheet shows it — the shipped one on a row the rules
   dropped — and `after` the value decided: `HH:MM`, a level's own label, a zone id or `home`,
-  and `dropped` or `restored` under `status`.
+  whole minutes under `leg min` (the trip's travel minutes, spread over its legs in
+  proportion), and `dropped` or `restored` under `status`.
 - `note` is the reviewer's reason and `source` the review sheet that made the decision
   (`notebooks/<source>.csv`).
 - There is one decision at most per trip and field, and each is made against the rules'
@@ -16,15 +17,36 @@ row is one decision, columns `household, person, trip, field, before, after, not
 
 ## A review round
 
-Export the chains pending a fix from the tables `load_eod()` returns (`eodgdl review export`),
-edit the sheet, check it (`eodgdl review verify`) and merge it (`eodgdl review freeze`). A new
-value replaces the field's decision and a value that is the rules' own removes it; `dropped`
-adds a drop and takes the row's other decisions with it, and `restored` removes a drop (or, on
-a row the rules dropped, is a decision of its own). `freeze` writes nothing unless the merged
-decisions, applied once to the rules' output, give exactly what the sheet's edits give on top of
-today's tables. A round never stacks on another: an earlier decision is replaced or removed in
-place, and git keeps the history. A round whose criterion is a rule rather than a call per
-chain keeps the script that wrote its sheet under `scripts/revisions/`.
+Export the chains pending a fix from the tables `load_eod()` returns (`eodgdl review export`:
+by `problemas` code, by person with `--persons 8992/1,…`, or by `--screen`, below), edit the
+sheet, check it (`eodgdl review verify`) and merge it (`eodgdl review freeze`, which runs
+`eodgdl.review.freeze_round`). A new value replaces the field's decision and a value that is the
+rules' own removes it; `dropped` adds a drop and takes the row's other decisions with it, and
+`restored` removes a drop (or, on a row the rules dropped, is a decision of its own). A decision
+the rules now give by themselves is removed. `freeze` writes nothing unless the merged decisions,
+applied once to the rules' output, give exactly what the sheet's edits give on top of today's
+tables. A round never stacks on another: an earlier decision is replaced or removed in place,
+and git keeps the history. A round whose criterion is a rule rather than a call per chain keeps
+the script that wrote its sheet under `scripts/revisions/`.
+
+With no breaking code left, the codes no longer point at chains to fix; the screens do
+(`eodgdl.review.screens`, and `verify` counts them before and after): a trip that leaves the
+minute the previous one arrives (`zero_stay`), more than 14 hours at work (`long_workday`), a day
+of more than 20 hours (`long_day`). A consistent chain can still be implausible, as round 8 and
+round 10 found.
+
+## When the rules change
+
+Every decision is checked against the rules' output, so a change to the chain rules that moves a
+value a decision was made against makes that decision **stale**: `load_eod()` fails, naming it,
+rather than overwrite a value its reviewer never saw. The review tools load with
+`load_stages(skip_stale=True)`, which sets the stale decisions aside with a warning, so
+`eodgdl review export --stale` writes a sheet of the persons that hold them, each stale decision
+written into its `new …` cell with why in the note. Keep the cell to decide it again against
+today's rules, change it, or clear it to let the rules' value stand; `freeze` then replaces or
+removes every stale decision the sheet shows, and refuses while a stale decision's trip is on no
+sheet. `eodgdl.review.decision_outcomes` tells, decision by decision, whether it applies, holds
+already, is moot or is stale; `tests/test_review.py` holds every committed decision to "applies".
 
 ## How the decisions are read
 
@@ -32,14 +54,15 @@ chain keeps the script that wrote its sheet under `scripts/revisions/`.
 
 - **Every decision is checked against the rules' output.** Its `before` must be what the
   rules give — the shipped value on a row the same decisions restore — or the load fails,
-  naming it. A change to the chain rules that moves a value a decision was made against fails
-  the load for that decision only.
+  naming every such decision (see *When the rules change*).
 - **The origin type is one answer per person** ("¿En qué tipo de lugar inició su primer
   viaje?"): the decision on the person's first trip sets it on every row, one on any other
   trip is moot, and the sheet shows it on the first trip only.
 - **A mode decision keeps the trip on its legs**: on a one-leg trip the leg takes the new
   mode, on a trip of several legs the new mode must be one of theirs, since the model build
   reads the main mode and the reweighting the legs.
+- **A leg-minutes decision sets the trip's travel minutes**, spread over its legs in
+  proportion to what each held, a minute each at least: the model's `Duration`.
 - **`ajustes` is net.** Field by field, a value that is the rules' carries the rules' codes,
   one decided by hand carries `<field>:revision`, and one that is the shipped value again
   carries nothing; `fila:revision` marks a row the rules dropped and a decision restored.
@@ -51,6 +74,8 @@ Each round merged with `eodgdl review freeze` since the passes were folded into 
 | source | sheet | persons | decisions |
 |---|---|---|---|
 | `chain_review_8` | `notebooks/chain_review_8.csv` (one night shift that is a split shift; 2026-09-25) | 1 | 2 added |
+| `chain_review_9` | `notebooks/chain_review_9.csv`, written by `scripts/revisions/chains_9.py` (leg minutes behind stays of no minutes and overlaps, the clock they let back, the overlaps left, the daycare escorts; 2026-09-26) | 177 | 425 added, 7 changed, 147 removed |
+| `chain_review_10` | `notebooks/chain_review_10.csv` (evening returns for the split shifts pass 1 read as night shifts; 2026-09-26) | 10 | 2 added, 10 changed, 2 removed |
 
 Round 8 (Claude, 2026-09-25): household 8992, person 1, read 21:00 to work, 02:00 home, 16:00
 to work, 19:00 home, which the rules read as a night shift followed by a 22-hour day. It is a
@@ -59,6 +84,48 @@ split shift with lunch at home, 09:00–14:00 and 16:00–19:00: the first start
 from trying either. None of the other 26 work trips to that AGEB starts at night (24 start
 between 05:00 and 11:00), and the 02:00 return is the only one of 60 from there between 22:00
 and 06:59.
+
+Round 9 (Claude, 2026-09-26; the criteria are `scripts/revisions/chains_9.py`) follows a review
+of the chain fixes and two decisions of the user's that day: TASHA cannot schedule a trip that
+starts before the previous one arrives, so every overlap is breaking (`hora_traslapada` and
+`hora_repetida` joined `chains.BREAKING_ISSUES`), and a stay of no minutes is better than an
+overlap but worse than a stay, so leg-minute errors come before moved starts. Pass 1 had closed
+868 overlaps by moving the start to the minute the previous trip arrives, 689 of them within the
+old 15-minute tolerance, leaving stays of no minutes. Across the survey, trips that overlap the
+next start are about as fast for their straight-line distance as any others, so the leg minutes
+are not the usual culprit; but a motorised trip that reports twice the survey's typical minutes
+for its mode and distance band (the median over the survey's trips, AGEB centroid to centroid,
+30 or more of them) is slow for no reason the clock explains. On the persons the rules' output
+flags (a `problemas` code on one of their trips; a stay of no minutes is no code, and the user
+kept the survey the codes do not flag as recorded), 149 such trips stood behind a stay of no
+minutes or an overlap; they and 222 equally slow trips of the same persons over the same routes
+take the typical minutes (mostly 120 or 90 cut to 25–60), and 155 starts go back to the survey's
+own value, or where a pass had moved them to the old arrival to the rules', now that they fit
+(7425/3 and 8108/2 read exactly as recorded). The 4 overlaps left that the minutes do
+not explain move to the arrival, the 46 'Guardería' trips of persons aged 12 or more that pass 1
+had left become escorts, and 3 decisions the rules now give by themselves go (the typo search
+reaches three rows it could not while a return that stopped short of home still counted as
+reaching it). No breaking code is left, and the persons touched go from 175 stays of no minutes
+to 19. Every decision in the table sits on a person the rules' output flags
+(`tests/test_review.py`).
+
+Round 10 (Claude, 2026-09-26; `scripts/revisions/chains_10.py` writes the sheet and each call's
+evidence) rereads the day-plus-night-shift days pass 1 made. 61 diaries share the template "work,
+home, work, home" whose first departure is recorded at night, after the next return: pass 1 read
+that hour with 12 hours too many as the morning departure and, in 39 of them, the last return in
+the evening; in 12 it took the last return to the small hours of the next day, a night shift
+after the day's. Round 9's minutes gave 13603/4 its recorded evening back. In six others, and in
+three six-trip diaries of the same shape after a morning walk (11846/1, 11942/2, 12047/2), the
+first row's own hour fits after the second trip to work arrives — "left at 9, back at 9" — and
+the workplaces agree: their other workers come home between 19:00 and 23:00 352 times, between
+01:00 and 06:00 5 times. Their last return is that hour now, and 8763/1 leaves at 08:00 and goes
+back to work at its recorded 17:02. 13583/1 reads a 1 keyed as a 2 in 22:00 and 23:30, a split
+shift 08:30–12:00 and 13:30–15:00 ending at its recorded 15:00. Left as pass 1 read them, a
+double shift being no error in itself: 16714/1, 11165/1 and 13088/3 (no same-day reading fits
+the recorded hours), 7776/3 (a second job by bicycle), 8201/1 (its 90- and 120-minute trips to an
+access point are what its zone reports, and no evening hour fits); and 1771/1, 11303/1 and
+11303/2, whose template second tour at 22:00–23:30 cannot fit their minutes and keeps its stays
+of no minutes.
 
 ## History: seven passes, folded into one table
 

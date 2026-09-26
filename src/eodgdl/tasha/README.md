@@ -46,7 +46,7 @@ changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
 `eodgdl.chains.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
 imputed, 84 mislabelled returns recoded, 124 trips after a return home made
-to start at home, 2,033 mistyped start hours repaired — and refuses a trip
+to start at home, 2,037 mistyped start hours repaired — and refuses a trip
 table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
 non-trips there (returns home made while already at home, most of which the hand decisions
@@ -175,13 +175,13 @@ validate without changing the exit code. `StartTime` counts its hours on past mi
 (`eodgdl.chains.days_past_midnight`), and the contract's range, 0 to 4759, allows the one
 midnight a one-day diary passes. On `load_eod()`'s tables (the chain rules and the hand
 revisions) every trip then starts where the previous one ended and after the previous one
-started, the few that start before the previous trip could have arrived overlap it by
-rounding (`hora_traslapada`), and a few hundred days start or end away from home. On the
-rules' output alone (`load_eod(revise_chains=False)`) the same report reads 32 zone breaks,
-732 trips that start earlier than the one before, 1,566 that start before the previous trip
-could have arrived, 127 same-minute starts, 1,620 days that do not start at home (the 714
-first trips that answer 'Su casa' from another zone among them) and 416 that do not end
-there.
+arrived — TASHA cannot schedule an overlap, and the hand decisions leave none
+(`tests/test_tasha.py` holds the build to it) — and a few hundred days start or end away
+from home. On the rules' output alone (`load_eod(revise_chains=False)`) the same report reads
+31 zone breaks, 732 trips that start earlier than the one before, 1,566 that start before the
+previous trip could have arrived, 127 same-minute starts, 1,620 days that do not start at home
+(the 714 first trips that answer 'Su casa' from another zone among them) and 502 that do not
+end there (a return that stops short of the home zone is O, not H).
 
 ## Open items
 

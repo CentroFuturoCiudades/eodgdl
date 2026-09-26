@@ -40,12 +40,25 @@ def main() -> None:
 
     review_p = sub.add_parser("review", help="Review sheets: the trip chains pending a fix, to edit by hand")
     review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
-    exp_p = review_sub.add_parser("export", help="Write the chains pending a fix as a review sheet (CSV)")
+    exp_p = review_sub.add_parser(
+        "export", help="Write the chains pending a fix as a review sheet (CSV); the selections add up"
+    )
     exp_p.add_argument("--out", default="chain_review.csv", help="Where to write (default: chain_review.csv)")
     exp_p.add_argument(
         "--codes", default=None,
         help="Comma-separated problemas codes, or a group: breaking (the chain is inconsistent, "
-        "fix by hand) or tolerated; a person is exported if a row carries one (default: any code)",
+        "fix by hand) or tolerated; a person is exported if a row carries one (default, with no other "
+        "selection: any code)",
+    )
+    exp_p.add_argument("--persons", default=None, help="Comma-separated household/person, e.g. 8992/1,11303/2")
+    exp_p.add_argument(
+        "--screen", default=None,
+        help="Comma-separated screens of a consistent chain gone implausible: zero_stay (a trip leaves the "
+        "minute the previous one arrives), long_workday (over 14 h at work), long_day (over 20 h)",
+    )
+    exp_p.add_argument(
+        "--stale", action="store_true",
+        help="The persons with hand decisions a rule change left stale, each pre-filled for a new look",
     )
     exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
     ver_p = review_sub.add_parser("verify", help="Read an edited sheet: recover the edits, apply them, recompute problemas")
@@ -173,22 +186,58 @@ def _tasha(args) -> int:
     return _report(tasha.validate_all(**frames), "conforms to model_schema.yaml")
 
 
+def _persons_arg(text: str, hab) -> list[tuple[int, int]]:
+    """``household/person,…`` as keys, each checked against ``hab``."""
+    persons = []
+    for part in text.split(","):
+        household, _, person = part.strip().partition("/")
+        key = (int(household), int(person))
+        if key not in hab.index:
+            raise ValueError(f"no person {household}/{person} in the survey")
+        persons.append(key)
+    return persons
+
+
 def _review(args) -> int:
+    from pathlib import Path
+
     import pandas as pd
 
     from eodgdl import load_stages, review
     from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, has_code
 
-    stages = load_stages(args.data)  # the survey as shipped, after the rules and after the hand decisions, from one read
+    # the survey as shipped, after the rules and after the hand decisions, from one read; a decision a rule
+    # change left stale is set aside rather than stopping the tools that let a round decide it again
+    stages = load_stages(args.data, skip_stale=True)
     shipped, rules, cleaned = stages
+    stale = review.stale_decisions(rules, shipped)
+    if len(stale):
+        print(f"{len(stale):,} hand decisions no longer apply to the rules' output (a rule changed under them) "
+              "and are set aside; `eodgdl review export --stale` puts them on a sheet\n")
 
     if args.review_cmd == "export":
         rows = review.chain_rows(cleaned, shipped)
-        codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
-        persons = review.pending_persons(rows, codes)
-        sheet = review.chain_sheet(rows, cleaned.hab, persons)
+        try:
+            chosen = []
+            if args.codes or not (args.persons or args.screen or args.stale):
+                chosen += list(review.pending_persons(rows, [c.strip() for c in args.codes.split(",")] if args.codes else None))
+            if args.persons:
+                chosen += _persons_arg(args.persons, cleaned.hab)
+            if args.screen:
+                chosen += list(review.screened_persons(cleaned, [s.strip() for s in args.screen.split(",")]))
+            if args.stale:
+                chosen += list(zip(stale.household.astype(int), stale.person.astype(int)))
+        except ValueError as err:
+            print(err)
+            return 1
+        chosen = sorted(set(map(tuple, chosen)))
+        persons = pd.MultiIndex.from_arrays([[k[0] for k in chosen], [k[1] for k in chosen]], names=PERSON)
+        sheet = review.prefill_stale(review.chain_sheet(rows, cleaned.hab, persons), stale)
         path = review.write_sheet(sheet, args.out)
         print(f"wrote {path}  ({len(persons):,} persons, {len(sheet):,} rows)")
+        shown = stale[pd.MultiIndex.from_arrays([stale.household, stale.person]).isin(persons)]
+        if len(shown):
+            print(f"{len(shown):,} stale decisions written into their new … cells, with why in the note")
         print()
         selected = rows[rows.index.droplevel("folio_viaje").isin(persons)]
         counts = pd.DataFrame({
@@ -198,6 +247,9 @@ def _review(args) -> int:
         counts["group"] = ["breaking" if c in BREAKING_ISSUES else "tolerated" for c in counts.index]
         left = counts.loc[counts["rows"] > 0]
         print(left.to_string() if len(left) else "no chain carries those codes")
+        picked = review.screens(cleaned).reindex(persons)
+        print("\nscreens over the persons exported: "
+              + ", ".join(f"{name} {int(picked[name].fillna(False).sum()):,}" for name in review.SCREENS))
         return 0
 
     try:
@@ -208,35 +260,26 @@ def _review(args) -> int:
         return 1
     print(f"read {args.sheet}  ({len(edited):,} rows, {len(edits):,} edits)")
     if args.review_cmd == "freeze":
-        from pathlib import Path
-
-        from eodgdl._resources import chain_decisions
-
         try:
-            frozen = review.freeze_edits(edits, cleaned, shipped, rules)
+            done = review.freeze_round(
+                edits, stages, args.source or Path(args.sheet).stem, shown=review.sheet_keys(edited)
+            )
         except ValueError as err:
             print(err)
             return 1
-        if frozen.empty:
-            print("nothing to freeze: every edit already holds or is moot")
-            return 1
-        before = chain_decisions()
-        merged = review.merge_decisions(before, frozen, rules, shipped, args.source or Path(args.sheet).stem)
-        # one pass over the rules' output must give what the sheet gives on top of the tables it was exported from
-        once = review.apply_revisions(rules, shipped, merged)
-        stacked = review.apply_edits(cleaned, frozen, shipped, rules)
-        if not (once.trips.equals(stacked.trips) and once.legs.equals(stacked.legs) and once.hab.equals(stacked.hab)):
-            print("the merged decisions do not give what the sheet's edits give; nothing written")
-            return 1
-        verified = review.verify_edits(cleaned, shipped, frozen, rules)
-        path = review.write_decisions(merged, args.out or review.decisions_path())
-        change = review.decision_changes(before, merged)
-        print(f"wrote {path}: {len(merged):,} decisions ({change['added']:,} added, {change['changed']:,} changed, "
-              f"{change['removed']:,} removed) from {len(frozen):,} of the sheet's {len(edits):,} edits; "
-              "the rest already held, were moot or were notes")
-        print()
-        for key, value in verified.summary.items():
-            print(f"  {key:<26} {value:>7,}")
+        path = review.write_decisions(done.decisions, args.out or review.decisions_path())
+        change = done.changes
+        print(f"wrote {path}: {len(done.decisions):,} decisions ({change['added']:,} added, {change['changed']:,} "
+              f"changed, {change['removed']:,} removed) from {len(done.frozen):,} of the sheet's {len(edits):,} "
+              "edits; the rest already held, were moot or were notes")
+        if len(done.stale):
+            print(f"{len(done.stale):,} stale decisions decided again or let go")
+        if len(done.dead):
+            print(f"{len(done.dead):,} decisions that no longer changed anything removed")
+        if done.verified is not None:
+            print()
+            for key, value in done.verified.summary.items():
+                print(f"  {key:<26} {value:>7,}")
         return 0
     if args.edits:
         edits.to_csv(args.edits, index=False, encoding="utf-8-sig")

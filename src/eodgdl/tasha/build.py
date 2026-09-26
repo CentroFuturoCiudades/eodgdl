@@ -3,7 +3,8 @@
 Every coded column is built from ``mappings.yaml`` rather than from a lookup
 retyped here, so changing a mapping changes the output. What the mappings record
 as ``derivation`` prose — the R/C demotion, the passenger override, the
-work/school zone lookups, the daycare trips by age — is implemented below, and the prose is its spec.
+work/school zone lookups, the daycare trips by age, H only at the household's
+zone — is implemented below, and the prose is its spec.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
@@ -53,14 +54,16 @@ def _household_ids(viv: pd.DataFrame) -> pd.Series:
 def _purposes(trips: pd.DataFrame, viv: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     """(destination purpose, first-trip origin purpose), before the R/C demotion.
 
-    The origin purpose is H only where the reported place maps to H and the trip
-    leaves the household's zone (see PurposeOrigin's derivation).
+    Either is H only where the survey's answer maps to H and the trip end is the
+    household's zone: the first trip leaves from it (see PurposeOrigin's derivation),
+    a return home reaches it (see PurposeDestination's).
     """
+    home = viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
     destination = (trips.motivo_viaje.map(build_map("PurposeDestination"))
                         .fillna(mapping("PurposeDestination")["default"]))
+    destination = destination.mask((destination == "H") & (trips.destino.astype(str).to_numpy() != home), "O")
     origin = (trips.tipo_lugar_origen.map(build_map("PurposeOrigin"))
                    .fillna(mapping("PurposeOrigin")["default"]))
-    home = viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
     origin = origin.mask((origin == "H") & (trips.origen.astype(str).to_numpy() != home), "O")
     return destination, origin
 

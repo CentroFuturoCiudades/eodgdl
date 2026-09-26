@@ -147,6 +147,17 @@ def test_a_return_home_made_from_home_is_not_a_trip():
     assert (cleaned.loc[(1, 3)].problemas.tolist()[1:] == ["", ""])
 
 
+def test_a_return_that_stops_short_of_home_does_not_put_the_person_at_home():
+    trips = _trips([
+        (1, 8, 0, "Trabajar"), (1, 12, 0, "Regresar a Casa", "Su casa", OTHER),   # 'home' in another zone
+        (1, 19, 0, "Regresar a Casa"),                                              # ...so this is the way home: a trip
+        (1, 20, 0, "Regresar a Casa"),                                              # and this one is made from home
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    assert cleaned.loc[(1, 1)].problemas.tolist() == ["", "regreso_sin_llegar", "", "regreso_en_casa"]
+    assert counts["home_to_home"] == 1 and non_trips(cleaned).sum() == 1
+
+
 def test_a_return_home_after_midnight_from_an_afternoon_shift_is_overnight():
     trips = _trips([
         (1, 14, 0, "Trabajar", None, None, 30), (1, 2, 0, "Regresar a Casa"),       # second shift: overnight
@@ -317,15 +328,15 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages)
     assert fixes <= set(FIX_CODES) and issues <= set(ISSUE_CODES)
     assert has_code(trips.ajustes, "hora:duplicado").sum() == 37 and has_code(trips.ajustes, "hora:vecinos").sum() == 288
     assert has_code(trips.ajustes, "motivo:vecinos").sum() == 294 and has_code(trips.ajustes, "motivo:duplicado").sum() == 38
-    assert non_trips(trips).sum() == 416
+    assert non_trips(trips).sum() == 402
     # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
     assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
-        "regreso_en_casa": 416, "hora_invertida": 870, "hora_nocturna": 108,
-        "hora_anterior": 26, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
+        "regreso_en_casa": 402, "hora_invertida": 870, "hora_nocturna": 108,
+        "hora_anterior": 26, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 31, "regreso_sin_llegar": 164,
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 714,
-        "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217, "hora_2301": 98}
+        "fin_fuera_de_casa": 502, "actividad_en_casa": 787, "motivo_guarderia": 217, "hora_2301": 98}
     hora = sum(has_code(trips.problemas, c) for c in TIME_ORDER_ISSUES)
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_818 + 416
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 4_819 + 402
     # hab and trips stay in step: viajes_contados follows the 38 dropped duplicates and the legs follow the trips
     counted = trips.groupby(level=PERSON).size()
     assert (hab.viajes_contados == counted.reindex(hab.index).fillna(0)).all()

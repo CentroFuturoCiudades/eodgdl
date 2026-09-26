@@ -4,7 +4,7 @@ import gzip
 import pandas as pd
 import pytest
 
-from eodgdl import EODTables, clean_trip_chains, review
+from eodgdl import EODStages, EODTables, clean_trip_chains, review
 from eodgdl._resources import chain_decisions
 from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, TOLERATED_ISSUES, has_code, mark_issues, non_trips
 from test_eod import AGEB, CAR, ELSEWHERE, SHOP, VIV, _trips
@@ -51,7 +51,7 @@ def test_the_sheet_is_the_browsers_table_and_reads_back_without_edits(tmp_path):
     assert one.loc[(1, 1, 2), ["start", "ajustes", "problemas", "status"]].tolist() == ["05:30 → 17:30", "hora:+12h", "", "changed"]
     assert one.loc[(1, 2, 2), ["start", "motive", "dest. type", "origin", "destination"]].tolist() == [
         "— → 18:00", "— → Regresar a Casa", "— → Su casa", ELSEWHERE, "home"]
-    assert one.loc[(1, 2, 2), ["mode", "leg min", "ajustes"]].tolist() == [CAR, 30, "hora:duplicado;motivo:duplicado"]
+    assert one.loc[(1, 2, 2), ["mode", "leg min", "ajustes"]].tolist() == [CAR, "30", "hora:duplicado;motivo:duplicado"]
     # the origin type is the person's one answer, shown on the first trip; a dropped row keeps its shipped values, no codes
     assert one.loc[(1, 2), "orig. type"].tolist() == ["Su casa", "", "Su casa"]
     assert one.loc[(1, 2, 3), ["start", "motive", "origin", "ajustes", "problemas", "status"]].tolist() == [
@@ -115,7 +115,7 @@ def test_edits_are_the_filled_new_columns():
     with pytest.raises(ValueError, match="repeats"):
         review.sheet_edits(pd.concat([sheet, sheet.iloc[[0]]]))
     with pytest.raises(ValueError, match="not a column the sheet reads back"):
-        review.sheet_edits(sheet.assign(**{"new leg min": ""}))
+        review.sheet_edits(sheet.assign(**{"new ajustes": ""}))
 
 
 def test_apply_edits_writes_the_fields_and_recomputes_both_columns():
@@ -145,7 +145,7 @@ def test_apply_edits_writes_the_fields_and_recomputes_both_columns():
     # the edits are applied whole or not at all, and every fault is listed
     bad = pd.DataFrame([
         (1, 4, 2, "start", "07:00", "25:00", ""),
-        (1, 4, 3, "leg min", "0", "99", ""),
+        (1, 4, 3, "ajustes", "", "hora:+12h", ""),
         (1, 4, 3, "origin", "home", "0000000000000", ""),
         (1, 1, 9, "motive", "", "Trabajar", ""),
         (1, 3, 1, "motive", "Trabajar", "Estudiar", ""),               # the sheet showed a value the table does not hold
@@ -285,7 +285,9 @@ def test_verify_edits_says_what_the_edits_cleared_left_and_made():
     ]
     assert v.summary == {"persons": 2, "cells": 3, "rows_dropped": 0, "rows_restored": 0, "edits_already_holding": 0,
                          "edits_moot": 0, "defects_before": 2, "defects_after": 1, "persons_cleared": 1,
-                         "persons_with_new_defects": 1}
+                         "persons_with_new_defects": 1, "zero_stays_before": 0, "zero_stays_after": 0,
+                         "long_workdays_before": 0, "long_workdays_after": 0, "long_days_before": 0, "long_days_after": 0,
+                         "persons_with_new_screens": 0}
     assert v.sheet.person.tolist() == [4, 4, 4, 4, 5]
     after = v.sheet.set_index(review.KEYS)
     assert after.loc[(1, 4, 2), ["start", "ajustes", "problemas", "status"]].tolist() == ["07:00 → 12:00", "hora:revision", "", "changed"]
@@ -379,7 +381,7 @@ def test_the_pending_sheet_round_trips_on_the_survey(stages, tmp_path):
     pending = review.pending_persons(rows)
     sheet = review.chain_sheet(rows, cleaned.hab, pending)
     assert (len(pending), len(sheet)) == (4_511, 14_771)
-    assert sheet.status.value_counts().to_dict() == {"": 14_293, "changed": 476, "dropped": 2}
+    assert sheet.status.value_counts().to_dict() == {"": 14_289, "changed": 480, "dropped": 2}
     back = review.read_sheet(review.write_sheet(sheet, tmp_path / "chain_review.csv"))
     assert set(back.destination.str.len()) <= {4, 9, 13}                # zone ids as strings, home as home
     sel = rows[rows.index.droplevel("folio_viaje").isin(pending)]
@@ -416,9 +418,15 @@ def test_load_eod_applies_the_hand_decisions(stages):
     t = revised.trips
     decisions = chain_decisions()
     # one decision per trip and field, every one with its reason and the review sheet it came from
-    assert len(decisions) == 5_264 and not decisions.duplicated(review.KEYS + ["field"]).any()
+    assert len(decisions) == 5_542 and not decisions.duplicated(review.KEYS + ["field"]).any()
     assert decisions.field.value_counts().to_dict() == {
-        "start": 1_896, "origin": 1_365, "orig. type": 697, "status": 488, "motive": 461, "dest. type": 215, "destination": 142}
+        "start": 1_757, "origin": 1_365, "orig. type": 697, "motive": 507, "status": 488, "leg min": 371, "dest. type": 215,
+        "destination": 142}
+    # the hand review touches only persons the rules' output flags: a problemas code on one of their trips
+    flagged = (rules.trips.problemas != "").groupby(level=PERSON).any()
+    assert flagged.reindex(pd.MultiIndex.from_frame(decisions[review.KEYS[:2]])).fillna(False).all()
+    # every decision changes the rules' output: none stale, none that the rules already give or that cannot take effect
+    assert (review.decision_outcomes(rules, shipped, decisions).outcome == "apply").all()
     assert (decisions.note != "").all() and decisions.source.str.fullmatch(r"chain_review(_\d+)?").all()
     gone = pd.MultiIndex.from_frame(decisions.loc[decisions.after == "dropped", review.KEYS])
     assert len(gone) == 488 and not t.index.isin(gone).any() and not (decisions.after == "restored").any()
@@ -430,11 +438,15 @@ def test_load_eod_applies_the_hand_decisions(stages):
     assert again.trips.equals(t) and again.hab.equals(revised.hab) and again.legs.equals(revised.legs)
     assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
     assert has_code(t.ajustes, "origen:revision").sum() == 1_365 and has_code(t.ajustes, "fila:revision").sum() == 0
+    # the legs whose minutes a decision set, and no other, differ from the survey's
+    minutes = revised.legs.traslado_min.groupby(level=[0, 1, 2]).sum()
+    differs = minutes != shipped.legs.traslado_min.groupby(level=[0, 1, 2]).sum().reindex(minutes.index)
+    assert set(differs[differs].index) == set(t.index[has_code(t.ajustes, "minutos:revision").to_numpy()]) and differs.sum() == 371
     assert non_trips(t).sum() == 134
     # what is left: no breaking chain, the tolerated codes left alone
     assert {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES} == dict.fromkeys(BREAKING_ISSUES, 0)
     assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0
-    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 159 and int(has_code(t.problemas, "hora_2301").sum()) == 90
+    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 145 and int(has_code(t.problemas, "hora_2301").sum()) == 93
     # the zone follows the AGEB on every revised trip end
     ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
                       for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])
@@ -444,3 +456,111 @@ def test_load_eod_applies_the_hand_decisions(stages):
     modes = revised.legs.traslado_medio.astype(str).groupby(level=[0, 1, 2]).agg(set).reindex(t.index)
     assert all(m in s for m, s in zip(t.modo_principal.astype(str), modes))
     assert revised.legs.traslado_medio.equals(shipped.legs.traslado_medio.reindex(revised.legs.index))
+
+
+def test_a_leg_min_edit_spreads_the_minutes_over_the_legs(stages):
+    shipped, rules, revised = stages
+    t, legs = revised.trips, revised.legs
+    n = legs.groupby(level=[0, 1, 2]).size().reindex(t.index)
+    key = t.index[(n == 3).to_numpy() & (t.ajustes == "").to_numpy()][0]
+    own = legs.loc[key].traslado_min.astype(int).tolist()
+    total = sum(own)
+    new = max(total // 2, 3)
+    edits = pd.DataFrame([(*key, "leg min", str(total), f"{new}.0", "half the minutes")], columns=EDIT_COLUMNS)
+    out = review.apply_edits(revised, edits, shipped, rules)
+    spread = out.legs.loc[key].traslado_min.astype(int).tolist()
+    assert sum(spread) == new and min(spread) >= 1 and spread == review._spread(own, new)
+    assert out.trips.at[key, "ajustes"] == "minutos:revision"
+    assert out.trips.problemas.equals(mark_issues(out.trips, out.viv, out.legs))
+    assert review._spread([10, 25, 5], 20) == [5, 12, 3] and review._spread([30], 20) == [20]
+    with pytest.raises(ValueError, match="another version"):
+        review.apply_edits(revised, edits.assign(before=str(total + 5)), shipped, rules)
+    with pytest.raises(ValueError, match="cannot spread over 3 legs"):
+        review.apply_edits(revised, edits.assign(after="2"), shipped, rules)
+    with pytest.raises(ValueError, match="not a whole number"):
+        review.apply_edits(revised, edits.assign(after="half"), shipped, rules)
+    # a round stores it against the rules' minutes, and applying it again changes nothing
+    frozen = review.freeze_edits(edits, revised, shipped, rules)
+    assert frozen[["field", "before", "after"]].values.tolist() == [["leg min", str(total), str(new)]]
+
+
+def test_a_stale_decision_is_set_aside_and_decided_again_in_a_round():
+    shipped, rules = _survey(_fixture())
+    one = pd.DataFrame([
+        (1, 4, 2, "start", "07:00", "12:00", "a 12-hour entry"),
+        (1, 1, 2, "status", "", "dropped", "not a trip"),
+    ], columns=EDIT_COLUMNS)
+    decisions = _merge(review.decision_frame([]), one, rules, shipped, rules, "round 1")
+    # a change to the rules moves the value the first decision was made against
+    moved = rules.trips.copy()
+    moved.loc[(1, 4, 2), "hora_inicio_m"] = 30
+    changed = EODTables(rules.viv, rules.hab, moved, rules.legs)
+    stale = review.stale_decisions(changed, shipped, decisions)
+    assert stale[["trip", "field"]].values.tolist() == [[2, "start"]] and "07:30" in stale.problem.iloc[0]
+    with pytest.raises(ValueError, match="review export --stale"):
+        review.apply_revisions(changed, shipped, decisions)
+    revised = review.apply_revisions(changed, shipped, decisions, skip_stale=True)
+    assert (1, 1, 2) not in revised.trips.index and revised.trips.at[(1, 4, 2), "hora_inicio_m"] == 30
+    stages = EODStages(shipped, changed, revised)
+    rows = review.chain_rows(revised, shipped)
+    sheet = review.prefill_stale(review.chain_sheet(rows, revised.hab, pd.MultiIndex.from_tuples([(1, 4)])), stale)
+    row = sheet.set_index(review.KEYS).loc[(1, 4, 2)]
+    assert row["new start"] == "12:00" and row["note"].startswith("Decisión vencida (round 1)")
+    # kept, the decision is made again against today's rules
+    edits = review.sheet_edits(sheet)
+    done = review.freeze_round(edits, stages, "round 2", decisions=decisions, shown=review.sheet_keys(sheet))
+    assert done.decisions[["person", "trip", "field", "before", "after", "source"]].values.tolist() == [
+        [1, 2, "status", "", "dropped", "round 1"], [4, 2, "start", "07:30", "12:00", "round 2"]]
+    assert len(done.stale) == 1 and _same(review.apply_revisions(changed, shipped, done.decisions),
+                                          review.apply_edits(revised, done.frozen, shipped, changed))
+    # cleared, the rules' value stands and the decision goes
+    cleared = review.sheet_edits(sheet.assign(**{"new start": ""}))
+    gone = review.freeze_round(cleared, stages, "round 2", decisions=decisions, shown=review.sheet_keys(sheet))
+    assert gone.decisions.field.tolist() == ["status"] and gone.frozen.empty
+    # a stale decision the sheet does not show is refused
+    with pytest.raises(ValueError, match="not on this sheet"):
+        review.freeze_round(cleared, stages, "round 2", decisions=decisions, shown=set())
+
+
+def test_a_round_removes_the_decisions_the_rules_now_give():
+    shipped, rules = _survey(_fixture())
+    one = pd.DataFrame([(1, 4, 2, "start", "07:00", "12:00", "a 12-hour entry")], columns=EDIT_COLUMNS)
+    decisions = _merge(review.decision_frame([]), one, rules, shipped, rules, "round 1")
+    moved = rules.trips.copy()
+    moved.loc[(1, 4, 2), "hora_inicio_h"] = 12          # a rule now reads the hour the decision set
+    changed = EODTables(rules.viv, rules.hab, moved, rules.legs)
+    assert review.decision_outcomes(changed, shipped, decisions).outcome.tolist() == ["holds"]
+    revised = review.apply_revisions(changed, shipped, decisions)
+    two = pd.DataFrame([(1, 5, 1, "status", "", "dropped", "not a trip")], columns=EDIT_COLUMNS)
+    done = review.freeze_round(two, EODStages(shipped, changed, revised), "round 2", decisions=decisions)
+    assert done.decisions[["trip", "field"]].values.tolist() == [[1, "status"]] and len(done.dead) == 1
+    assert done.changes == {"added": 1, "changed": 0, "removed": 1} and done.verified.summary["rows_dropped"] == 1
+    with pytest.raises(ValueError, match="nothing to freeze"):
+        review.freeze_round(two.iloc[:0], EODStages(shipped, rules, rules), "round 3", decisions=review.decision_frame([]))
+
+
+def test_screens_measure_the_stays_and_the_day():
+    trips = _trips([
+        (1, 8, 0, "Trabajar", None, None, 30), (1, 8, 30, "Regresar a Casa", None, None, 30),      # leaves as it arrives
+        (2, 6, 0, "Trabajar", None, None, 30), (2, 21, 30, "Regresar a Casa", None, None, 30),     # 15 hours at work
+        (3, 4, 0, "Compras (comida)", None, None, 30), (3, 23, 45, "Regresar a Casa", None, None, 30),  # over 20 hours
+    ])
+    hab = pd.DataFrame(index=trips.index.droplevel("folio_viaje").unique())
+    s = review.screens(EODTables(VIV, hab, trips, None))
+    assert s.zero_stays.tolist() == [1, 0, 0] and s.work_minutes.tolist() == [0, 900, 0]
+    assert s[list(review.SCREENS)].values.tolist() == [[True, False, False], [False, True, False], [False, False, True]]
+    assert list(review.screened_persons(EODTables(VIV, hab, trips, None), ["long_day"])) == [(1, 3)]
+    with pytest.raises(ValueError, match="not a screen"):
+        review.screened_persons(EODTables(VIV, hab, trips, None), ["short_day"])
+
+
+def test_a_sheet_read_back_drops_blank_rows_and_a_write_drops_the_cached_decisions(tmp_path):
+    shipped, cleaned = _survey(_fixture())
+    sheet = review.chain_sheet(review.chain_rows(cleaned, shipped), cleaned.hab)
+    path = review.write_sheet(sheet, tmp_path / "s.csv")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("," * (len(sheet.columns) - 1) + "\n")                   # the empty row a spreadsheet leaves
+    assert len(review.read_sheet(path)) == len(sheet)
+    chain_decisions()
+    review.write_decisions(review.decision_frame([]), tmp_path / "chains.csv.gz")
+    assert chain_decisions.cache_info().currsize == 0
