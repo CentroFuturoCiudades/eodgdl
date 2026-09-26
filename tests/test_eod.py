@@ -146,6 +146,18 @@ def test_a_return_home_made_from_home_is_not_a_trip():
     assert (cleaned.loc[(1, 3)].problemas.tolist()[1:] == ["", ""])
 
 
+def test_a_return_home_after_midnight_from_an_afternoon_shift_is_overnight():
+    trips = _trips([
+        (1, 14, 0, "Trabajar", None, None, 30), (1, 2, 0, "Regresar a Casa"),       # second shift: overnight
+        (2, 14, 0, "Trabajar", None, None, 30), (2, 2, 0, "Compras (comida)"),      # not a return: inverted
+        (3, 19, 0, "Trabajar", None, None, 30), (3, 2, 0, "Compras (comida)"),      # an evening start: overnight
+    ])
+    cleaned, _ = clean_trip_chains(trips, VIV)
+    assert (cleaned.ajustes == "").all()        # no typo reading fits any of them: the search leaves them
+    second = cleaned.xs(2, level="folio_viaje").problemas
+    assert [has_code(second, "hora_nocturna").loc[(1, p)] for p in (1, 2, 3)] == [True, False, True]
+    assert [has_code(second, "hora_invertida").loc[(1, p)] for p in (1, 2, 3)] == [False, True, False]
+
 def test_a_return_that_did_not_reach_home_takes_its_destination_type():
     trips = _trips([
         (1, 8, 0, "Trabajar"),
@@ -283,7 +295,7 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns():
     assert non_trips(trips).sum() == 416
     # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
     assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
-        "regreso_en_casa": 416, "hora_invertida": 885, "hora_nocturna": 93,
+        "regreso_en_casa": 416, "hora_invertida": 870, "hora_nocturna": 108,
         "hora_anterior": 26, "hora_repetida": 101, "hora_traslapada": 569, "origen_discontinuo": 32, "regreso_sin_llegar": 163,
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 906, "inicio_zona_ajena": 714,
         "fin_fuera_de_casa": 514, "actividad_en_casa": 787, "motivo_guarderia": 217}

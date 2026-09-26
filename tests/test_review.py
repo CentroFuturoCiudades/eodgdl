@@ -278,24 +278,27 @@ def test_load_eod_applies_the_frozen_hand_passes():
     shipped = load_eod(DATA_DIR, clean_chains=False)
     rules, revised = load_eod(DATA_DIR, revise_chains=False), load_eod(DATA_DIR)
     t = revised.trips
-    (name, edits), = chain_revisions()
-    assert name == "chains_1.csv.gz" and len(edits) == 11_669
-    # every frozen value holds, every row dropped by hand is gone with its legs, the counts follow
-    dropped = edits[edits.field == "status"]
-    assert (dropped.after == "dropped").all() and len(dropped) == 512
-    assert not t.index.isin(pd.MultiIndex.from_frame(dropped[review.KEYS])).any()
-    assert len(t) == len(rules.trips) - 512 == 154_112 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
+    passes = chain_revisions()
+    assert [(name, len(edits)) for name, edits in passes] == [("chains_1.csv.gz", 11_669), ("chains_2.csv.gz", 260)]
+    # a row's last status wins: pass 1 drops 512, pass 2 restores 77 of them and drops 34 more
+    status = pd.concat([e[e.field == "status"] for _, e in passes]).drop_duplicates(review.KEYS, keep="last")
+    gone = pd.MultiIndex.from_frame(status.loc[status.after == "dropped", review.KEYS])
+    back = pd.MultiIndex.from_frame(status.loc[status.after == "restored", review.KEYS])
+    assert (len(gone), len(back)) == (469, 77)
+    assert not t.index.isin(gone).any() and back.isin(t.index).all()
+    assert len(t) == len(rules.trips) - 469 == 154_155 and revised.legs.index.droplevel("folio_traslado").isin(t.index).all()
     assert (revised.hab.viajes_contados == t.groupby(level=PERSON).size().reindex(revised.hab.index).fillna(0)).all()
     assert review.sheet_edits(review.chain_sheet(review.chain_rows(revised, shipped))).empty
-    again = review.apply_revisions(revised, shipped)
-    assert again.trips.equals(t)                                            # the values already hold: a pass is idempotent
+    # the last pass again changes nothing: its values hold, its rows are gone or back
+    again = review.apply_edits(revised, passes[-1][1], shipped, rules)
+    assert again.trips.equals(t) and again.hab.equals(revised.hab)
     assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
-    assert has_code(t.ajustes, "origen:revision").sum() == 1_361 and non_trips(t).sum() == 51
-    # what is left: few breaking chains, the tolerated codes left alone
-    breaking = {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES}
-    assert breaking == {"hora_invertida": 68, "hora_anterior": 1, "origen_discontinuo": 1,
-                        "regreso_sin_llegar": 2, "inicio_zona_ajena": 0}
-    assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 71
+    assert has_code(t.ajustes, "origen:revision").sum() == 1_367 and has_code(t.ajustes, "fila:revision").sum() == 77
+    assert non_trips(t).sum() == 51
+    # what is left: no breaking chain, the tolerated codes left alone
+    assert {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES} == dict.fromkeys(BREAKING_ISSUES, 0)
+    assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0
+    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 160
     # the zone follows the AGEB on every revised trip end
     ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
                       for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])

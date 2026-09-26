@@ -121,8 +121,9 @@ ISSUE_CODES = {
     "destination type gives nothing to recode from",
     "tipo_destino_dudoso": "a 'Regresar a Casa' that reached the home zone but reports a destination type "
     "that is not a home; the motive is kept",
-    "hora_nocturna": "starts by 06:00 after a trip that started at or after 18:00: read as overnight and "
-    "left alone; a night shift or a mistyped hour, nothing says which",
+    "hora_nocturna": "starts by 06:00 after a trip that started at or after 18:00, or is a return home by "
+    "06:00 after a trip that started at or after noon: read as overnight and left alone; a night or second "
+    "shift or a mistyped hour, nothing says which",
     "hora_anterior": "starts before the previous trip's start but within the tolerance of its arrival, so "
     "not repaired: minute noise",
     "hora_repetida": "starts at the same minute as the previous trip, whose legs fit within the tolerance "
@@ -802,8 +803,8 @@ def _repair_start_times(
     rule this replaced moved 579 rows; the search moves 536 of them
     identically, reads 5 differently because the arrival constraint rules out
     the 12-hour reading, and leaves 38 in chains it cannot resolve as a whole.
-    885 trips in 767 people still start before the previous trip could have
-    arrived by more than the tolerance and are marked ``hora_invertida``;
+    870 trips in 756 people still start before the previous trip could have
+    arrived by more than the tolerance, not overnight, and are marked ``hora_invertida``;
     tasha.chain_report counts them again on the built table. Household 8,
     person 3 is the worked example: 07:24, 07:37,
     19:00, 16:30, 18:02, 18:00, with 30-minute drives, becomes feasible by
@@ -854,8 +855,10 @@ def _remaining_issues(
     rules do not repair is a code here, so the trips carrying at least one
     error are exactly the trips with a non-empty ``problemas``; nothing is
     repaired, since none of these has a repair that does not invent data. On
-    the shipped survey, after the rules: 885 ``hora_invertida``, 93
-    ``hora_nocturna``, 25 ``hora_anterior``, 101 ``hora_repetida`` and 569
+    the shipped survey, after the rules: 870 ``hora_invertida``, 108
+    ``hora_nocturna`` (15 of them a return home by 06:00 after an afternoon
+    start, the second shift this marking reads as overnight while the typo
+    search keeps its 18:00 window), 26 ``hora_anterior``, 101 ``hora_repetida`` and 569
     ``hora_traslapada`` (one time code per row at most: the mild codes are
     what ``hora_invertida`` does not cover; the overlaps within the tolerance
     spike at 5, 10 and 15 minutes, the rounding of the reported leg minutes,
@@ -891,7 +894,11 @@ def _remaining_issues(
     origin_kind = trips.tipo_lugar_origen.astype(str).to_numpy()
     from_home = origin_kind == HOME_PLACE
     with np.errstate(invalid="ignore"):
-        wrap = has_prev & (prev_start >= 18 * 60) & (start <= 6 * 60)
+        # overnight: by 06:00 after an evening start, or a return home by 06:00 after an
+        # afternoon one — the second shift the typo search cannot read otherwise (its own
+        # window stays at 18:00, where a 03:00 after 14:00 is likelier a mistyped 15:00)
+        overnight = (prev_start >= 18 * 60) | ((prev_start >= 12 * 60) & is_return)
+        wrap = has_prev & overnight & (start <= 6 * 60)
         inverted = has_prev & (start < prev_arrival - _START_TIME_TOLERANCE) & ~wrap
         earlier = has_prev & (start < prev_start) & ~inverted & ~wrap
         same_minute = has_prev & (start == prev_start) & ~inverted

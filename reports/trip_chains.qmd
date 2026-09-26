@@ -262,7 +262,7 @@ assert counts == {"untimed_trips": 325, "untimed_persons": 281,
                   "motives_from_duplicate": 38, "motives_from_neighbours": 294,
                   "recoded_returns": 84, "home_to_home": 416, "duplicate_returns": 38,
                   "origins_repaired": 124, "start_times_edited": 2_033, "chains_repaired": 1_553,
-                  "left_hora_invertida": 885, "left_hora_nocturna": 93, "left_hora_anterior": 26,
+                  "left_hora_invertida": 870, "left_hora_nocturna": 108, "left_hora_anterior": 26,
                   "left_hora_repetida": 101, "left_hora_traslapada": 569, "left_origen_discontinuo": 32,
                   "left_regreso_sin_llegar": 163, "left_tipo_destino_dudoso": 16,
                   "left_inicio_fuera_de_casa": 906, "left_inicio_zona_ajena": 714, "left_fin_fuera_de_casa": 514,
@@ -487,7 +487,9 @@ edited_hours = C.hora_inicio_h[hour_edit.reindex(C.index) != ""].astype(int)
 assert (edited_hours >= 5).all()
 c_inv = (C.start < C.prev_start).fillna(False)
 c_early = (C.start < C.prev_start + C.prev_leg).fillna(False)
-c_beyond = ((C.prev_start + C.prev_leg - C.start) > _START_TIME_TOLERANCE).fillna(False) & ~((C.prev_start >= 18 * 60) & (C.start <= 6 * 60)).fillna(False)
+# the marking's overnight: an evening start, or a return home after an afternoon one (a second shift)
+overnight_c = ((((C.prev_start >= 18 * 60) | ((C.prev_start >= 12 * 60) & C.is_return)) & (C.start <= 6 * 60))).fillna(False)
+c_beyond = ((C.prev_start + C.prev_leg - C.start) > _START_TIME_TOLERANCE).fillna(False) & ~overnight_c
 repair_tbl = pd.DataFrame({
     "measure": ["chains with a trip starting before the previous arrival, beyond the tolerance",
                 "chains given a unique cheapest reading", "rows edited (imputed start times are never edited)",
@@ -610,7 +612,7 @@ assert unique_share > 0.99
 
 gap = C.start - C.prev_start
 inv_c = (C.start < C.prev_start).fillna(False)
-night_c = inv_c & (C.prev_start >= 18 * 60) & (C.start <= 6 * 60)
+night_c = inv_c & overnight_c
 small_c = inv_c & ((C.prev_start - C.start) <= 15)
 ties_c = (C.start == C.prev_start).fillna(False)
 hidden_c = (~inv_c) & C.prev_start.notna() & C.hora_inicio_h.between(1, 6) & C.is_return
@@ -744,7 +746,7 @@ def _b(x):
 
 def error_masks(T, home_to_home):
     """One boolean mask per kind of error, on table T (R as shipped, C after load_eod)."""
-    wrap = _b((T.prev_start >= 18 * 60) & (T.start <= 6 * 60))
+    wrap = _b(((T.prev_start >= 18 * 60) | ((T.prev_start >= 12 * 60) & T.is_return)) & (T.start <= 6 * 60))
     return {
         "no start time (and no motive)": T.start.isna(),
         "return home made while already at home": home_to_home,
@@ -1400,8 +1402,9 @@ show(ft)
 ## Start times {#sec-lingering-time}
 
 `{python} fmt(int(inv_c.sum()))` trips in `{python} fmt(inv_people)` people still start
-before the trip before them: `{python} int(night_c.sum())` look like night shifts (previous
-trip at or after 18:00, this one by 06:00) and are marked `hora_nocturna`,
+before the trip before them: `{python} int(night_c.sum())` look like night or second shifts
+(this one by 06:00, the previous trip at or after 18:00, or at or after noon when this one is a
+return home) and are marked `hora_nocturna`,
 `{python} n_anterior` are within the tolerance of the previous arrival and are marked
 `hora_anterior`, and the rest are among the `{python} fmt(c_beyond.sum())` marked
 `hora_invertida`: trips that still start before the previous trip could have arrived by

@@ -397,7 +397,8 @@ def _restore(trips, legs, keys, rules, shipped):
         rows = source.trips.loc[picked].reindex(columns=trips.columns)
         kept = source.trips[FIX_FLAG].reindex(rows.index) if FIX_FLAG in source.trips else None
         rows[FIX_FLAG] = [
-            RESTORED_CODE if not isinstance(f, str) or not f else f + ";" + RESTORED_CODE
+            RESTORED_CODE if not isinstance(f, str) or not f
+            else f if RESTORED_CODE in f.split(";") else f + ";" + RESTORED_CODE
             for f in (kept if kept is not None else [""] * len(rows))
         ]
         rows[ISSUE_FLAG] = ""

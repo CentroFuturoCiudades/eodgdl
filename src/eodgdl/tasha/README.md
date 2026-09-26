@@ -172,15 +172,16 @@ validate without changing the exit code. On `load_eod()`'s tables (the chain rul
 the hand revisions):
 
 ```
-1 trips (1 people) do not start in the zone the previous trip ended in
-208 trips (208 people) start earlier than the trip before them
-210 trips (209 people) start before the previous trip could have arrived
-256 people whose first trip does not start at home
-412 people whose last trip does not end at home
+160 trips (160 people) start earlier than the trip before them
+166 trips (164 people) start before the previous trip could have arrived
+331 people whose first trip does not start at home
+444 people whose last trip does not end at home
 ```
 
-On the rules' output alone (`load_eod(revise_chains=False)`) the same report reads 32, 839,
-1,673, 127 same-minute starts, 906 and 416.
+Every trip starts where the previous one ended, and the 160 that start earlier are all
+overnight (`hora_nocturna`). On the rules' output alone (`load_eod(revise_chains=False)`) the
+same report reads 32 zone breaks, 840, 1,674, 127 same-minute starts, 1,620 (the 714 first
+trips that answer 'Su casa' from another zone do not start at home) and 416.
 
 ## Open items
 
@@ -217,10 +218,10 @@ rather than about one column's coding, so nothing surfaces them automatically.
   `eodgdl.chains.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs
-  (`tasha.chain_report`): after the rules and the first hand pass
-  (`eodgdl/revisions/`), 208 trips in 208 people still start before the
-  trip before them — 68 by more than the 15-minute tolerance, 140 overnight —
-  and 1 trip does not start where the previous one ended; `trips.problemas` marks each, and since 2026-09-04
+  (`tasha.chain_report`): after the rules and the two hand passes
+  (`eodgdl/revisions/`) no trip carries a breaking code — the 160 trips that
+  still start before the trip before them are all overnight, and every trip
+  starts where the previous one ended; `trips.problemas` marks each, and since 2026-09-04
   every other residual defect too — overnight wraps, same-minute starts,
   days that start or end away from home, activities typed `Su casa`,
   `Guardería` (`eodgdl.chains.ISSUE_CODES`) — so the trips with a defect are
