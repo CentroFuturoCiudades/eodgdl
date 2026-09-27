@@ -355,7 +355,12 @@ trips:
       small hours when a stay of eight hours or more follows it, applied only
       where the cheapest reading is unique (eodgdl.chains._repair_start_times),
       the leg minutes read after a review's corrections
-      (eodgdl/revisions/leg_minutes.csv.gz). A start that still falls before
+      (eodgdl/revisions/leg_minutes.csv.gz) and after a ride home that ran past
+      the person's next departure took the minutes up to it, so the survey's
+      starts stand there (eodgdl.chains._rides_home_to_departure). The
+      readings of a leading 1 were never confirmed by a household member who
+      made the trip (the 12-hour ones were, 91 times of 104), and stay marked
+      in trips.ajustes. A start that still falls before
       the previous arrival by the tolerance or less, or by up to an hour where
       no reading of the hours fits and the trip before does not go to work or
       school, moves to that arrival (eodgdl.chains._start_at_arrival), and the
@@ -558,4 +563,9 @@ trips:
     note: >-
       Do NOT use trips.duracion_total_min: it is categorical and banded
       ('Menos de 6', '6 a 10', … '121 y +'), whereas the leg minutes are
-      integers.
+      integers. The minutes are load_eod's: a review corrected the motorised
+      trips reporting twice the survey's typical minutes for their distance
+      (minutos:revision, eodgdl/revisions/leg_minutes.csv.gz), and a ride
+      home that ran past the person's next reported departure takes the
+      minutes up to it (minutos:regreso, eodgdl.chains._rides_home_to_departure);
+      both codes are in trips.ajustes.

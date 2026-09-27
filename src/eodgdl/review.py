@@ -33,7 +33,7 @@ changes gives the decisions already on that trip a new reason.
     ...                                                               # edit by hand
     sheet = review.read_sheet("chain_review.csv")
     edits = review.sheet_edits(sheet)
-    done = review.freeze_round(edits, stages, "chain_review_16", shown=review.sheet_keys(sheet))
+    done = review.freeze_round(edits, stages, "chain_review_17", shown=review.sheet_keys(sheet))
     done.verified.summary                                             # what the edits did (eodgdl review verify)
     review.write_decisions(done.decisions, review.decisions_path())   # what load_eod applies, in one pass
 
@@ -69,7 +69,9 @@ import numpy as np
 import pandas as pd
 
 from eodgdl.chains import (
+    _COMPANION_TOL,
     _EARLY_START,
+    _HALF_DAY,
     _NIGHT_SHIFT_RETURN,
     ESCORT,
     FIX_FLAG,
@@ -80,6 +82,8 @@ from eodgdl.chains import (
     MANDATORY_MOTIVES,
     PERSON,
     WORK_MOTIVE,
+    _clock_gap,
+    _companion_links,
     _home_zone,
     _leg_minutes,
     _start_minutes,
@@ -1177,15 +1181,8 @@ def changed_persons(before: pd.DataFrame, after: pd.DataFrame) -> pd.MultiIndex:
 # the readings against household companions (the evidence is in
 # eodgdl.chains._repair_start_times): where a companion reported another start, it
 # matched the typo search's 12-hour readings 73 times and its readings of an extra
-# or missing leading 1 never.
-_COMPANION_TOL = 20  # minutes: two starts this close are one start
-_HALF_DAY = 12 * 60
-
-
-def _clock_gap(a, b) -> np.ndarray:
-    """Minutes between two clock times (minutes from midnight), the short way round the clock; NaN where one is."""
-    d = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)) % 1440
-    return np.minimum(d, 1440 - d)
+# or missing leading 1 never. The link is eodgdl.chains._companion_links, which the
+# rules read too (hora_acompanante_12h), with its tolerances.
 
 
 def companions(tables: EODTables, shipped: EODTables) -> pd.DataFrame:
@@ -1201,7 +1198,9 @@ def companions(tables: EODTables, shipped: EODTables) -> pd.DataFrame:
     leaves no later than the other arrives). The link is the reports', so a
     reading that moves the trip next to it does not undo it. The companion's
     version of the trip is the one beside that anchor in their chain, with
-    the same zones and motive. One row per trip and companion trip, both ways
+    the same zones and motive, unless either trip is one entry with another
+    trip of the other's (:func:`eodgdl.chains._companion_links`: a split
+    shift beside a straight one). One row per trip and companion trip, both ways
     round: ``household, person, trip``, ``companion, companion_trip``,
     ``start`` and ``companion_start`` (minutes from midnight, as ``tables``
     hold them), ``reported`` and ``companion_reported`` (as ``shipped``
@@ -1217,33 +1216,20 @@ def companions(tables: EODTables, shipped: EODTables) -> pd.DataFrame:
     """
     t = tables.trips[~non_trips(tables.trips)].sort_index()
     s = shipped.trips.reindex(t.index)
+    start = _start_minutes(t)
+    reported = (s.hora_inicio_h.astype(float) * 60 + s.hora_inicio_m.astype(float)).to_numpy()
     frame = pd.DataFrame(
         {"origin": t.origen.astype(str).to_numpy(), "destination": t.destino.astype(str).to_numpy(),
-         "motive": t.motivo_viaje.astype(str).to_numpy(), "start": _start_minutes(t),
-         "reported": (s.hora_inicio_h.astype(float) * 60 + s.hora_inicio_m.astype(float)).to_numpy(),
+         "motive": t.motivo_viaje.astype(str).to_numpy(), "link": reported,  # an imputed start (no report) links nothing
          "travel": _leg_minutes(t, tables.legs)},
         index=t.index,
     )
-    g = frame.groupby(level=PERSON)
-    parts = []
-    for anchor, step in (("previous", 1), ("next", -1)):
-        side = frame.assign(**{f"a_{c}": g[c].shift(step) for c in ("origin", "destination", "motive", "reported", "travel")})
-        side = side[side.a_reported.notna() & side.a_motive.notna() & (side.a_motive != ESCORT)].reset_index()
-        keys = ["folio_vivienda", "origin", "destination", "motive", "a_origin", "a_destination", "a_motive"]
-        m = side.merge(side, on=keys, suffixes=("", "_c"))
-        a, b = m.a_reported.astype(float), m.a_reported_c.astype(float)  # an imputed start (no report) links nothing
-        together = (a <= b + m.a_travel_c.astype(float)) & (b <= a + m.a_travel.astype(float))  # on the road at once
-        m = m[(m.folio_habitante != m.folio_habitante_c) & (_clock_gap(a, b) <= _COMPANION_TOL) & together]
-        parts.append(m.assign(anchor=anchor))
-    m = pd.concat(parts, ignore_index=True).drop_duplicates(
-        ["folio_vivienda", "folio_habitante", "folio_viaje", "folio_habitante_c", "folio_viaje_c"])
-    out = pd.DataFrame({
-        "household": m.folio_vivienda.to_numpy(dtype=int), "person": m.folio_habitante.to_numpy(dtype=int),
-        "trip": m.folio_viaje.to_numpy(dtype=int), "companion": m.folio_habitante_c.to_numpy(dtype=int),
-        "companion_trip": m.folio_viaje_c.to_numpy(dtype=int), "start": m.start.to_numpy(dtype=float),
-        "companion_start": m.start_c.to_numpy(dtype=float), "reported": m.reported.to_numpy(dtype=float),
-        "companion_reported": m.reported_c.to_numpy(dtype=float), "anchor": m.anchor.to_numpy(),
-    })
+    pairs = _companion_links(frame)
+    i, j = pairs.i.to_numpy(), pairs.j.to_numpy()
+    out = pairs.drop(columns=["i", "j", "anchor"]).assign(
+        start=start[i], companion_start=start[j], reported=reported[i], companion_reported=reported[j],
+        anchor=pairs.anchor.to_numpy(),
+    )
     gap = _clock_gap(out.start, out.companion_start)
     out["same_entry"] = _clock_gap(out.reported, out.companion_reported) <= _COMPANION_TOL
     out["apart"] = out.same_entry & (gap > _COMPANION_TOL)

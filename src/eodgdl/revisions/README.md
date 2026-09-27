@@ -10,7 +10,9 @@ Two tables hold the hand work on the trip chains, read at the two ends of the ch
   instead, spread over its legs in proportion to what each reported, a minute each at least. The
   load fails if a trip's minutes are not `before`. The corrected trips carry `minutos:revision`
   in `ajustes`, and a review sheet shows their minutes, shipped → corrected, under `leg min`,
-  which takes no new value.
+  which takes no new value. One rule sets minutes too, after this table: a ride home that runs
+  past the person's next departure takes the minutes up to it (`minutos:regreso`,
+  `eodgdl.chains._rides_home_to_departure`), and a trip this table corrects keeps the table's.
 - `chains.csv.gz`, the **hand decisions**, goes in **after** the rules: `load_eod()` applies it
   to their output in one pass (`eodgdl.review.apply_revisions`; `load_eod(revise_chains=False)`
   stops before it). Each row is one decision, columns `household, person, trip, field, before,
@@ -30,10 +32,12 @@ For the decisions:
 
 The hand decisions sit only on persons the rules' output marks — a `problemas` or an `ajustes`
 code on one of their trips (`eodgdl.review.marked_persons`): the survey nothing marks keeps its
-values (user, 2026-09-26).
+values (user, 2026-09-26). Two household members whose reports of a trip made together sit 12
+hours apart are marked on both trips (`hora_acompanante_12h`), so a round may settle the pair
+even where the rules touch neither day (user, 2026-09-27).
 
 A change to `leg_minutes.csv.gz` changes what the rules read, so it is a change to the rules:
-take a snapshot first (below) and make it with a script under `scripts/revisions/`, as round 16's
+take a snapshot first (below) and make it with a script under `scripts/revisions/`, as round 17's
 writes it; no review sheet edits it.
 
 ## A review round
@@ -224,6 +228,56 @@ contradicts is left to the screens:
 - 12 persons 12 hours from a companion in households the rules' output does not mark (1688, 1723,
   4077, 4202 and 13975), which keep their values.
 
+## Round 17: the leading-1 readings (2026-09-27)
+
+A review of the typo search's readings of a leading 1 — an extra one (−10 h), a missing one
+(+10 h), an extra one on a 12-hour-clock entry (+2 h) — changed the rules and made the table
+again the same day. A household member who made the trip with the person confirmed none of them
+(0 of 24 where the member reported another start, and in 12 the member sat at the 12-hour reading,
+which the rest of the day did not let fit), and the −10 h and +2 h read hours a third as common as
+the ones reported, for trips of the same motive and position. The +2 h, 816 starts, was mostly no
+typo: where it closed a contradiction with the trip before, the starts the survey reports were in
+order 320 times in 469, and only that trip's minutes ran past the next start, by a median of 30
+minutes; that trip, most often a ride home, was slow for its distance (a median 1.5 times the
+survey's typical minutes for its mode over its distance), and 347 more of its edits moved a trip
+only because the one before had moved: an errand and its return, both two hours on. So:
+
+- a **ride home that runs past the person's next departure**, both starts the survey's and in
+  that order, takes the minutes up to the departure where it keeps half the minutes it reports
+  (`eodgdl.chains._rides_home_to_departure`, `minutos:regreso`): 240 rides, 32 minutes fewer on
+  average. 345 of the 816 +2 h starts keep the survey's hour, and `hora_invertida` falls from 351
+  to 349. A ride round 9 corrected keeps round 9's minutes. The floor is the ride's own minutes,
+  not its distance's typical minutes, since `load_eod` reads no census geography: of the 260 rides
+  the typical minutes would let through, 237 are among the 240. Dropping the +2 h from the menu
+  instead would have sent 185 more persons to `hora_invertida`, and this round would have read 404
+  of its starts back from the earlier tables;
+- two household members whose **reports of a trip made together sit 12 hours apart**, both as the
+  survey reports them, are marked (`hora_acompanante_12h`, tolerated): 10 trips in 4 households,
+  three of them days nothing else marked (household 1723, person 2, home from work at 07:30 while
+  three members who left with them came home at 19:30; household 4202's children home from school
+  at 11:30 and 23:30; household 13975, person 1, to work at 01:30 and 20 hours there);
+- the **companion link** (`eodgdl.chains._companion_links`, which `eodgdl.review.companions` and
+  the code both read) is void where either trip is one entry with another trip of the other
+  member's: a split shift beside a straight one shares the evening return, which linked the
+  second trip to work of the one to the morning trip of the other (households 1688 and 4077, read
+  as 12 hours apart; 359 such pairs of trips on the rules' output).
+
+`review export --since` on a snapshot taken before listed the 240 persons whose ride home took
+the minutes up to the next departure, and no other. Eleven decisions went stale (households 6859
+and 11251 among them, whose first contradiction the capped ride removed), so the table was made
+again as **round 17** (`scripts/revisions/chains_17.py`, from round 16's inputs), which retires
+round 16's table, script and sheet. Round 17 is round 16's steps with one more word in the
+consistency step: where moving either member of a pair leaves the day the same, the pair takes
+the commoner hour for that kind of trip (its motive, first trip of the day or not), over the
+trips whose start no rule set. Household 4202's children come home at 11:30: the order of the two
+had moved the 10-year-old to 23:30.
+
+581 decisions (62 carried, 519 starts), 574 of them round 16's. No breaking code is left, every
+decision applies, and a second run of the script finds nothing. The three slips are settled
+(household 1723, person 2, home at 19:30; household 4202, person 3, at 11:30; household 13975,
+person 1, to work at 13:30), and so is household 15378, as round 16 had it. The companions still
+contradict 26 persons with one entry read two ways (`companion_apart`), and none 12 hours apart.
+
 ## History
 
 Pass 1 (`notebooks/chain_review.csv`, every person with a `problemas` code, exported 2026-09-08
@@ -243,8 +297,10 @@ day, and rounds 8–13 merged into it by `eodgdl review freeze`:
 
 Round 14 (2026-09-26, the fourth review of the chains) retired every earlier decision and made the
 table again on rules that took over the first pass's templates; round 15 (the same day, the fifth
-review) did the same on the rules that took over two of round 14's criteria, and round 16 (the
+review) did the same on the rules that took over two of round 14's criteria, round 16 (the
 same day, the review against household companions) on the one menu, with the companions as a
-criterion. The sheets of passes 1–10, round 9's and 10's scripts and the frozen passes are in git
-(commit 9570b7c and earlier), round 14's script and sheet in commit 42b0cbb, round 15's in commit
-617e49b; round 16's notes say which earlier decision each carried decision keeps.
+criterion, and round 17 (2026-09-27, the review of the leading-1 readings) on the rules that let a
+ride home take the minutes up to the next departure. The sheets of passes 1–10, round 9's and
+10's scripts and the frozen passes are in git (commit 9570b7c and earlier), round 14's script and
+sheet in commit 42b0cbb, round 15's in commit 617e49b, round 16's in commit c631819; round 17's
+notes say which earlier decision each carried decision keeps.

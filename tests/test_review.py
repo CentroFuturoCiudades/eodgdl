@@ -395,8 +395,8 @@ def test_the_pending_sheet_round_trips_on_the_survey(stages, tmp_path):
     assert len(rows) == 154_662 and int(rows.dropped.sum()) == 38
     pending = review.pending_persons(rows)
     sheet = review.chain_sheet(rows, cleaned.hab, pending)
-    assert (len(pending), len(sheet)) == (3_468, 11_430)
-    assert sheet.status.value_counts().to_dict() == {"": 10_587, "changed": 842, "dropped": 1}
+    assert (len(pending), len(sheet)) == (3_485, 11_476)
+    assert sheet.status.value_counts().to_dict() == {"": 10_626, "changed": 849, "dropped": 1}
     back = review.read_sheet(review.write_sheet(sheet, tmp_path / "chain_review.csv"))
     ends = back.destination.str.split(" → ")                           # a return that copied its origin goes home
     assert set(ends.str[-1].str.len()) <= {4, 9, 13} and set(ends.str[0].str.len()) <= {4, 9, 13}   # ids as strings
@@ -434,12 +434,11 @@ def test_load_eod_applies_the_hand_decisions(stages):
     t = revised.trips
     decisions = chain_decisions()
     # one decision per trip and field, every one with its reason and the review sheet it came from
-    assert len(decisions) == 599 and not decisions.duplicated(review.KEYS + ["field"]).any()
+    assert len(decisions) == 581 and not decisions.duplicated(review.KEYS + ["field"]).any()
     assert decisions.field.value_counts().to_dict() == {
-        "start": 537, "origin": 16, "motive": 13, "destination": 10, "status": 10, "orig. type": 7, "dest. type": 6}
-    # one round made them all, on the rules of the review of the readings against household companions
-    # (scripts/revisions/chains_16.py)
-    assert set(decisions.source) == {"chain_review_16"}
+        "start": 519, "origin": 16, "motive": 13, "destination": 10, "status": 10, "orig. type": 7, "dest. type": 6}
+    # one round made them all, on the rules of the review of the leading-1 readings (scripts/revisions/chains_17.py)
+    assert set(decisions.source) == {"chain_review_17"}
     # the day-start answer is a decision about the person: trip 0
     assert (decisions.loc[decisions.field == "orig. type", "trip"] == review.PERSON_TRIP).all()
     # the hand review touches only persons the rules' output marks: a problemas or an ajustes code on one of their trips
@@ -458,18 +457,22 @@ def test_load_eod_applies_the_hand_decisions(stages):
     assert again.trips.equals(t) and again.hab.equals(revised.hab) and again.legs.equals(revised.legs)
     assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
     assert has_code(t.ajustes, "origen:revision").sum() == 16 and has_code(t.ajustes, "fila:revision").sum() == 0
-    assert has_code(t.ajustes, "origen:copia").sum() == 955 and has_code(t.ajustes, "hora:llegada").sum() == 657
-    # the legs whose minutes a review corrected before the rules, and no other, differ from the survey's
+    assert has_code(t.ajustes, "origen:copia").sum() == 955 and has_code(t.ajustes, "hora:llegada").sum() == 621
+    # the legs whose minutes a review corrected before the rules, or a rule gave a ride home, and no other, differ
+    # from the survey's
     minutes = revised.legs.traslado_min.groupby(level=[0, 1, 2]).sum()
     differs = minutes != shipped.legs.traslado_min.groupby(level=[0, 1, 2]).sum().reindex(minutes.index)
-    assert set(differs[differs].index) == set(t.index[has_code(t.ajustes, "minutos:revision").to_numpy()]) and differs.sum() == 371
+    set_ = has_code(t.ajustes, "minutos:revision") | has_code(t.ajustes, "minutos:regreso")
+    assert set(differs[differs].index) == set(t.index[set_.to_numpy()]) and differs.sum() == 371 + 240
     assert non_trips(t).sum() == 554 + 75
     # what is left: no breaking chain, the tolerated codes left alone
     assert {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES} == dict.fromkeys(BREAKING_ISSUES, 0)
     assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0
     assert int(has_code(t.problemas, "hora_nocturna").sum()) == 217 and int(has_code(t.problemas, "hora_2301").sum()) == 92
-    assert int(has_code(t.problemas, "hora_madrugada").sum()) == 59
-    assert int(has_code(t.problemas, "hora_1h01").sum()) == 718 and int(has_code(t.problemas, "hora_5h01").sum()) == 613
+    assert int(has_code(t.problemas, "hora_madrugada").sum()) == 58
+    assert int(has_code(t.problemas, "hora_1h01").sum()) == 728 and int(has_code(t.problemas, "hora_5h01").sum()) == 613
+    # the pairs of household members 12 hours apart on a trip made together are settled: none is left
+    assert int(has_code(t.problemas, "hora_acompanante_12h").sum()) == 0
     # the zone follows the AGEB on every revised trip end
     ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
                       for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])

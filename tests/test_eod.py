@@ -465,23 +465,75 @@ def test_a_night_is_no_night_shift_when_the_day_goes_to_work_again():
 
 
 def test_travel_minutes_a_review_corrected_come_before_the_rules():
-    # household 7425, person 3: 120 minutes each way make the afternoon shift start before the ride home ends, and the
-    # search read its hours two later; the review's 60 minutes let the survey's hours stand
+    # household 7425, person 3: 120 minutes each way make the afternoon shift start before the ride home ends; the
+    # search read its hours two later until 2026-09-27, when the ride home took the minutes up to the departure, and
+    # the review's 60 minutes, read before any rule, let the survey's hours stand with no rule at all
     rows = [(1, 6, 5, "Trabajar", None, None, 120), (1, 12, 32, "Regresar a Casa", None, None, 120),
             (1, 14, 10, "Trabajar", None, None, 120), (1, 18, 8, "Regresar a Casa", None, None, 120)]
     trips = _trips(rows)
-    as_reported, _ = clean_trip_chains(trips, VIV)
-    assert as_reported.hora_inicio_h.tolist() == [6, 12, 16, 20]
+    as_reported, counts = clean_trip_chains(trips, VIV)
+    assert as_reported.hora_inicio_h.tolist() == [6, 12, 14, 18] and counts["rides_home_to_departure"] == 1
+    assert as_reported.ajustes.tolist() == ["", "minutos:regreso", "", ""]
+    assert as_reported.traslado1_min.tolist() == [120, 98, 120, 120]
     minutes = pd.DataFrame({"household": 1, "person": 1, "trip": [1, 2, 3, 4], "before": 120, "after": 60})
     cleaned, counts = clean_trip_chains(trips, VIV, minutes=minutes)
     assert cleaned.hora_inicio_h.tolist() == [6, 12, 14, 18] and (cleaned.ajustes == "minutos:revision").all()
     assert cleaned.traslado1_min.tolist() == [60] * 4 and counts["leg_minutes_corrected"] == 4
+    assert counts["rides_home_to_departure"] == 0
     assert (cleaned.problemas == "").all() and mark_issues(cleaned, VIV).equals(cleaned.problemas)
     # a correction is checked against the minutes it was made against
     with pytest.raises(ValueError, match="made against 90 minutes"):
         clean_trip_chains(trips, VIV, minutes=minutes.assign(before=90))
     # over several legs the minutes spread in proportion, a minute each at least (largest remainder)
     assert _spread([10, 25, 5], 20) == [5, 12, 3] and _spread([30], 20) == [20] and _spread([1, 1], 2) == [1, 1]
+
+
+def test_a_ride_home_past_the_next_departure_took_the_minutes_up_to_it():
+    trips = _trips([
+        # household 15401, person 3: home from work by bus at 17:30, 60 minutes, then to the shop at 18:00 and back at
+        # 18:20; until 2026-09-27 the search read both errand trips two hours later
+        (1, 7, 0, "Trabajar", None, OTHER, 60), (1, 17, 30, "Regresar a Casa", None, None, 60),
+        (1, 18, 0, "Compras (comida)", None, None, 8), (1, 18, 20, "Regresar a Casa", None, None, 8),
+        # a departure two minutes after the ride's start is the capture's, not the ride's: it would keep 2 of 60 minutes
+        (2, 7, 0, "Trabajar", None, OTHER, 60), (2, 17, 30, "Regresar a Casa", None, None, 60),
+        (2, 17, 32, "Compras (comida)", None, None, 8), (2, 17, 50, "Regresar a Casa", None, None, 8),
+        # a ride that goes elsewhere than home keeps its minutes
+        (3, 7, 0, "Trabajar", None, OTHER, 60), (3, 17, 30, "Visitar a alguien", "Otra vivienda", None, 60),
+        (3, 18, 0, "Regresar a Casa", None, None, 8),
+        # so does a ride home that the next trip was recorded as leaving before
+        (4, 7, 0, "Trabajar", None, OTHER, 60), (4, 17, 30, "Regresar a Casa", None, None, 60),
+        (4, 17, 10, "Compras (comida)", None, None, 8), (4, 19, 0, "Regresar a Casa", None, None, 8),
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    minutes = cleaned.traslado1_min.groupby(level="folio_habitante").apply(list)
+    fixes = cleaned.ajustes.groupby(level="folio_habitante").apply(list)
+    assert minutes[1] == [60, 30, 8, 8] and fixes[1] == ["", "minutos:regreso", "", ""]
+    assert (cleaned.loc[(1, 1)].hora_inicio_h * 60 + cleaned.loc[(1, 1)].hora_inicio_m).tolist() == [420, 1050, 1080, 1100]
+    assert minutes[2][1] == minutes[3][1] == minutes[4][1] == 60 and counts["rides_home_to_departure"] == 1
+    assert not has_code(cleaned.ajustes, "minutos:regreso").loc[(1, [2, 3, 4])].any()
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
+def test_two_members_who_report_a_trip_made_together_12_hours_apart_are_marked():
+    school = ("Estudiar", "Escuela", ELSEWHERE, 5)
+    trips = _trips([
+        # household 4202: two children walk to school at 08:00, one comes home at 11:30 and the other at 23:30
+        (1, 8, 0, *school), (1, 11, 30, "Regresar a Casa", None, None, 5),
+        (2, 8, 0, *school), (2, 23, 30, "Regresar a Casa", None, None, 5),
+        # household 1688: a straight shift beside a split one, both out at 08:00 and home at 21:00; the shared return
+        # made the second trip to work of the one the companion of the morning trip of the other
+        (3, 8, 0, "Trabajar", None, OTHER, 30), (3, 21, 0, "Regresar a Casa", None, None, 30),
+        (4, 8, 0, "Trabajar", None, OTHER, 30), (4, 18, 32, "Regresar a Casa", None, None, 15),
+        (4, 19, 50, "Trabajar", None, OTHER, 15), (4, 21, 0, "Regresar a Casa", None, None, 30),
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    marked = has_code(cleaned.problemas, "hora_acompanante_12h")
+    assert marked[marked].index.tolist() == [(1, 1, 2), (1, 2, 2)] and counts["left_hora_acompanante_12h"] == 2
+    assert (cleaned.ajustes == "").all() and mark_issues(cleaned, VIV).equals(cleaned.problemas)
+    # once a hand decision reads one of the two, the pair is no longer marked
+    settled = cleaned.copy()
+    settled.loc[(1, 2, 2), ["hora_inicio_h", "ajustes"]] = [11, "hora:revision"]
+    assert not has_code(mark_issues(settled, VIV), "hora_acompanante_12h").any()
 
 
 def test_a_rotated_first_trip_went_from_home_to_the_place():
@@ -626,28 +678,33 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages)
     assert non_trips(trips).sum() == 556 + 75
     # every defect left is a code on the row, at these counts; a row carries at most one hora_* code
     assert {c: int(has_code(trips.problemas, c).sum()) for c in ISSUE_CODES} == {
-        "regreso_en_casa": 556, "regreso_dia_siguiente": 75, "hora_invertida": 351, "hora_nocturna": 178,
+        "regreso_en_casa": 556, "regreso_dia_siguiente": 75, "hora_invertida": 349, "hora_nocturna": 178,
         "hora_anterior": 0, "hora_repetida": 0, "hora_traslapada": 0, "origen_discontinuo": 0, "regreso_sin_llegar": 0,
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 381, "inicio_zona_ajena": 0,
-        "fin_fuera_de_casa": 494, "actividad_en_casa": 536, "motivo_guarderia": 30, "hora_2301": 94, "hora_1h01": 718,
-        "hora_5h01": 613, "hora_madrugada": 59}
+        "fin_fuera_de_casa": 494, "actividad_en_casa": 536, "motivo_guarderia": 30, "hora_2301": 94, "hora_1h01": 728,
+        "hora_5h01": 613, "hora_madrugada": 58, "hora_acompanante_12h": 10}
     # every change a rule makes, at these counts (the fifth review of the chains added five of them, 2026-09-26; the
-    # review of the readings against household companions, the same day, read 236 extra leading 1's as the -12h)
+    # review of the readings against household companions, the same day, read 236 extra leading 1's as the -12h; the
+    # review of the leading-1 readings, 2026-09-27, let 240 rides home take the minutes up to the next departure, and
+    # 345 fewer starts are read two hours on)
     assert {c: int(has_code(trips.ajustes, c).sum()) for c in FIX_CODES if not c.endswith(":revision")} == {
         "hora:duplicado": 37, "hora:vecinos": 288, "motivo:duplicado": 38, "motivo:vecinos": 294,
         "motivo:tipo_destino": 84, "destino:copia": 69, "motivo:casa": 231, "motivo:lugar": 67, "motivo:guarderia": 163,
         "destino:casa": 8, "motivo:otros": 21, "origen:casa": 147, "origen:anterior": 77, "origen:copia": 955,
         "origen:respuesta": 86, "origen:tipo_copia": 151, "origen:rotado": 47, "destino:rotado": 47,
-        "tipo_destino:rotado": 20, "tipo_origen:copia": 1_602, "tipo_origen:regreso": 113, "hora:+12h": 705,
-        "hora:-12h": 641 + 123, "hora:-10h": 156, "hora:+10h": 154, "hora:-10h+12h": 816, "hora:llegada": 694}
+        "tipo_destino:rotado": 20, "tipo_origen:copia": 1_602, "tipo_origen:regreso": 113, "minutos:regreso": 240,
+        "hora:+12h": 706, "hora:-12h": 636 + 123, "hora:-10h": 142, "hora:+10h": 149, "hora:-10h+12h": 471,
+        "hora:llegada": 648}
     hora = sum(has_code(trips.problemas, c) for c in TIME_ORDER_ISSUES)
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 3_377 + 631
-    # the travel minutes a review corrected are read before the rules: on those trips, and only there, the rules'
-    # legs hold other minutes than the survey's (eodgdl/revisions/leg_minutes.csv.gz)
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 3_394 + 631
+    # the travel minutes a review corrected are read before the rules (eodgdl/revisions/leg_minutes.csv.gz), and the
+    # rides home that ran past the next departure take the minutes up to it: on those trips, and only there, the rules'
+    # legs hold other minutes than the survey's
     minutes = legs.traslado_min.groupby(level=[0, 1, 2]).sum()
     shipped = stages.shipped.legs.traslado_min.groupby(level=[0, 1, 2]).sum().reindex(minutes.index)
-    corrected = has_code(trips.ajustes, "minutos:revision")
-    assert set(minutes.index[minutes != shipped]) == set(trips.index[corrected.to_numpy()]) and corrected.sum() == 371
+    corrected, capped = has_code(trips.ajustes, "minutos:revision"), has_code(trips.ajustes, "minutos:regreso")
+    assert set(minutes.index[minutes != shipped]) == set(trips.index[(corrected | capped).to_numpy()])
+    assert corrected.sum() == 371 and capped.sum() == 240 and not (corrected & capped).any()
     # a day read past midnight holds together: no trip to work or school after the night, less than a day long
     kept = trips[~non_trips(trips)].sort_index()
     days = days_past_midnight(kept)

@@ -115,6 +115,22 @@ _SENTINEL_START = 23 * 60 + 1
 # that trip's start plus 1h01 or 5h01 (see _remaining_issues, hora_1h01 and
 # hora_5h01). Found 2026-09-26 in a review of the heaped returns.
 _DEFAULT_RETURN_GAPS = {"hora_1h01": 60 + 1, "hora_5h01": 5 * 60 + 1}
+# A ride home recorded arriving after the person's next departure, both starts
+# the survey's and in that order, took the minutes up to the departure where it
+# keeps this share of the minutes it reports or more: a ride reported at most
+# twice as long as it took, the measure of a slow leg the ninth review round
+# used (_rides_home_to_departure). Decided 2026-09-27 in a review of the
+# leading-1 readings.
+_RIDE_HOME_KEPT = 0.5
+# Two household members made a trip together where the trip next to it goes from
+# the same zone to the same zone for the same motive in both chains, is no escort
+# and starts within _COMPANION_TOL minutes in both, the two on the road at once
+# (_companion_links); two starts _HALF_DAY apart, to the same tolerance, are one
+# 12-hour-clock entry (hora_acompanante_12h). Decided 2026-09-26 in a review of
+# the readings against household companions (eodgdl.review.companions); the
+# code, 2026-09-27.
+_COMPANION_TOL = 20  # minutes: two starts this close are one start
+_HALF_DAY = 12 * 60  # minutes
 
 # --------------------------------------------------------------- trip chains
 # The survey records each person's trips for one weekday ("el día de ayer o el
@@ -179,6 +195,8 @@ FIX_CODES = {
     "origen:tipo_copia or origen:rotado",
     "tipo_origen:regreso": "the person's answer to where the day started, 'Su casa' on a day whose first trip returns "
     "home from another AGEB, set to the place type trips to that AGEB report",
+    "minutos:regreso": "travel minutes of a ride home set to the minutes up to the person's next departure, which the "
+    "survey reports after the ride's start and before its arrival; spread over the ride's legs in proportion",
     "hora:+12h": "start hour read on a 12-hour clock: 12 hours added",
     "hora:-12h": "start hour read on a 12-hour clock the other way: 12 hours removed, a morning start typed as an "
     "evening one",
@@ -246,11 +264,14 @@ ISSUE_CODES = {
     "hora_madrugada": "the day's first trip, to anything but work, starts before 05:00: an early market trip or "
     "escort, or a 12-hour-clock entry the rules could not read (they read the ones a stay of 8 hours or more "
     "follows)",
+    "hora_acompanante_12h": "starts 12 hours from the start a household member reports for the same trip, made "
+    "together (the trip next to it reported alike by both), both starts as the survey reports them: one of the two "
+    "is a 12-hour-clock entry, and nothing in either chain says which; a review round settles the pair",
 }
 NON_TRIP_ISSUES = ("regreso_en_casa", "regreso_dia_siguiente")  # rows kept in trips that are not trips
 # The codes that say how a start relates to the previous trip's; a row carries at
-# most one of them. hora_2301, hora_1h01, hora_5h01 and hora_madrugada are about the
-# reported value itself and may sit beside one.
+# most one of them. hora_2301, hora_1h01, hora_5h01, hora_madrugada and
+# hora_acompanante_12h are about the reported value itself and may sit beside one.
 TIME_ORDER_ISSUES = (
     "hora_invertida",
     "hora_nocturna",
@@ -1264,6 +1285,90 @@ def _short_returns(trips: pd.DataFrame, home: np.ndarray) -> tuple[np.ndarray, n
     return to_home, to_other
 
 
+def _rides_home_to_departure(
+    trips: pd.DataFrame, home: np.ndarray, legs: pd.DataFrame | None, locked: np.ndarray, reviewed: np.ndarray
+) -> tuple[pd.DataFrame, pd.DataFrame | None, np.ndarray]:
+    """A ride home recorded arriving after the person's next departure took the minutes up to that departure.
+
+    The typo search (:func:`_repair_start_times`) reads a trip that starts
+    before the previous one could have arrived as an hour typed wrong, and one
+    of its edits, an extra leading 1 on a 12-hour-clock entry
+    (``hora:-10h+12h``), moves a start two hours on. A review of the leading-1
+    readings (2026-09-27) found that edit to be no typo. It read 816 starts,
+    five times as many as a single extra leading 1, 401 of them reported at
+    18:xx. Where it closed a contradiction with the trip before, the starts
+    the survey reports were in order 320 times in 469, and only that trip's
+    minutes ran past the next start, by a median of 30 minutes; 347 more of
+    its edits moved a trip only because the one before had moved. That trip
+    was slow for its distance: a median 1.5 times the survey's typical
+    minutes for its mode over its straight-line distance, 31% twice or more,
+    against 7% of all motorised trips. A household member who made the trip
+    with the person never confirmed one of those readings (0 of 7), and the
+    hour it read was a third as common as the one reported, for trips of the
+    same motive and position. Household 15401, person 3, is the typical day:
+    home from work by bus at 17:30, 60 minutes, then to the shop at 18:00 and
+    back at 18:20, where the search read both errand trips two hours later.
+    The ride took less than its hour, and the survey's starts hold.
+
+    So a return home to the household's zone whose arrival — its start plus
+    its travel minutes — falls more than ``_START_TIME_TOLERANCE`` after the
+    start of the person's next trip, both starts the survey's own (not
+    ``locked``: an imputed start is counted back from the next one) and the
+    next one no earlier than the ride's, takes the minutes from its start to
+    that departure, spread over its legs in proportion (``_spread``), where
+    that keeps ``_RIDE_HOME_KEPT`` of the minutes it reports or more; the stay
+    at home before the next trip then lasts no minutes. A ride whose minutes
+    a review corrected (``reviewed``, ``minutos:revision``) keeps them: the
+    review read them already, and took the survey's typical minutes for the
+    ride's distance (households 12391 and 12417 run past the next departure
+    even so). A departure within
+    minutes of the ride's own start is the capture's, not the ride's, and is
+    left to the typo search and the move to the arrival. The ride keeps its
+    mode; only its minutes change, and they are the model's ``Duration``. On
+    the survey 240 rides take the minutes up to the next departure, 32 fewer
+    on average (they keep a median two thirds of the minutes they report),
+    and 345 of the 816 starts the search read two hours on keep the survey's
+    hour.
+
+    ``trips`` is a chain table without its non-trips, sorted in chain order,
+    ``home`` the household's zone on every row. The minutes are set in the
+    trips' ``traslado{k}_min`` columns where the table carries them, else in a
+    copy of ``legs``, as ``_correct_minutes`` sets them. Returns the trips, the
+    legs and the mask of the rides whose minutes were set.
+    """
+    locked = np.asarray(locked, dtype=bool)
+    reviewed = np.asarray(reviewed, dtype=bool)
+    start = _start_minutes(trips)
+    travel = _leg_minutes(trips, legs)
+    pid = _person_ids(trips)
+    follows = np.r_[pid[1:] == pid[:-1], False]
+    next_start = np.r_[start[1:], np.nan]
+    next_locked = np.r_[locked[1:], True]
+    ride_home = (trips.motivo_viaje == HOME_MOTIVE).to_numpy() & (trips.destino.astype(str).to_numpy() == home)
+    with np.errstate(invalid="ignore"):
+        gap = next_start - start
+        capped = (follows & ride_home & ~reviewed & ~locked & ~next_locked & (gap >= 0)
+                  & (start + travel - next_start > _START_TIME_TOLERANCE) & (gap >= _RIDE_HOME_KEPT * travel))
+    if not capped.any():
+        return trips, legs, capped
+    trips = trips.copy()
+    cols = [c for c in trips.columns if c.startswith("traslado") and c.endswith("_min")]
+    if not cols and legs is not None:
+        legs = legs.copy()
+    for p in np.flatnonzero(capped):
+        if cols:
+            row = np.array([np.nan if pd.isna(v) else float(v) for v in trips.iloc[p][cols]])
+            have = ~np.isnan(row)
+            where = [trips.columns.get_loc(c) for c, h in zip(cols, have) if h]
+            for column, value in zip(where, _spread(row[have], int(gap[p]))):
+                trips.iat[p, column] = value
+        elif legs is not None:
+            key = trips.index[p]
+            own = legs.loc[key, "traslado_min"].to_numpy(dtype=float)
+            legs.loc[[key + (k,) for k in legs.loc[key].index], "traslado_min"] = _spread(own, int(gap[p]))
+    return trips, legs, capped
+
+
 def _start_at_arrival(
     trips: pd.DataFrame, legs: pd.DataFrame | None
 ) -> tuple[pd.DataFrame, np.ndarray]:
@@ -1288,12 +1393,15 @@ def _start_at_arrival(
     and since the fourth review of the chains (2026-09-26) the rule does too,
     except after a trip to work or school, where a stay of no minutes would
     make the day implausible and the hand reads the hours instead. On the
-    survey 694 starts move, 607 of them by the tolerance or less and 86 by up
-    to an hour (and an imputed start with the trip before); 816 until the
-    fifth review of the chains (2026-09-26), when the travel minutes a review
-    corrected came before the rules and their overlaps went with them, and
+    survey 648 starts move, 607 of them by the tolerance or less (41 of those
+    pushed by the move of the trip before) and 41 by up to an hour; 816 until
+    the fifth review of the chains (2026-09-26), when the travel minutes a
+    review corrected came before the rules and their overlaps went with them,
     687 until the review of the readings against household companions, the
-    same day, whose -12h readings leave a few starts minutes short.
+    same day, whose -12h readings leave a few starts minutes short, and 694
+    until the review of the leading-1 readings (2026-09-27), when the rides
+    home that ran past the next departure took the minutes up to it
+    (:func:`_rides_home_to_departure`).
 
     A start the move of the trip before pushes into overlap moves with it; a
     larger contradiction (``hora_invertida``) and an overnight wrap
@@ -1668,19 +1776,33 @@ def _repair_start_times(
     between 05:00 and 11:59 (106 of them from 09:00), leaving a median stay
     of 88 minutes.
 
+    The readings of a leading 1 find no such support. On 2026-09-27 a review
+    of them found the companions confirming none (0 of 24 where one reported
+    another start; in 12 the companion sat at the 12-hour reading, which the
+    rest of the chain did not let fit), and the -10h and the -10h+12h reading
+    hours a third as common as the ones reported, for trips of the same
+    motive and position. The -10h+12h, two hours on, was mostly no typo: it
+    moved the trips after a ride home that ran past the next departure, and
+    since that review such a ride takes the minutes up to the departure
+    before this search runs (:func:`_rides_home_to_departure`), which leaves
+    the survey's hour to 345 of its 816 starts. The leading-1 edits stay in
+    the menu for the days nothing else reads, marked as what they are.
+
     On the survey, with the untimed trips imputed and the non-trips set
-    aside, 2,046 chains get a reading — 744 of them with a -12h, 123 of those
-    with the -12h alone for a long errand; 110 for their early start alone
-    and 3 once the move to the arrival cleared the way
-    (:func:`_read_start_times`) — and 2,595 rows change (+12h 705, -12h 764,
-    an extra leading 1 156, both 816, a missing leading 1 154), none of them
-    to an hour before 05:00. 351 trips in 246 people still
+    aside, 1,853 chains get a reading — 741 of them with a -12h, 123 of those
+    with the -12h alone for a long errand; 111 for their early start alone
+    and 2 once the move to the arrival cleared the way
+    (:func:`_read_start_times`) — and 2,227 rows change (+12h 706, -12h 759,
+    an extra leading 1 142, both 471, a missing leading 1 149), none of them
+    to an hour before 05:00; 2,595 until the review of the leading-1
+    readings. 349 trips in 244 people still
     start before the previous trip could have arrived by more than the
     tolerance, not overnight, and are marked ``hora_invertida`` (870 in 756
     until the fourth review of the chains, 355 in 251 until the fifth, which
     read no day overnight that goes to work again after the night,
-    :func:`_day_wraps`); the hand decisions read them
-    (``scripts/revisions/chains_16.py``) and tasha.chain_report counts them
+    :func:`_day_wraps`, and 351 in 246 until the review of the leading-1
+    readings); the hand decisions read them
+    (``scripts/revisions/chains_17.py``) and tasha.chain_report counts them
     again on the built table. Household 8,
     person 3 is the worked example: 07:24, 07:37,
     19:00, 16:30, 18:02, 18:00, with 30-minute drives, becomes feasible by
@@ -1772,6 +1894,70 @@ def _read_start_times(
     return trips, edit, slid, counts
 
 
+def _clock_gap(a, b) -> np.ndarray:
+    """Minutes between two clock times (minutes from midnight), the short way round the clock; NaN where one is."""
+    d = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)) % 1440
+    return np.minimum(d, 1440 - d)
+
+
+def _companion_links(frame: pd.DataFrame) -> pd.DataFrame:
+    """The pairs of trips two members of a household made together, found by the trip next to each.
+
+    ``frame`` is a chain table without its non-trips, indexed by household,
+    person and trip in chain order, with the columns ``origin``,
+    ``destination``, ``motive``, ``travel`` and ``link``: the start, in
+    minutes from midnight, that the link reads — the survey's report where
+    :func:`eodgdl.review.companions` asks what a household member says of a
+    reading, the start as it stands where ``_remaining_issues`` marks what is
+    left — NaN where it links nothing. Two members' trips are linked where
+    the previous trip (``anchor`` ``previous``) or the next one (``next``)
+    goes from the same zone to the same zone for the same motive in both
+    chains, is no escort (after a drop-off the two part) and starts within
+    ``_COMPANION_TOL`` minutes in both, the two on the road at once (each
+    leaves no later than the other arrives), and the two trips themselves
+    have the same zones and motive. A link is void where either trip is one
+    entry with another trip of the other member's — the same zones and
+    motive, a start within ``_COMPANION_TOL`` — since that is the trip they
+    made together: a split shift beside a straight one shares the evening
+    return, and the return linked the second trip to work of the one to the
+    morning trip of the other (households 1688 and 4077, where both members
+    left for work at the same minute; found 2026-09-27, when their starts
+    read as 12 hours apart). Returns one row per trip and companion trip,
+    both ways round: the positions ``i`` and ``j`` of the two in ``frame``,
+    their keys and ``anchor``.
+    """
+    names = ["folio_vivienda", "folio_habitante", "folio_viaje"]
+    base = frame.assign(pos=np.arange(len(frame)))
+    g = base.groupby(level=PERSON)
+    parts = []
+    for anchor, step in (("previous", 1), ("next", -1)):
+        side = base.assign(**{f"a_{c}": g[c].shift(step) for c in ("origin", "destination", "motive", "link", "travel")})
+        side = side[side.a_link.notna() & side.a_motive.notna() & (side.a_motive != ESCORT)]
+        side = side.rename_axis(names).reset_index()
+        keys = ["folio_vivienda", "origin", "destination", "motive", "a_origin", "a_destination", "a_motive"]
+        m = side.merge(side, on=keys, suffixes=("", "_c"))
+        a, b = m.a_link.astype(float), m.a_link_c.astype(float)
+        together = (a <= b + m.a_travel_c.astype(float)) & (b <= a + m.a_travel.astype(float))  # on the road at once
+        m = m[(m.folio_habitante != m.folio_habitante_c) & (_clock_gap(a, b) <= _COMPANION_TOL) & together]
+        parts.append(m.assign(anchor=anchor))
+    m = pd.concat(parts, ignore_index=True).drop_duplicates(["pos", "pos_c"])
+    # a trip that is one entry with another trip of the companion's was made with that one: the link is void, both ways
+    entries = base.rename_axis(names).reset_index()[["folio_vivienda", "folio_habitante", "origin", "destination",
+                                                     "motive", "link", "pos"]]
+    probe = m[["folio_vivienda", "folio_habitante_c", "origin", "destination", "motive", "link", "pos", "pos_c"]]
+    hit = probe.rename(columns={"folio_habitante_c": "folio_habitante"}).merge(
+        entries, on=["folio_vivienda", "folio_habitante", "origin", "destination", "motive"], suffixes=("", "_k"))
+    hit = hit[(hit.pos_k != hit.pos_c) & (_clock_gap(hit.link, hit.link_k) <= _COMPANION_TOL)]
+    void = set(zip(hit.pos, hit.pos_c)) | set(zip(hit.pos_c, hit.pos))
+    m = m[np.fromiter((pair not in void for pair in zip(m.pos, m.pos_c)), dtype=bool, count=len(m))]
+    return pd.DataFrame({
+        "i": m.pos.to_numpy(dtype=int), "j": m.pos_c.to_numpy(dtype=int),
+        "household": m.folio_vivienda.to_numpy(dtype=int), "person": m.folio_habitante.to_numpy(dtype=int),
+        "trip": m.folio_viaje.to_numpy(dtype=int), "companion": m.folio_habitante_c.to_numpy(dtype=int),
+        "companion_trip": m.folio_viaje_c.to_numpy(dtype=int), "anchor": m.anchor.to_numpy(),
+    })
+
+
 def _remaining_issues(
     trips: pd.DataFrame,
     home: np.ndarray,
@@ -1786,7 +1972,7 @@ def _remaining_issues(
     rules do not repair is a code here, so the trips carrying at least one
     error are exactly the trips with a non-empty ``problemas``; nothing is
     repaired, since none of these has a repair that does not invent data. On
-    the shipped survey, after the rules: 351 ``hora_invertida`` and 178
+    the shipped survey, after the rules: 349 ``hora_invertida`` and 178
     ``hora_nocturna`` (90 an evening trip followed by one in the small hours,
     8 a return home by 06:00 after an afternoon start, the second shift
     this marking reads as overnight while the typo search keeps its 18:00
@@ -1854,12 +2040,25 @@ def _remaining_issues(
     look real and their times filled in; the same walks from January to March
     come back after a median 14 minutes. When such a return came is unknown,
     so the stay before it is the capture's, not the person's; the value is
-    kept. After the rules 718 and 613 are on the chain.
+    kept. After the rules 728 and 613 are on the chain.
 
     ``hora_madrugada`` marks a day's first trip, to anything but work, that
-    starts before 05:00 (``_EARLY_START``): 59 after the rules, 39 of them at
+    starts before 05:00 (``_EARLY_START``): 58 after the rules, 38 of them at
     04:xx — a market, an escort, a gym — where the typo search found no
     long stay to read the hour by, or no unique reading.
+
+    ``hora_acompanante_12h`` marks a trip whose start sits 12 hours
+    (``_HALF_DAY``, to ``_COMPANION_TOL``) from the start a household member
+    reports for the same trip, made together (:func:`_companion_links`: the
+    trip next to it reported alike by both), both starts and the link the
+    survey's own. One of the two is a 12-hour-clock entry, and where neither
+    chain contradicts itself no rule reads either; the code marks both, so a
+    review round may settle the pair (``scripts/revisions/chains_17.py``).
+    Found 2026-09-27 in a review of the readings: household 1723, person 2,
+    came home from work at 07:30 while three household members who left with
+    them at 06:00 came home at 19:30, and household 4202's children walked to
+    school at 08:00 and came home at 11:30 and 23:30. 10 trips after the
+    rules, in 4 households.
     """
     time_edited = (
         np.zeros(len(trips), dtype=bool) if time_edited is None else np.asarray(time_edited, dtype=bool)
@@ -1894,6 +2093,14 @@ def _remaining_issues(
     repeats = (has_prev & (origin == prev_dest.astype(str)) & (dest == _shift(origin, pid, 1).astype(str))
                & (travel == _shift(travel, pid, 1)) & (mode == _shift(mode, pid, 1)))
     as_reported = ~time_edited & (_shift(time_edited, pid, 1) == False)  # noqa: E712 (object array)
+    # two members of a household report a trip they made together 12 hours apart, the link by starts no rule set
+    frame = pd.DataFrame({"origin": origin, "destination": dest, "motive": trips.motivo_viaje.astype(str).to_numpy(),
+                          "link": np.where(time_edited, np.nan, start), "travel": travel}, index=trips.index)
+    pairs = _companion_links(frame)
+    i, j = pairs.i.to_numpy(), pairs.j.to_numpy()
+    half_day = ~time_edited[i] & ~time_edited[j] & (np.abs(_clock_gap(start[i], start[j]) - _HALF_DAY) <= _COMPANION_TOL)
+    companion_12h = np.zeros(len(trips), dtype=bool)
+    companion_12h[i[half_day]] = True
     return {
         "hora_invertida": inverted,
         "hora_nocturna": wrap,
@@ -1914,6 +2121,7 @@ def _remaining_issues(
         "hora_2301": (start == _SENTINEL_START) & ~time_edited,
         **{code: repeats & as_reported & (start - prev_start == gap) for code, gap in _DEFAULT_RETURN_GAPS.items()},
         "hora_madrugada": first & ~is_return & (trips.motivo_viaje != "Trabajar").to_numpy() & (start < _EARLY_START),
+        "hora_acompanante_12h": companion_12h,
     }
 
 
@@ -2000,7 +2208,10 @@ def clean_trip_chains(
        (``_first_return_answers``); a return still away from home ends at home
        if it is the day's last trip to an AGEB nothing else touches, else at a
        place nothing names, 'Otros' (``_short_returns``).
-    5. **Start times.** Repair mistyped start hours with the fewest edits
+    5. **Start times.** A ride home that runs past the person's next
+       departure, both starts the survey's and in that order, takes the
+       minutes up to it (``_rides_home_to_departure``). Then repair mistyped
+       start hours with the fewest edits
        that let every trip start after the previous one arrived, and leave
        nobody half a day at a short errand, and read a day that starts in the
        small hours with a long stay after, or a return home half a day after
@@ -2043,7 +2254,7 @@ def clean_trip_chains(
     (elsewhere), ``first_origins_copied``, ``first_origins_answered``,
     ``first_origins_typed``, ``first_trips_rotated``, ``answers_set_home``
     (persons), ``first_return_answers`` (persons), ``short_returns_home``,
-    ``short_returns_other``, ``start_times_edited``, ``chains_repaired``,
+    ``short_returns_other``, ``rides_home_to_departure``, ``start_times_edited``, ``chains_repaired``,
     ``early_starts_read``, ``long_errands_read``, ``chains_read_after_the_slide`` (chains),
     ``starts_at_arrival``, and one ``left_<code>`` entry per issue left.
     """
@@ -2173,14 +2384,17 @@ def clean_trip_chains(
     _add_code(fixes, _expand(last_home, where, n), "destino:casa")
     _add_code(fixes, _expand(other, where, n), "motivo:otros")
 
-    # 5. start times
+    # 5. start times, after the rides home that ran past the next departure
     locked = (imputed["time_from_duplicate"] | imputed["time_from_neighbours"])[is_trip]
+    chain, legs, rides = _rides_home_to_departure(chain, chain_home, legs, locked, corrected[is_trip])
+    _add_code(fixes, _expand(rides, where, n), "minutos:regreso")
     chain, edit, slid, time_counts = _read_start_times(chain, legs, locked)
     for name in {e for e in edit if e}:
         _add_code(fixes, _expand(edit == name, where, n), f"hora:{name}")
     _add_code(fixes, _expand(slid, where, n), "hora:llegada")
+    minute_columns = tuple(c for c in chain.columns if c.startswith("traslado") and c.endswith("_min"))
     for column in ("origen", "zona_origen", "destino", "zona_destino", "motivo_viaje", "tipo_lugar_destino",
-                   "hora_inicio_h", "hora_inicio_m"):
+                   "hora_inicio_h", "hora_inicio_m") + minute_columns:
         if column in chain:
             trips.loc[chain.index, column] = chain[column].to_numpy()
 
@@ -2219,6 +2433,7 @@ def clean_trip_chains(
         "first_return_answers": len(given),
         "short_returns_home": int(last_home.sum()),
         "short_returns_other": int(other.sum()),
+        "rides_home_to_departure": int(rides.sum()),
         "start_times_edited": int((edit != "").sum()),
         **time_counts,
         "starts_at_arrival": int(slid.sum()),

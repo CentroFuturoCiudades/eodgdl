@@ -155,6 +155,9 @@ DEFECTOS_ES = {
     "hora_madrugada": "el primer viaje del día, a algo que no es el trabajo, empieza antes de las "
                       "05:00: un mercado o un acompañamiento temprano, o una hora de reloj de 12 horas "
                       "que las reglas no pudieron releer",
+    "hora_acompanante_12h": "empieza 12 horas antes o después de la hora que otro miembro de la vivienda "
+                            "reporta para el mismo viaje, hecho juntos, las dos horas tal como se "
+                            "reportaron: una de las dos se anotó en reloj de 12 horas y nada dice cuál",
 }
 
 _FECHA = (
@@ -187,7 +190,10 @@ def descriptions(c: dict[str, int]) -> dict[tuple[str, str], str]:
         ),
         ("traslados", "traslado_min"): (
             "Minutos que duró este traslado (encabezado original: 'Traslados que utilizó para "
-            "su viaje: | Traslado N | Minutos')."
+            f"su viaje: | Traslado N | Minutos'). Se corrigieron en los traslados de {c['minutos_a_mano']} "
+            "viajes motorizados que reportaban el doble de lo típico para su distancia, y se recortaron "
+            f"en los de {c['regresos_tope']} regresos a casa que llegaban después de la siguiente salida "
+            "de la persona (vea el README)."
         ),
         ("traslados", "traslado_pago"): (
             "Pago hecho en este traslado, en pesos (encabezado original: 'Traslados que "
@@ -441,6 +447,7 @@ def counts(tables, rules, shipped_trips: int, decisions: int) -> dict[str, int]:
             .droplevel("folio_viaje").nunique()
         ),
         "horas_llegada": fix.get("hora:llegada", 0),
+        "regresos_tope": fix.get("minutos:regreso", 0),
         "horas_reparadas": sum(fix[c] for c in hours),
         "cadenas_reparadas": int(edited.nunique()),
         "no_viajes_reglas": code_counts(rules.trips["problemas"]).get("regreso_en_casa", 0),
@@ -757,7 +764,11 @@ y ninguna etiqueta se recodificó salvo donde se indica.
       Los regresos a casa que siguen fuera de casa y que nada lee terminan en casa si son el
       último viaje del día a una AGEB que ningún otro viaje toca ({c['regresos_casa']}), y si no
       toman 'Otros' como motivo y tipo de lugar ({c['regresos_otros']}).
-   5. *Reparación de horas mal anotadas*: {c['horas_reparadas']:,} horas de inicio, en
+   5. *Reparación de horas mal anotadas*: antes de releer una hora, {c['regresos_tope']}
+      regresos a casa que llegaban después de la siguiente salida de la persona —las dos horas
+      tal como se reportaron y en orden— toman los minutos hasta esa salida, siempre que les
+      quede al menos la mitad de lo reportado: el regreso tardó menos de lo que se anotó, y las
+      horas de la encuesta se sostienen. Después, {c['horas_reparadas']:,} horas de inicio, en
       {c['cadenas_reparadas']:,} cadenas, se releyeron con el menor número de erratas
       posibles (reloj de 12 horas en los dos sentidos, un 1 de más o de menos al principio) que
       permite que cada viaje empiece después de que llegó el anterior, deja al menos media hora
@@ -780,7 +791,9 @@ y ninguna etiqueta se recodificó salvo donde se indica.
       {c['tipos_origen_a_mano']:,} personas la respuesta a dónde empezó su día y descartó
       {c['descartadas']} filas —en los turnos nocturnos que la regla no alcanza, el regreso de la
       mañana siguiente, que cae fuera del día de la encuesta—; en total {c['filas_a_mano']:,}
-      filas guardan un valor fijado a mano, contando los minutos corregidos. Después de
+      filas guardan un valor fijado a mano, contando los minutos corregidos. Donde dos miembros
+      de la vivienda reportaron un viaje hecho juntos con 12 horas de diferencia, la revisión
+      toma la hora de uno de los dos. Después de
       ella ningún viaje empieza donde no terminó el anterior, y ninguno empieza antes de que
       hubiera podido llegar el anterior (su hora de inicio más sus minutos de traslado) salvo los
       que cruzan la medianoche: el modelo de demanda no admite traslapes.
