@@ -275,7 +275,9 @@ def notes(c: dict[str, int]) -> dict[tuple[str, str], str]:
             "nocturno se conservan en la tabla y no son viajes; el README dice cómo identificarlos."
         ),
         ("viajes", "tipo_lugar_destino"): (
-            "Se recodificó e imputó junto con el motivo; vea `motivo_viaje`."
+            "Se recodificó e imputó junto con el motivo; vea `motivo_viaje`. Desde las entrevistas del 3 de abril "
+            f"de 2023, {c['abril_cc']:,} viajes de compras del tercero del día en adelante traen 'Centro cultural o "
+            "área recreativa', un cambio de la captura que se dejó como vino (vea el README)."
         ),
         ("viajes", "origen"): (
             f"Fijado donde terminó el viaje anterior en {c['origen_casa'] + c['origen_anterior']} "
@@ -458,6 +460,24 @@ def counts(tables, rules, shipped_trips: int, decisions: int) -> dict[str, int]:
     }
 
 
+def april(shipped) -> dict[str, int]:
+    """The shopping trips typed 'Centro cultural o área recreativa', on the survey as shipped, by each person's own
+    interview date: from the third trip of the day on, from 3 April 2023 and before, and on the first two trips from
+    that day (``reports/loading.qmd``, *April's later trips*: the capture of the later trips changed that day)."""
+    trips = shipped.trips
+    person = trips.index.droplevel("folio_viaje")
+    after = (shipped.hab.fecha.dt.tz_localize(None).reindex(person) >= pd.Timestamp("2023-04-03")).to_numpy()
+    later = trips.groupby(level=["folio_vivienda", "folio_habitante"]).cumcount().to_numpy() >= 2
+    shopping = trips.motivo_viaje.isin(["Compras (comida)", "Compras (bienes, productos y servicios)"]).to_numpy()
+    cc = (trips.tipo_lugar_destino == "Centro cultural o área recreativa").to_numpy()
+    return {
+        "abril_cc": int((shopping & later & after & cc).sum()), "abril_compras": int((shopping & later & after).sum()),
+        "antes_cc": int((shopping & later & ~after & cc).sum()), "antes_compras": int((shopping & later & ~after).sum()),
+        "primeros_cc": int((shopping & ~later & after & cc).sum()),
+        "primeros_compras": int((shopping & ~later & after).sum()),
+    }
+
+
 def to_csv_frame(df: pd.DataFrame, table: str) -> pd.DataFrame:
     """The table as it is written: keys as ordinary columns, dates as plain dates,
     without the audit columns of DROP."""
@@ -497,7 +517,7 @@ def export(data_dir: Path, out_dir: Path) -> dict[str, pd.DataFrame]:
     tables = stages.revised   # `counts` reads the audit columns before DROP removes them
     # the trip table as shipped, to say how many rows the cleaning removed
     shipped = len(pd.read_csv(data_dir / VIAJES_CSV, encoding="ISO-8859-1", usecols=[0]))
-    c = counts(tables, stages.rules, shipped, len(chain_decisions()))
+    c = counts(tables, stages.rules, shipped, len(chain_decisions())) | april(stages.shipped)
     issues = code_counts(tables.trips["problemas"])
     desc, note = descriptions(c), notes(c)
 
@@ -806,6 +826,18 @@ Dos de ellos conviene tenerlos presentes al usar los datos:
   cadena real; la hora es el dato ruidoso. No se reordenaron los viajes por hora: hacerlo rompe
   la continuidad de zonas y convierte en primer viaje del día un 'Regresar a Casa' en más de
   mil casos.
+
+Además, una marca de la captura que ninguna regla corrige:
+
+- **La captura de abril de 2023.** Desde las entrevistas del 3 de abril, el tercer viaje del día y
+  los siguientes se capturaron de otra manera: {c['abril_cc']:,} de los {c['abril_compras']:,} viajes
+  de compras en esas posiciones ({c['abril_cc'] / c['abril_compras']:.0%}) traen como tipo de lugar
+  'Centro cultural o área recreativa', contra {c['antes_cc'] / c['antes_compras']:.1%} antes y
+  {c['primeros_cc'] / c['primeros_compras']:.1%} en los dos primeros viajes. En esas posiciones casi
+  desaparecen la recreación y 'Otros', y ahí están casi todos los regresos a 1h01 (`hora_1h01`) y
+  los terceros viajes sin hora ni motivo. Puede estar mal el tipo de lugar o el motivo, y los datos
+  no dicen cuál, así que no se recodificó nada: al comparar tipos de lugar, compras o recreación por
+  fecha o posición, separe lo anterior al 3 de abril.
 
 Nada se corrigió en silencio: todo lo que cambió está en la sección anterior, con sus conteos.
 

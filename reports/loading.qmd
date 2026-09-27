@@ -47,7 +47,7 @@ import numpy as np
 import pandas as pd
 import pandera.pandas as pa
 
-from eodgdl import clean_eod, imeplan_rename_map, load_eod, rename_imeplan
+from eodgdl import clean_eod, imeplan_rename_map, load_eod, rename_imeplan, tasha
 from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
 from eodgdl.eod import _VIAJES_MEDIO_FIXES
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
@@ -335,6 +335,73 @@ ref_match = float((h.dia_semana_viajes.astype(str).map(dow).astype(int) == prev_
 ```
 
 ```{python}
+#| label: april
+#| include: false
+
+# the capture of a person's third and later trips changed on 3 April 2023: the place type of their shopping trips,
+# the capture's 1h01 returns and the lost questionnaire blocks, all in that block and from that day, on each
+# person's own interview date (a household is not always interviewed in one visit, @sec-dates)
+SWITCH = pd.Timestamp("2023-04-03")
+CC, COM = "Centro cultural o área recreativa", "Comercio, mercado, tienda o centro comercial"
+SHOPPING = ["Compras (comida)", "Compras (bienes, productos y servicios)"]
+day_t = hab_s.fecha.dt.tz_localize(None).reindex(trips_s.index.droplevel("folio_viaje")).to_numpy()
+after_t = day_t >= SWITCH.to_datetime64()
+pos_t = trips_s.groupby(level=P).cumcount().to_numpy() + 1
+later_t = pos_t >= 3
+shop_t = trips_s.motivo_viaje.isin(SHOPPING).to_numpy()
+cc_t = (trips_s.tipo_lugar_destino == CC).to_numpy()
+apr_cc, apr_n = int((shop_t & later_t & after_t & cc_t).sum()), int((shop_t & later_t & after_t).sum())
+pre_cc, pre_n = int((shop_t & later_t & ~after_t & cc_t).sum()), int((shop_t & later_t & ~after_t).sum())
+first_two_share = float(cc_t[shop_t & ~later_t & after_t].mean())
+by_day = pd.DataFrame({"day": day_t[shop_t & later_t], "cc": cc_t[shop_t & later_t]}).groupby("day").cc.agg(["sum", "size"])
+switch_days = [(int(by_day.loc[d, "sum"]), int(by_day.loc[d, "size"])) for d in ("2023-04-03", "2023-04-04")]
+assert by_day.loc[:"2023-04-01", "sum"].sum() < 0.01 * by_day.loc[:"2023-04-01", "size"].sum()   # none to speak of before
+zone_t = viv_s.centralidad.astype(str).reindex(trips_s.index.get_level_values(0)).to_numpy()
+by_zone = pd.DataFrame({"zone": zone_t[shop_t & later_t & after_t], "cc": cc_t[shop_t & later_t & after_t]}
+                       ).groupby("zone").cc.agg(["mean", "size"])
+zones_20 = by_zone[by_zone["size"] >= 20]
+assert zones_20["mean"].min() > 0.25                                      # every such zone: the capture, not a team
+# the same block's other marks: a start exactly 61 minutes after the trip before, and the lost questionnaire blocks
+start_t = (trips_s.hora_inicio_h.astype(float) * 60 + trips_s.hora_inicio_m.astype(float))
+gap_t = (start_t - start_t.groupby(level=P).shift(1)).to_numpy()
+n61, n61_after = int((gap_t == 61).sum()), int(((gap_t == 61) & after_t).sum())
+untimed_t = trips_s.hora_inicio_h.isna().to_numpy()
+n_untimed_after, n_untimed_third = int((untimed_t & after_t).sum()), int((untimed_t & after_t & (pos_t == 3)).sum())
+# what thins out at those positions, per 100 travellers
+person_t = trips_s.index.droplevel("folio_viaje")
+travellers = {w: person_t[m].nunique() for w, m in (("before", ~after_t), ("after", after_t))}
+motive_t = trips_s.motivo_viaje.astype(str).to_numpy()
+per_100 = {(mot, w): 100 * int((later_t & (motive_t == mot) & m).sum()) / travellers[w]
+           for mot in ("Deportes o recreación", "Otros (especifique)") for w, m in (("before", ~after_t), ("after", after_t))}
+assert all(per_100[(mot, "after")] < per_100[(mot, "before")] / 3 for mot in ("Deportes o recreación", "Otros (especifique)"))
+# the answer to where the day started, another question: no step
+first_t = pos_t == 1
+answer_cc = {w: int((first_t & m & (trips_s.tipo_lugar_origen == CC).to_numpy()).sum()) for w, m in
+             (("before", ~after_t), ("after", after_t))}
+assert answer_cc["after"] <= answer_cc["before"]
+# nothing downstream reads a trip's destination type; the model does read its motive
+assert "tipo_lugar_destino" not in readers
+purpose = tasha.build_map("PurposeDestination")
+assert purpose["Compras (comida)"] == "M" and purpose["Deportes o recreación"] == "E"
+# recreation typed 'Comercio' on the first two trips: the Easter holidays' day outings, from 27 March
+legmin_t = legs_s.traslado_min.groupby(level=[0, 1, 2]).sum().reindex(trips_s.index).fillna(0).to_numpy()
+stay_t = (start_t.groupby(level=P).shift(-1).to_numpy() - start_t.to_numpy() - legmin_t)
+rec_early = (motive_t == "Deportes o recreación") & ~later_t
+com_t = (trips_s.tipo_lugar_destino == COM).to_numpy()
+EASTER = pd.Timestamp("2023-03-27").to_datetime64()
+rec_com_before = float(com_t[rec_early & (day_t < EASTER)].mean())
+rec_com_after = float(com_t[rec_early & (day_t >= EASTER)].mean())
+outings = rec_early & com_t & (day_t >= EASTER) & (stay_t >= 6 * 60)
+repeated_t = hab_s.diario_repetido.reindex(person_t).to_numpy()
+n_outings, outings_by_car = int(outings.sum()), int((trips_s.modo_principal.astype(str).to_numpy()[outings] == "AUTOMÓVIL PARTICULAR").sum())
+outings_holidays = int((outings & (day_t >= pd.Timestamp("2023-04-01").to_datetime64())
+                        & (day_t <= pd.Timestamp("2023-04-17").to_datetime64())).sum())
+outings_rural = int((trips_s.destino.astype(str).str.len().to_numpy()[outings] == 9).sum())   # a rural AGEB or an access point
+outings_repeated = int(repeated_t[outings].sum())
+assert outings_by_car > 0.9 * n_outings and outings_holidays > 0.8 * n_outings and outings_rural > n_outings / 2
+```
+
+```{python}
 #| label: fixes
 #| include: false
 
@@ -613,7 +680,7 @@ date (@sec-dates), corrects `{python} n_fixes` cells by hand (@sec-fixes), types
 column against an explicit schema (@sec-schema), keeps each fact at one grain
 (@sec-dedup), and unpivots the legs into a table of their own (@sec-legs).
 
-Three findings matter for anyone reading the tables. The loader loses nothing: every
+Four findings matter for anyone reading the tables. The loader loses nothing: every
 value in the files sits inside the declared levels, the blank-token rule never fires on
 these files, and no leg or row disappears before the chain rules. The blanks are mostly
 skip logic — a question not asked is a blank, not an unknown — and @tbl-blanks says
@@ -621,7 +688,9 @@ which. And the `{python} n_fixes` hand corrections replace a bare code `17` in a
 mode with the label a twin record in the same file gives the same legs; the code has no
 key in the shipped glossaries, the legs are `{python} int(fix_tbl.minutes.iloc[0])` minutes for
 `{python} int(fix_tbl["fare (MXN)"].iloc[0])` pesos, and without the fix the schema rejects the
-file on all three.
+file on all three. And the capture of a person's third and later trips changed on 3 April 2023
+(@sec-april): the place types of their shopping trips, and perhaps their motives, do not compare
+with the earlier weeks', and nothing recodes them.
 
 ::: {.callout-note title="How to read this note"}
 `load_eod(clean_chains=False)` is the subject: the survey as shipped, after every step
@@ -749,6 +818,38 @@ households have members interviewed on two or three different days,
 that is not their dwelling's. The dwelling's `fecha` is the date of its first listed
 member in every case. This is why `fecha` survives the de-duplication of @sec-dedup: it is
 a person-level fact.
+
+# April's later trips {#sec-april}
+
+The capture of a person's third and later trips changed on 3 April 2023. From that day's
+interviews on, `{python} pct(apr_cc / apr_n, 0)` of shopping trips at the third position or
+later are typed 'Centro cultural o área recreativa' (`{python} fmt(apr_cc)` of
+`{python} fmt(apr_n)`), against `{python} pct(pre_cc / pre_n)` before and
+`{python} pct(first_two_share)` on the first two trips of the same days. The step is sharp —
+`{python} switch_days[0][0]` of `{python} switch_days[0][1]` such trips on the 3rd,
+`{python} switch_days[1][0]` of `{python} switch_days[1][1]` on the 4th — and each of the
+`{python} len(zones_20)` zones with twenty or more such trips shows it
+(`{python} pct(zones_20["mean"].min(), 0)`–`{python} pct(zones_20["mean"].max(), 0)`), so it came
+from the capture, not a team. The same block carries April's other capture marks:
+`{python} n61_after` of the `{python} n61` trips that start exactly 61 minutes after the one before
+(the trip-chains note's `hora_1h01`), and `{python} n_untimed_third` of the
+`{python} n_untimed_after` trips from that day on that lost their start time and motive, which are
+third trips. At those positions recreation and 'Otros' nearly vanish
+(`{python} f"{per_100[('Deportes o recreación', 'before')]:.1f}"` and
+`{python} f"{per_100[('Otros (especifique)', 'before')]:.1f}"` per 100 travellers to
+`{python} f"{per_100[('Deportes o recreación', 'after')]:.1f}"` and
+`{python} f"{per_100[('Otros (especifique)', 'after')]:.1f}"`), so the motive of these trips is
+as doubtful as their type. The day-start answer, a separate question, did not change
+(`{python} answer_cc["before"]` 'Centro cultural' answers before, `{python} answer_cc["after"]`
+after). Both fields are kept as shipped. The model build reads no destination type but codes
+shopping M and recreation E. Cut at 3 April when tabulating place types, shopping or
+recreation by date or trip position.
+
+Recreation trips typed 'Comercio' also rise, on the first two trips and for another reason
+(`{python} pct(rec_com_before)` → `{python} pct(rec_com_after, 0)` from 27 March):
+`{python} n_outings` are day outings by car of six hours or more during the Easter holidays,
+mostly to rural AGEBs or out of the metropolitan area, `{python} outings_repeated` in repeated
+diaries.
 
 # Three cells corrected by hand {#sec-fixes}
 
