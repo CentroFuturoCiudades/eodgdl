@@ -68,8 +68,10 @@ eodgdl tasha gaps                               # open items
 eodgdl tasha validate output/                   # produced CSVs vs. contract
 ```
 
-Zone columns carry the survey's own AGEB CVEGEO or locality id as a string, so the
-output joins straight to the census tables; read them back with `dtype=str`.
+Zone columns carry the survey's own zone id as a string — a 13-character urban AGEB CVEGEO, a
+9-character rural AGEB key (INEGI's rural AGEB, not a locality) or one of the 7 access points
+(`99999000x`) — and the zone system places every one of them (`eodgdl.reweight.zoning`); read
+them back with `dtype=str`.
 
 See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
 mapping-entry format, and the open items.

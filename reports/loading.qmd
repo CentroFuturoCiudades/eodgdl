@@ -496,7 +496,7 @@ for tname, cname, s in [("viv", "ageb", viv.ageb), ("hab", "ageb", hab.ageb), ("
     letter = s.str[-1].str.isalpha()
     zone_rows.append((tname, cname, fmt((s.str.len() == 13).sum()), fmt((s.str.len() == 9).sum()),
                       fmt(letter.sum()), fmt(s.nunique()), int(s[letter].nunique())))
-zone_tbl = pd.DataFrame(zone_rows, columns=["table", "column", "13-character AGEB ids", "9-character locality ids",
+zone_tbl = pd.DataFrame(zone_rows, columns=["table", "column", "13-character urban AGEB ids", "9-character ids (rural AGEBs, access points)",
                                             "ids ending in a letter", "distinct ids", "distinct ids ending in a letter"])
 assert zone_tbl["distinct ids ending in a letter"].max() == 154
 assert viv.ageb.nunique() == 1_046 and trips.origen.nunique() == 1_701
@@ -857,8 +857,9 @@ the later leg slots.
 show(unused_tbl)
 ```
 
-**Zone ids are strings.** A zone id is either a 13-character INEGI AGEB key or a
-9-character locality key, and `{python} int(zone_tbl["distinct ids ending in a letter"].max())`
+**Zone ids are strings.** A zone id is a 13-character INEGI urban AGEB key, a 9-character
+rural AGEB key (INEGI's rural AGEB, not a locality: a few coincide with locality codes as strings,
+so never join them) or one of the 7 access points (`99999000x`), and `{python} int(zone_tbl["distinct ids ending in a letter"].max())`
 of the trip zones end in a letter (@tbl-zones). Read numerically, those become missing and
 the rest lose nothing but their type; `eodgdl` reads them as strings everywhere and
 `tasha.validate` flags a column that was parsed as an integer. `{python} fmt(n_letter_trip)`

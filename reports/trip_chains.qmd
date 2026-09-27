@@ -2158,8 +2158,12 @@ hours. Structural defects rise with the complexity of the day — after the rule
   row is a marked non-trip, on top of the survey's own `{python} fmt(said_yes_no_trips)`; a
   fraction of a point on a 9% base.
 - *Location choice* is the least affected: the intrazonal share is a resolution property and
-  the zone mismatches touch a fraction of a percent of trips. The 38 locality ids that do
-  not join the AGEB census table matter more, since those destinations carry no attributes.
+  every trip end lies in the zone the survey coded for it. Every zone id is an urban AGEB, a
+  rural AGEB (9 characters: INEGI's rural AGEB key, not a locality id) or one of the 7 access
+  points, and the zone system places every AGEB the survey records in its coded zone
+  (`eodgdl.reweight.zoning`); a rural AGEB has no census row of its own, since INEGI publishes
+  rural counts by locality, so it takes its localities'. Only the access points carry no
+  census content.
 - *Mode choice* is trip-level and essentially unaffected.
 
 **What limits the scheduler more than the errors.** The questionnaire elicits out-and-back
@@ -2199,7 +2203,7 @@ weakens any segmentation the scheduler needs.
 | activities typed *Su casa* | decided | the ones arriving home from elsewhere are returns (@sec-arrivals); the ones from the home AGEB to the home AGEB stay activities in the home zone; marked `actividad_en_casa` | `load_eod` |
 | late returns heaped on 23:01 | open | the return came at 23:01 or later; marked `hora_2301`; treat the evening activity's end as censored in estimation | estimation |
 | returns heaped 1h01 and 5h01 after the trip they mirror | open | a capture default like 23:01: 767 and 682 consecutive mirrored pairs start exactly so far apart, against about 40 at the neighbouring gaps; not yet marked (found 2026-09-26) | `load_eod` |
-| unjoined locality zones | open | attach attributes or map them to the nearest AGEB | zone system |
+| zone ids and their census content | done | every id is an urban AGEB, a rural AGEB or an access point; the zone system places every AGEB the survey records in the zone it coded (`check_assignment`), a rural AGEB with its localities' census counts | `eodgdl.reweight.zoning` |
 | instrument design (tours, one weekday, no durations, ages 6+, income) | inherent | state as limitations of the estimated scheduler; consider a supplementary diary | documentation |
 
 : Every problem in this note, with where its fix lives. {#tbl-recs}

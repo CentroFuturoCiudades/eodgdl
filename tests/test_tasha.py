@@ -13,7 +13,7 @@ from eodgdl.tasha import _schema
 
 
 AGEB = "1409700251418"       # a real 13-character AGEB CVEGEO
-LOCALITY = "140390001"       # a real 9-character locality id
+RURAL_AGEB = "141240029"     # a real 9-character rural AGEB key (INEGI's rural AGEB, not a locality)
 
 
 def test_mappings_agree_with_schema():
@@ -130,7 +130,7 @@ def test_validate_accepts_a_clean_table():
     trips = pd.DataFrame({
         "HouseholdId": [0], "PersonNumber": [1], "TripNumber": [1],
         "StartTime": [800], "Mode": ["W"], "PurposeOrigin": ["H"],
-        "ZoneOrigin": [LOCALITY], "PurposeDestination": ["W"],
+        "ZoneOrigin": [RURAL_AGEB], "PurposeDestination": ["W"],
         "ZoneDestination": [AGEB],
     })
     assert tasha.validate(trips, "trips") == []

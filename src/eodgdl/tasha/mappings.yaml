@@ -36,7 +36,7 @@ households:
 
   HouseholdZone:
     source: ageb
-    derivation: viv.ageb verbatim — the AGEB CVEGEO or locality id as reported.
+    derivation: viv.ageb verbatim — the urban AGEB CVEGEO or the rural AGEB key as reported.
     note: >-
       Kept as a string. No renumbering, so the value joins straight to the census
       tables on CVEGEO.
@@ -459,7 +459,7 @@ trips:
 
   ZoneOrigin:
     source: origen
-    derivation: trips.origen as load_eod returns it — the AGEB CVEGEO or locality id.
+    derivation: trips.origen as load_eod returns it — the urban AGEB CVEGEO, the rural AGEB key or an access point.
     note: >-
       load_eod makes every trip start where the previous one ended
       (eodgdl.chains._start_where_previous_ended): at the household's zone
@@ -523,7 +523,7 @@ trips:
 
   ZoneDestination:
     source: destino
-    derivation: trips.destino verbatim — the AGEB CVEGEO or locality id.
+    derivation: trips.destino as load_eod returns it — the urban AGEB CVEGEO, the rural AGEB key or an access point.
 
   ExpansionFactor:
     source: ponderador

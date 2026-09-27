@@ -59,7 +59,9 @@ another household's, see `reports/duplicate_diaries.qmd`) is not read by the bui
 repeated diaries were accepted on 2026-09-25 and stay in every build; a consumer who wants
 independent observations filters `hab` and `trips` on it before building.
 
-Zone columns hold the survey's own AGEB CVEGEO or locality id as a **string**.
+Zone columns hold the survey's own zone id as a **string**: a 13-character urban AGEB
+CVEGEO, a 9-character rural AGEB key (INEGI's rural AGEB, not a locality id) or an access
+point (`99999000x`).
 Read them back with `dtype=str` — `tasha.zone_columns(table)` lists them —
 since most ids are all-digit and will otherwise parse as `int64`.
 
