@@ -348,11 +348,10 @@ trips:
       duplicates them or from their nearest timed trips
       (eodgdl.chains._impute_untimed_trips), and mistyped start hours are
       repaired by the fewest typo edits — a 12-hour-clock
-      entry, an extra or missing leading 1, or both, and where those read
-      nothing a morning start typed as an evening one — that let every trip
-      start after the previous one arrived (its start plus its leg minutes,
-      15 minutes of tolerance) and leave half an hour or more at work or
-      school, or that take a day's first trip to anything but work out of the
+      entry either way, an extra or missing leading 1, or both — that let every
+      trip start after the previous one arrived (its start plus its leg minutes,
+      15 minutes of tolerance), leave half an hour or more at work or school
+      and nobody half a day at a short errand, or that take a day's first trip to anything but work out of the
       small hours when a stay of eight hours or more follows it, applied only
       where the cheapest reading is unique (eodgdl.chains._repair_start_times),
       the leg minutes read after a review's corrections

@@ -392,6 +392,22 @@ def test_a_first_trip_that_copies_home_away_starts_at_home():
     assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
 
 
+def test_the_menu_reads_the_12_hour_clock_before_a_leading_1_and_no_half_day_at_an_errand():
+    trips = _trips([
+        (1, 19, 0, "Estudiar", "Escuela", None, 20), (1, 13, 0, "Regresar a Casa", None, None, 20),   # 19:00 is 07:00
+        (2, 8, 0, "Compras (comida)", None, None, 80), (2, 22, 30, "Compras (comida)", None, None, 10),
+        (2, 11, 0, "Regresar a Casa", None, None, 85),           # home at 23:00 would leave 13 hours at the first shops
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    starts = (cleaned.hora_inicio_h * 60 + cleaned.hora_inicio_m).groupby(level="folio_habitante").apply(list)
+    fixes = cleaned.ajustes.groupby(level="folio_habitante").apply(list)
+    # both readings fit; the 12-hour clock is the cheaper, and a sibling who went along says so (household 3627)
+    assert starts[1] == [420, 780] and fixes[1] == ["hora:-12h", ""]
+    # household 2585, person 1: the second errand is the morning's, and nobody stays half a day at the shops
+    assert starts[2] == [480, 630, 660] and fixes[2] == ["", "hora:-12h", ""]
+    assert counts["chains_repaired"] == 2 and mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
 def test_a_start_before_the_previous_arrival_by_the_tolerance_or_less_moves_to_it():
     trips = _trips([
         (1, 8, 0, "Trabajar", None, None, 30), (1, 8, 20, "Regresar a Casa", None, None, 30),     # ten minutes early
@@ -405,7 +421,7 @@ def test_a_start_before_the_previous_arrival_by_the_tolerance_or_less_moves_to_i
     fixes = cleaned.ajustes.groupby(level="folio_habitante").apply(list)
     assert starts[1] == [480, 510] and fixes[1] == ["", "hora:llegada"]
     assert starts[2] == [480, 510, 540] and fixes[2] == ["", "hora:llegada", "hora:llegada"]
-    assert starts[3] == [540, 1270] and fixes[3] == ["hora:-12h", ""]      # the second menu: a morning typed as evening
+    assert starts[3] == [540, 1270] and fixes[3] == ["hora:-12h", ""]      # the -12h: a morning typed as evening
     assert starts[4] == [1320, 60] and cleaned.loc[(1, 4, 2), "problemas"] == "hora_nocturna"
     assert counts["starts_at_arrival"] == 3 and mark_issues(cleaned, VIV).equals(cleaned.problemas)
 
@@ -615,14 +631,15 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages)
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 381, "inicio_zona_ajena": 0,
         "fin_fuera_de_casa": 494, "actividad_en_casa": 536, "motivo_guarderia": 30, "hora_2301": 94, "hora_1h01": 718,
         "hora_5h01": 613, "hora_madrugada": 59}
-    # every change a rule makes, at these counts (the fifth review of the chains added five of them, 2026-09-26)
+    # every change a rule makes, at these counts (the fifth review of the chains added five of them, 2026-09-26; the
+    # review of the readings against household companions, the same day, read 236 extra leading 1's as the -12h)
     assert {c: int(has_code(trips.ajustes, c).sum()) for c in FIX_CODES if not c.endswith(":revision")} == {
         "hora:duplicado": 37, "hora:vecinos": 288, "motivo:duplicado": 38, "motivo:vecinos": 294,
         "motivo:tipo_destino": 84, "destino:copia": 69, "motivo:casa": 231, "motivo:lugar": 67, "motivo:guarderia": 163,
         "destino:casa": 8, "motivo:otros": 21, "origen:casa": 147, "origen:anterior": 77, "origen:copia": 955,
         "origen:respuesta": 86, "origen:tipo_copia": 151, "origen:rotado": 47, "destino:rotado": 47,
-        "tipo_destino:rotado": 20, "tipo_origen:copia": 1_602, "tipo_origen:regreso": 113, "hora:+12h": 713,
-        "hora:-12h": 392 + 123, "hora:-10h": 392, "hora:+10h": 156, "hora:-10h+12h": 826, "hora:llegada": 687}
+        "tipo_destino:rotado": 20, "tipo_origen:copia": 1_602, "tipo_origen:regreso": 113, "hora:+12h": 705,
+        "hora:-12h": 641 + 123, "hora:-10h": 156, "hora:+10h": 154, "hora:-10h+12h": 816, "hora:llegada": 694}
     hora = sum(has_code(trips.problemas, c) for c in TIME_ORDER_ISSUES)
     assert (hora <= 1).all() and (trips.problemas != "").sum() == 3_377 + 631
     # the travel minutes a review corrected are read before the rules: on those trips, and only there, the rules'

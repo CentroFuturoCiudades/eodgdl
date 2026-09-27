@@ -58,18 +58,19 @@ _NIGHT_PLACES = (HOME_PLACE, "Otra vivienda", "Hospital, clínica, consultorio, 
 # highest hour, hours added). The costs rank the mechanisms by how common they
 # are — the 12-hour clock is the dominant one — and break ties between readings
 # that would otherwise be equally cheap. Decided 2026-09-03 from the diagnosis
-# behind _repair_start_times().
+# behind _repair_start_times(). The -12h, a morning start typed on the afternoon
+# side of the 12-hour clock (21:00 for 09:00), came in the fourth review of the
+# chains (2026-09-26) as a second menu, tried only where this one read nothing,
+# and joined it the same day in a review of the readings against household
+# companions: where the extra leading 1 and the -12h both fit, a companion who
+# made the same trip sides with the -12h (see _repair_start_times).
 _START_TIME_EDITS = (
     ("+12h", 1.0, 0, 11, 12),  # 12-hour clock without AM/PM
+    ("-12h", 1.1, 17, 23, -12),  # the 12-hour clock the other way, from 17:00 on only: no reading before 05:00
     ("-10h", 1.2, 15, 19, -10),  # an extra leading 1, only where it yields a morning hour
     ("+10h", 1.5, 0, 9, 10),  # a missing leading 1
     ("-10h+12h", 2.0, 10, 19, 2),  # an extra leading 1 on a 12-hour-clock entry
 )
-# The second menu, tried only on a chain the first cannot read: a morning start
-# typed on the afternoon side of the 12-hour clock (21:00 for 09:00), from 17:00
-# on only, so no reading lands before 05:00. Decided 2026-09-26 in the fourth
-# review of the chains (see _repair_start_times).
-_START_TIME_EDITS_2 = _START_TIME_EDITS + (("-12h", 1.1, 17, 23, -12),)
 _START_TIME_TOLERANCE = 15  # minutes: an inversion this small is minute noise, not an hour error
 _START_TIME_MAX_COST = 6.0  # give up rather than rewrite a day
 _MIN_MANDATORY_STAY = 30  # minutes: a reading of the hours may leave no less at work or school
@@ -93,7 +94,10 @@ _EARLY_LONG_STAY = 8 * 60  # minutes
 # 12-hour clock: the search reads such a chain with the -12h edit alone
 # (_LONG_ERRAND_EDITS; see _repair_start_times). A visit or an outing can last
 # all day and is left, and so is 'Otros', which names day trips out of town as
-# well as errands. Decided 2026-09-26 in a review of the long errands.
+# well as errands. Decided 2026-09-26 in a review of the long errands. Nor may
+# any reading of the hours leave half a day at a short errand, whatever trip
+# follows it (_search_edits): decided the same day, in the review of the
+# readings against household companions.
 _SHORT_ERRANDS = (
     "Compras (comida)",
     "Compras (bienes, productos y servicios)",
@@ -103,7 +107,7 @@ _SHORT_ERRANDS = (
     ESCORT,
 )
 _LONG_ERRAND = 12 * 60  # minutes
-_LONG_ERRAND_EDITS = tuple(edit for edit in _START_TIME_EDITS_2 if edit[0] == "-12h")
+_LONG_ERRAND_EDITS = tuple(edit for edit in _START_TIME_EDITS if edit[0] == "-12h")
 # 23:01 in minutes: the start the survey heaps its late returns on (see
 # _remaining_issues, hora_2301). Found 2026-09-25 in a review of the chains.
 _SENTINEL_START = 23 * 60 + 1
@@ -1284,10 +1288,12 @@ def _start_at_arrival(
     and since the fourth review of the chains (2026-09-26) the rule does too,
     except after a trip to work or school, where a stay of no minutes would
     make the day implausible and the hand reads the hours instead. On the
-    survey 687 starts move, 600 of them by the tolerance or less and 86 by up
+    survey 694 starts move, 607 of them by the tolerance or less and 86 by up
     to an hour (and an imputed start with the trip before); 816 until the
     fifth review of the chains (2026-09-26), when the travel minutes a review
-    corrected came before the rules and their overlaps went with them.
+    corrected came before the rules and their overlaps went with them, and
+    687 until the review of the readings against household companions, the
+    same day, whose -12h readings leave a few starts minutes short.
 
     A start the move of the trip before pushes into overlap moves with it; a
     larger contradiction (``hora_invertida``) and an overnight wrap
@@ -1493,9 +1499,9 @@ def _search_edits(
     arrival — its start plus its travel minutes — less the tolerance, and,
     with ``early`` (the chain's first trip goes to anything but work), that
     the first trip does not start before ``_EARLY_START`` with a stay of
-    ``_EARLY_LONG_STAY`` or more after it; where ``errand`` marks the errands
-    a return home follows, that no such return starts ``_LONG_ERRAND`` or
-    more after the arrival at its errand. An edit must also leave
+    ``_EARLY_LONG_STAY`` or more after it; where ``errand`` marks the short
+    errands (``_SHORT_ERRANDS``), that no trip starts ``_LONG_ERRAND`` or
+    more after the arrival at an errand just before it. An edit must also leave
     ``_MIN_MANDATORY_STAY`` or more at work or school (``mandatory`` marks the
     trips there): a reading of the hours that puts the next start at the
     arrival at work is no reading. Depth-first over the trips, pruned by the
@@ -1573,29 +1579,52 @@ def _repair_start_times(
     from work before 10:00 (``_next_day``), is not a violation. For every
     infeasible chain the search tries the menu in ``_START_TIME_EDITS`` on
     each trip and keeps the cheapest combination that makes the chain
-    feasible, provided it is unique, costs at most ``_START_TIME_MAX_COST``
-    and leaves ``_MIN_MANDATORY_STAY`` or more at work or school. A chain
-    with no such reading is searched again with the second menu,
-    ``_START_TIME_EDITS_2``, which adds a morning start typed as an evening
-    one (``hora:-12h``, from 17:00 on); tried first, it would change 241
-    readings the first menu already makes, and none for the better. A chain
-    with no reading is left as it is, and the trips in it that still start
+    feasible, provided it is unique, costs at most ``_START_TIME_MAX_COST``,
+    leaves ``_MIN_MANDATORY_STAY`` or more at work or school and leaves
+    nobody ``_LONG_ERRAND`` or more at a short errand (``_SHORT_ERRANDS``).
+    A chain with no reading is left as it is, and the trips in it that still start
     before the previous arrival are marked ``hora_invertida`` unless
     ``_start_at_arrival`` closes them. Every edited row is marked in the
     ``ajustes`` column with the edit applied (``hora:+12h`` and so on), so a
     consumer can treat it as uncertain; ``locked`` rows (imputed start times)
     are never edited.
 
-    The second menu, the stay at work and the cost cap (4 until then) were
-    added on 2026-09-26, in the fourth review of the chains, from the first
-    hand pass's readings of the chains the search left: 550 of its 1,026
-    start edits read an evening start as the morning's ("Corrección AM/PM"),
-    most on a day's first trip to work recorded at 20:00–22:59 and followed
-    by a return in the afternoon. The stay at work rules out readings such as
+    A morning start typed as an evening one (``hora:-12h``, from 17:00 on),
+    the stay at work and the cost cap (4 until then) were added on
+    2026-09-26, in the fourth review of the chains, from the first hand
+    pass's readings of the chains the search left: 550 of its 1,026 start
+    edits read an evening start as the morning's ("Corrección AM/PM"), most
+    on a day's first trip to work recorded at 20:00–22:59 and followed by a
+    return in the afternoon. The -12h came as a second menu, tried only where
+    the first read nothing: tried first, it changed 241 readings the first
+    menu made and bettered none on the screens (``eodgdl.review.screens``).
+    The stay at work rules out readings such as
     household 15423, person 1's: to work at 07:30, 35 minutes, home at 17:50
     and to the shops at 18:00, where an extra leading 1 read off the 17:50
     closed a 25-minute overlap by leaving no minutes at work; 137 stays at
     work shorter than half an hour sat next to such an edit.
+
+    A household member who made the same trip is the one check on a reading
+    that the chain itself does not supply (``eodgdl.review.companions``: the
+    trip next to it reported alike by both, same zones and motive, the two on
+    the road together). On 2026-09-26, in a review of the readings against
+    household companions, it scored the 2,602 starts the search then read:
+    242 had such a companion, and where the companion reported another start
+    the 12-hour readings came out confirmed 73 times (+12h 35, -12h 38) and
+    the readings of an extra or missing leading 1 never (0 of 87), 30 of them
+    with the companion at the 12-hour reading instead. Where the first menu's
+    -10h and the second menu's -12h both fit, 240 starts, a companion sided
+    with the -12h 18 times and with the -10h never — household 3627, person
+    5, to school at 19:00, read as
+    09:00, while a sibling left for the same school at 07:00 and both came
+    home at 13:00 — and of the first trips to school no rule reads, 43% leave
+    at 07:xx and 1.4% at 09:xx. So the -12h joined the one menu, at its cost
+    (1.1, below the -10h's 1.2). The same review closed the long errands to
+    every reading: household 2585, person 1, to the shops at 08:00 (80
+    minutes), to other shops at 22:30 and home at 11:00, was read with the
+    return at 23:00 and 13 hours at the first shops, where the -12h on the
+    second trip, 10:30, leaves none; household 6647, person 2, is the same
+    day, and the limit changes those two readings and no other.
 
     A day whose order of times holds can still carry the typo. Since
     2026-09-26 the search also runs on a chain whose first trip, to anything
@@ -1626,7 +1655,7 @@ def _repair_start_times(
     9541, person 1, to the doctor at 07:00 with a companion who was home at
     11:00, is home at 23:00 — and left 12 hours later in 2, the errand's own
     hour typed wrong, which the -12h reads with the right stay at the wrong
-    end of the day; the first menu would read nearly every one so, a doctor
+    end of the day; the full menu would read nearly every one so, a doctor
     at 21:00. 13 came home at the same hour as a companion, mostly days at a
     hospital, where one slip typed twice and a whole day there look alike.
     Visits and outings are left, and 'Otros', which names day trips out of
@@ -1637,23 +1666,21 @@ def _repair_start_times(
     with the companion home at the same hour. Nor does a 12-hour slip explain
     a stay under twelve hours. 123 chains are read this way, every return to
     between 05:00 and 11:59 (106 of them from 09:00), leaving a median stay
-    of 88 minutes; the long stays in chains the first menus read are theirs
-    (household 2585, person 1, whose last return the first menu read as
-    23:00, keeps 13 hours at the shops).
+    of 88 minutes.
 
     On the survey, with the untimed trips imputed and the non-trips set
-    aside, 2,046 chains get a reading — 377 of them with the second menu's
-    -12h, 123 with the -12h alone for a long errand, 110 for their early
-    start alone and 3 once the move to the arrival cleared the way
-    (:func:`_read_start_times`) — and 2,602 rows change (+12h 713, -12h 515,
-    an extra leading 1 392, both 826, a missing leading 1 156), none of them
+    aside, 2,046 chains get a reading — 744 of them with a -12h, 123 of those
+    with the -12h alone for a long errand; 110 for their early start alone
+    and 3 once the move to the arrival cleared the way
+    (:func:`_read_start_times`) — and 2,595 rows change (+12h 705, -12h 764,
+    an extra leading 1 156, both 816, a missing leading 1 154), none of them
     to an hour before 05:00. 351 trips in 246 people still
     start before the previous trip could have arrived by more than the
     tolerance, not overnight, and are marked ``hora_invertida`` (870 in 756
     until the fourth review of the chains, 355 in 251 until the fifth, which
     read no day overnight that goes to work again after the night,
     :func:`_day_wraps`); the hand decisions read them
-    (``scripts/revisions/chains_15.py``) and tasha.chain_report counts them
+    (``scripts/revisions/chains_16.py``) and tasha.chain_report counts them
     again on the built table. Household 8,
     person 3 is the worked example: 07:24, 07:37,
     19:00, 16:30, 18:02, 18:00, with 30-minute drives, becomes feasible by
@@ -1677,8 +1704,9 @@ def _repair_start_times(
     activity = ~trips.motivo_viaje.isin([WORK_MOTIVE, HOME_MOTIVE]).to_numpy()
     night = (trips.motivo_viaje == HOME_MOTIVE).to_numpy() & _after_work(trips, pid)
     mandatory = trips.motivo_viaje.isin(MANDATORY_MOTIVES).to_numpy()
-    errand = _errands_before_returns(trips, pid)
-    delta = {name: d for name, _, _, _, d in _START_TIME_EDITS_2}
+    before_return = _errands_before_returns(trips, pid)
+    errand = trips.motivo_viaje.isin(_SHORT_ERRANDS).to_numpy()  # no reading leaves half a day at one
+    delta = {name: d for name, _, _, _, d in _START_TIME_EDITS}
     new_hours = hours.copy()
     flag = np.full(len(trips), "", dtype=object)
     counts = dict.fromkeys(("chains_repaired", "early_starts_read", "long_errands_read"), 0)
@@ -1688,15 +1716,12 @@ def _repair_start_times(
         infeasible = _chain_needs_repair(start, travel[a:b], night[a:b], mandatory[a:b])
         early_stay = early and b - a > 1 and _early_long_stay(start[0], travel[a], start[1])
         # a long errand is read only in a chain nothing else sends to the search, and with the -12h alone
-        long_errand = not (infeasible or early_stay) and _long_errand(start, travel[a:b], errand[a:b])
+        long_errand = not (infeasible or early_stay) and _long_errand(start, travel[a:b], before_return[a:b])
         if not (infeasible or early_stay or long_errand):
             continue
-        menus = (_LONG_ERRAND_EDITS,) if long_errand else (_START_TIME_EDITS, _START_TIME_EDITS_2)
-        for menu in menus:
-            edits = _search_edits(hours[a:b], mins[a:b], travel[a:b], locked[a:b], early, menu, night[a:b],
-                                  mandatory[a:b], errand[a:b] if long_errand else None)
-            if edits is not None:
-                break
+        menu = _LONG_ERRAND_EDITS if long_errand else _START_TIME_EDITS
+        edits = _search_edits(hours[a:b], mins[a:b], travel[a:b], locked[a:b], early, menu, night[a:b],
+                              mandatory[a:b], errand[a:b])
         if edits is None:
             continue
         counts["chains_repaired"] += 1
@@ -1976,9 +2001,10 @@ def clean_trip_chains(
        if it is the day's last trip to an AGEB nothing else touches, else at a
        place nothing names, 'Otros' (``_short_returns``).
     5. **Start times.** Repair mistyped start hours with the fewest edits
-       that let every trip start after the previous one arrived, and read a
-       day that starts in the small hours with a long stay after, or a return
-       home half a day after a short errand (``_repair_start_times``); move a
+       that let every trip start after the previous one arrived, and leave
+       nobody half a day at a short errand, and read a day that starts in the
+       small hours with a long stay after, or a return home half a day after
+       a short errand (``_repair_start_times``); move a
        start that falls before the previous arrival by the tolerance, or by
        up to an hour where no reading of the hours fits, to that arrival
        (``_start_at_arrival``); search once more where that move cleared the

@@ -760,8 +760,9 @@ y ninguna etiqueta se recodificó salvo donde se indica.
    5. *Reparación de horas mal anotadas*: {c['horas_reparadas']:,} horas de inicio, en
       {c['cadenas_reparadas']:,} cadenas, se releyeron con el menor número de erratas
       posibles (reloj de 12 horas en los dos sentidos, un 1 de más o de menos al principio) que
-      permite que cada viaje empiece después de que llegó el anterior y deja al menos media hora
-      en el trabajo o la escuela. En un día cuyas horas están en orden, un regreso a casa 12 horas
+      permite que cada viaje empiece después de que llegó el anterior, deja al menos media hora
+      en el trabajo o la escuela y no deja a nadie medio día en un mandado corto. En un día cuyas
+      horas están en orden, un regreso a casa 12 horas
       o más después de llegar a un mandado corto —compras, el médico, un trámite, un pago, llevar o
       recoger a alguien— se lee 12 horas antes: una hora de la mañana anotada del lado de la tarde
       del reloj de 12 horas. Un regreso a casa antes de las 10:00 después de salir al
@@ -773,8 +774,8 @@ y ninguna etiqueta se recodificó salvo donde se indica.
       va al trabajo ni a la escuela— se recorren a esa llegada, y las cadenas que eso despeja se
       releen una vez más.
    6. *Revisión a mano*: lo que las reglas dejaron se revisó con un criterio escrito, persona
-      por persona, y la revisión quedó en {c['decisiones']:,} decisiones, cada una con su
-      motivo. Fijó {c['horas_a_mano']:,} horas de inicio, {c['motivos_a_mano']} motivos,
+      por persona —contando lo que registró otro miembro de la vivienda que hizo el mismo viaje—,
+      y la revisión quedó en {c['decisiones']:,} decisiones, cada una con su motivo. Fijó {c['horas_a_mano']:,} horas de inicio, {c['motivos_a_mano']} motivos,
       {c['origenes_a_mano']:,} orígenes y {c['destinos_a_mano']} destinos, cambió en
       {c['tipos_origen_a_mano']:,} personas la respuesta a dónde empezó su día y descartó
       {c['descartadas']} filas —en los turnos nocturnos que la regla no alcanza, el regreso de la

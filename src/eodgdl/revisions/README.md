@@ -33,7 +33,7 @@ code on one of their trips (`eodgdl.review.marked_persons`): the survey nothing 
 values (user, 2026-09-26).
 
 A change to `leg_minutes.csv.gz` changes what the rules read, so it is a change to the rules:
-take a snapshot first (below) and make it with a script under `scripts/revisions/`, as round 15's
+take a snapshot first (below) and make it with a script under `scripts/revisions/`, as round 16's
 writes it; no review sheet edits it.
 
 ## A review round
@@ -60,10 +60,14 @@ and names the persons a screen picks out that the rules' output does not): a tri
 minute the previous one arrives (`zero_stay`), one that leaves work so (`zero_work`), one that
 leaves work or school within half an hour (`short_work`), more than 14 hours at work
 (`long_workday`), a day of more than 20 hours (`long_day`), a first non-work trip before 05:00
-(`early_start`), eight hours or more at an errand (`long_errand`). `screens` also counts a day's
-`problems`, the measure a criterion round reads a day by (rounds 14 and 15); a day of more than 20
-hours counts unless it ends with a night shift's return the next morning, before 10:00. A
-consistent chain can still be implausible.
+(`early_start`), eight hours or more at an errand (`long_errand`), and what a household member
+who made the trip with the person says of its start (`eodgdl.review.companions`): one start both
+reported, read two ways (`companion_apart`), or two starts 12 hours apart (`companion_12h`); the
+companion screens need the survey as shipped, to tell a report from a reading. `screens` also
+counts a day's `problems`, the measure a criterion round reads a day by (rounds 14 to 16); a day
+of more than 20 hours counts unless it ends with a night shift's return the next morning, before
+10:00, and each trip a companion contradicts counts one. A consistent chain can still be
+implausible.
 
 ## When the rules change
 
@@ -84,7 +88,7 @@ decision holds it, and a rule change that moves it moves it silently. So before 
 take a snapshot (`eodgdl review snapshot --out before.csv.gz`), and after it export the persons
 whose values moved (`eodgdl review export --since before.csv.gz`) to look at them. Round 14 read
 such a snapshot, `notebooks/revisions/snapshot_13.csv.gz`, taken before the rules of the fourth
-review of the chains; round 15 reads it too.
+review of the chains; rounds 15 and 16 read it too.
 
 ## How the decisions are read
 
@@ -172,6 +176,54 @@ it weighs, each keeps the rules' reading, and the rest read as before.
 The codes change no value. They mark about 1,300 more persons, so the default `review export`
 sheet grows; `--codes breaking` does not.
 
+## Round 16: the companions (2026-09-26)
+
+A review of the start readings against household companions changed the rules and made the table
+again the same day. A household member who made a trip with the person is the one check on a
+start that the chain itself does not supply (`eodgdl.review.companions`: the trip next to it
+reported alike by both, from the same zone to the same zone for the same motive, no escort, the
+two on the road together). Of the 2,602 starts the typo search then read, the 12-hour readings
+came out confirmed wherever a companion reported another start, and the readings of an extra or
+missing leading 1 never did. So:
+
+- the typo search's two menus became **one** (`eodgdl.chains._START_TIME_EDITS`): the −12 h
+  competes with an extra leading 1 from the start, at its lower cost. Where both fit, 240 starts,
+  a companion sided with the −12 h 18 times and with the −10 h never. 236 of the extra leading 1's
+  are read as the −12 h now, in 242 persons;
+- no reading may leave **half a day at a short errand**, whatever trip follows it: households
+  2585 and 6647, 13 hours at the shops, read as morning errands now;
+- two screens, `companion_apart` and `companion_12h`, count what a companion contradicts.
+
+`review export --since` on a snapshot taken before listed 243 persons, all of them the change's.
+One decision went stale (household 17963, person 4, trip 1: the rules read its start as 07:20, not
+09:20), so the table was made again as **round 16** (`scripts/revisions/chains_16.py`, from round
+15's own inputs), which retires round 15's table, script and sheet. Round 16 is round 15's steps
+— the leg minutes, the carried decisions, the start times read by the fewest problems — with the
+companions added twice:
+
+- **In the reading of a day**, a trip a companion contradicts weighs after the day's other
+  problems, as a tiebreaker: two readings of one entry agreeing says little. Household 11303,
+  persons 1 and 2, would otherwise agree by a fit that leaves them no minutes at work. This is how
+  siblings the one menu read apart come together again (households 7913 and 8298: school at 09:xx
+  for both, as the morning trip before it needs).
+- **A consistency step** settles a pair of household members still at odds on a trip made
+  together. The one who moves goes back to their own report where one entry was read two ways, or
+  takes the other's start where the two are 12 hours apart. The other's start must be one nothing
+  read, and the mover a person the rules' output marks. The rest of the mover's day is read again
+  by the rules, from the reports or from today's readings, and the option kept leaves the
+  household with no overlap, the fewest problems, then the fewest starts away from what the
+  household reported. 11 pairs are settled, 21 starts. Household 6170, person 2, went shopping at
+  20:30 with person 4 and reported 08:30. Household 13669's two night shifts both came home at
+  06:00: one slip explains the day where a day shift needs three.
+
+599 decisions (62 carried, 537 starts), 572 of them round 15's. No breaking code is left, every
+decision applies, and a second run of the script finds nothing. What a companion still
+contradicts is left to the screens:
+- 30 persons with one entry read two ways, both readings (households 11733, 13994 and 14419), or
+  a day no single move closes (household 2233's second visit, household 3475's 100-minute leg);
+- 12 persons 12 hours from a companion in households the rules' output does not mark (1688, 1723,
+  4077, 4202 and 13975), which keep their values.
+
 ## History
 
 Pass 1 (`notebooks/chain_review.csv`, every person with a `problemas` code, exported 2026-09-08
@@ -191,7 +243,8 @@ day, and rounds 8–13 merged into it by `eodgdl review freeze`:
 
 Round 14 (2026-09-26, the fourth review of the chains) retired every earlier decision and made the
 table again on rules that took over the first pass's templates; round 15 (the same day, the fifth
-review) did the same on the rules that took over two of round 14's criteria. The sheets of passes
-1–10, round 9's and 10's scripts and the frozen passes are in git (commit 9570b7c and earlier),
-round 14's script and sheet in commit 42b0cbb; round 15's notes say which earlier decision each
-carried decision keeps.
+review) did the same on the rules that took over two of round 14's criteria, and round 16 (the
+same day, the review against household companions) on the one menu, with the companions as a
+criterion. The sheets of passes 1–10, round 9's and 10's scripts and the frozen passes are in git
+(commit 9570b7c and earlier), round 14's script and sheet in commit 42b0cbb, round 15's in commit
+617e49b; round 16's notes say which earlier decision each carried decision keeps.

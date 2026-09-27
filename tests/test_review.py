@@ -434,11 +434,12 @@ def test_load_eod_applies_the_hand_decisions(stages):
     t = revised.trips
     decisions = chain_decisions()
     # one decision per trip and field, every one with its reason and the review sheet it came from
-    assert len(decisions) == 576 and not decisions.duplicated(review.KEYS + ["field"]).any()
+    assert len(decisions) == 599 and not decisions.duplicated(review.KEYS + ["field"]).any()
     assert decisions.field.value_counts().to_dict() == {
-        "start": 514, "origin": 16, "motive": 13, "destination": 10, "status": 10, "orig. type": 7, "dest. type": 6}
-    # one round made them all, on the rules of the fifth review of the chains (scripts/revisions/chains_15.py)
-    assert set(decisions.source) == {"chain_review_15"}
+        "start": 537, "origin": 16, "motive": 13, "destination": 10, "status": 10, "orig. type": 7, "dest. type": 6}
+    # one round made them all, on the rules of the review of the readings against household companions
+    # (scripts/revisions/chains_16.py)
+    assert set(decisions.source) == {"chain_review_16"}
     # the day-start answer is a decision about the person: trip 0
     assert (decisions.loc[decisions.field == "orig. type", "trip"] == review.PERSON_TRIP).all()
     # the hand review touches only persons the rules' output marks: a problemas or an ajustes code on one of their trips
@@ -457,7 +458,7 @@ def test_load_eod_applies_the_hand_decisions(stages):
     assert again.trips.equals(t) and again.hab.equals(revised.hab) and again.legs.equals(revised.legs)
     assert t.problemas.equals(mark_issues(t, revised.viv, revised.legs))
     assert has_code(t.ajustes, "origen:revision").sum() == 16 and has_code(t.ajustes, "fila:revision").sum() == 0
-    assert has_code(t.ajustes, "origen:copia").sum() == 955 and has_code(t.ajustes, "hora:llegada").sum() == 654
+    assert has_code(t.ajustes, "origen:copia").sum() == 955 and has_code(t.ajustes, "hora:llegada").sum() == 657
     # the legs whose minutes a review corrected before the rules, and no other, differ from the survey's
     minutes = revised.legs.traslado_min.groupby(level=[0, 1, 2]).sum()
     differs = minutes != shipped.legs.traslado_min.groupby(level=[0, 1, 2]).sum().reindex(minutes.index)
@@ -466,8 +467,8 @@ def test_load_eod_applies_the_hand_decisions(stages):
     # what is left: no breaking chain, the tolerated codes left alone
     assert {c: int(has_code(t.problemas, c).sum()) for c in BREAKING_ISSUES} == dict.fromkeys(BREAKING_ISSUES, 0)
     assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0
-    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 216 and int(has_code(t.problemas, "hora_2301").sum()) == 92
-    assert int(has_code(t.problemas, "hora_madrugada").sum()) == 60
+    assert int(has_code(t.problemas, "hora_nocturna").sum()) == 217 and int(has_code(t.problemas, "hora_2301").sum()) == 92
+    assert int(has_code(t.problemas, "hora_madrugada").sum()) == 59
     assert int(has_code(t.problemas, "hora_1h01").sum()) == 718 and int(has_code(t.problemas, "hora_5h01").sum()) == 613
     # the zone follows the AGEB on every revised trip end
     ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
@@ -573,15 +574,47 @@ def test_screens_measure_the_stays_and_the_day():
     assert s.zero_stays.tolist() == [1, 0, 0] and s.work_minutes.tolist() == [0, 900, 0]
     assert s.zero_work_stays.tolist() == [1, 0, 0]                        # the stay of no minutes is at work
     assert list(review.SCREENS) == ["zero_stay", "zero_work", "short_work", "long_workday", "long_day", "early_start",
-                                    "long_errand"]
+                                    "long_errand", "companion_apart", "companion_12h"]
     assert s[list(review.SCREENS)].values.tolist() == [
-        [True, True, True, False, False, False, False],       # no time at work: a short stay too
-        [False, False, False, True, False, False, False],
-        [False, False, False, False, True, True, True]]       # shopping at 04:00 for 19 hours: early, long and all day
+        [True, True, True, False, False, False, False, False, False],       # no time at work: a short stay too
+        [False, False, False, True, False, False, False, False, False],
+        [False, False, False, False, True, True, True, False, False]]       # shopping at 04:00 for 19 hours: early, long and all day
     assert s.problems.tolist() == [1, 0, 3]                   # what a review round reads a day by
     assert list(review.screened_persons(EODTables(VIV, hab, trips, None), ["long_day"])) == [(1, 3)]
     with pytest.raises(ValueError, match="not a screen"):
         review.screened_persons(EODTables(VIV, hab, trips, None), ["short_day"])
+
+
+def test_a_household_member_who_made_the_trip_checks_its_start():
+    school = ("Estudiar", "Escuela", ELSEWHERE, 20)
+    shipped = _trips([
+        (1, 7, 0, *school), (1, 13, 0, "Regresar a Casa", None, None, 20),
+        (2, 7, 0, *school), (2, 13, 0, "Regresar a Casa", None, None, 20),        # came home with 1: one entry
+        (3, 7, 0, *school), (3, 1, 0, "Regresar a Casa", None, None, 20),         # the return 12 hours off
+        (4, 7, 5, *school), (4, 13, 0, "Regresar a Casa", None, None, 20),        # the entry of 1 and 2, read below
+        (5, 9, 0, *school), (5, 14, 0, "Regresar a Casa", None, None, 20),        # left and came home on their own
+        (6, 10, 0, "Compras (comida)", None, None, 3), (6, 10, 6, "Regresar a Casa", None, None, 3),
+        (7, 10, 20, "Compras (comida)", None, None, 4), (7, 22, 7, "Regresar a Casa", None, None, 4),  # 6 was home by then
+    ])
+    trips = shipped.copy()
+    trips.loc[(1, 4, 2), "hora_inicio_h"] = 15                                    # a reading of 4's return
+    hab = pd.DataFrame(index=trips.index.droplevel("folio_viaje").unique())
+    tables, survey = EODTables(VIV, hab, trips, None), EODTables(VIV, hab, shipped, None)
+    pairs = review.companions(tables, survey).set_index(["person", "trip", "companion"])
+    assert set(pairs.index.get_level_values("person")) == set(pairs.index.get_level_values("companion")) == {1, 2, 3, 4}
+    assert pairs.loc[(1, 2, 2), ["same_entry", "apart", "half_day"]].tolist() == [True, False, False]
+    assert pairs.loc[(1, 2, 3), ["same_entry", "apart", "half_day"]].tolist() == [False, False, True]
+    assert pairs.loc[(1, 2, 4), ["same_entry", "apart", "half_day", "anchor"]].tolist() == [True, True, False, "previous"]
+    assert pairs.loc[(1, 1, 2), "anchor"] == "next"                               # the returns link the school trips
+    s = review.screens(tables, survey)
+    assert s.companion_apart_trips.tolist() == [1, 1, 0, 1, 0, 0, 0] and s.companion_12h_trips.tolist() == [1, 1, 1, 0, 0, 0, 0]
+    # the companions count among the problems: 3 also leaves school before it could arrive, 7 stays 12 hours shopping
+    assert s.problems.tolist() == [2, 2, 2, 1, 0, 0, 1]
+    assert list(review.screened_persons(tables, ["companion_12h"], survey)) == [(1, 1), (1, 2), (1, 3)]
+    # without the survey as shipped a reading cannot be told from a report: no companion counts, and no such screen
+    assert review.screens(tables)[["companion_apart_trips", "companion_12h_trips"]].sum().sum() == 0
+    with pytest.raises(ValueError, match="need the survey as shipped"):
+        review.screened_persons(tables, ["companion_apart"])
 
 
 def test_a_sheet_read_back_drops_blank_rows_and_a_write_drops_the_cached_decisions(tmp_path):

@@ -1170,11 +1170,94 @@ def changed_persons(before: pd.DataFrame, after: pd.DataFrame) -> pd.MultiIndex:
     return pd.MultiIndex.from_tuples(sorted({k[:2] for k in keys[differs.to_numpy()]}), names=PERSON)
 
 
+# ------------------------------------------------------------------ companions
+
+# A household member who made a trip with the person is the one check on a start
+# reading that the chain itself does not supply. Decided 2026-09-26 in a review of
+# the readings against household companions (the evidence is in
+# eodgdl.chains._repair_start_times): where a companion reported another start, it
+# matched the typo search's 12-hour readings 73 times and its readings of an extra
+# or missing leading 1 never.
+_COMPANION_TOL = 20  # minutes: two starts this close are one start
+_HALF_DAY = 12 * 60
+
+
+def _clock_gap(a, b) -> np.ndarray:
+    """Minutes between two clock times (minutes from midnight), the short way round the clock; NaN where one is."""
+    d = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)) % 1440
+    return np.minimum(d, 1440 - d)
+
+
+def companions(tables: EODTables, shipped: EODTables) -> pd.DataFrame:
+    """Each trip beside every household member's version of it: the check a companion gives a start.
+
+    Over the chain the model reads (the rows marked as non-trips left out), a
+    companion of a trip is another member of the household who made the trip
+    next to it with the person, as the survey reports both: the previous
+    trip (``anchor`` ``previous``) or the next one (``next``) goes from the
+    same zone to the same zone for the same motive in both chains, is no
+    escort (after a drop-off the two part), and was reported starting within
+    ``_COMPANION_TOL`` minutes in both, the two on the road together (each
+    leaves no later than the other arrives). The link is the reports', so a
+    reading that moves the trip next to it does not undo it. The companion's
+    version of the trip is the one beside that anchor in their chain, with
+    the same zones and motive. One row per trip and companion trip, both ways
+    round: ``household, person, trip``, ``companion, companion_trip``,
+    ``start`` and ``companion_start`` (minutes from midnight, as ``tables``
+    hold them), ``reported`` and ``companion_reported`` (as ``shipped``
+    reports them; NaN where it reports none), ``anchor``, and three verdicts:
+    ``same_entry`` (the two reported one start, to ``_COMPANION_TOL``: one
+    entry, whose two readings should agree), ``apart`` (one entry read to
+    starts more than ``_COMPANION_TOL`` apart) and ``half_day`` (two reports,
+    whose starts as ``tables`` hold them sit 12 hours apart to
+    ``_COMPANION_TOL``: one of the two is a 12-hour slip). Household 3627,
+    person 5, is the case in point: to school at 19:00, which the rules read
+    as 09:00 until 2026-09-26, while person 6 left for the same school at
+    07:00 and both came home at 13:00.
+    """
+    t = tables.trips[~non_trips(tables.trips)].sort_index()
+    s = shipped.trips.reindex(t.index)
+    frame = pd.DataFrame(
+        {"origin": t.origen.astype(str).to_numpy(), "destination": t.destino.astype(str).to_numpy(),
+         "motive": t.motivo_viaje.astype(str).to_numpy(), "start": _start_minutes(t),
+         "reported": (s.hora_inicio_h.astype(float) * 60 + s.hora_inicio_m.astype(float)).to_numpy(),
+         "travel": _leg_minutes(t, tables.legs)},
+        index=t.index,
+    )
+    g = frame.groupby(level=PERSON)
+    parts = []
+    for anchor, step in (("previous", 1), ("next", -1)):
+        side = frame.assign(**{f"a_{c}": g[c].shift(step) for c in ("origin", "destination", "motive", "reported", "travel")})
+        side = side[side.a_reported.notna() & side.a_motive.notna() & (side.a_motive != ESCORT)].reset_index()
+        keys = ["folio_vivienda", "origin", "destination", "motive", "a_origin", "a_destination", "a_motive"]
+        m = side.merge(side, on=keys, suffixes=("", "_c"))
+        a, b = m.a_reported.astype(float), m.a_reported_c.astype(float)  # an imputed start (no report) links nothing
+        together = (a <= b + m.a_travel_c.astype(float)) & (b <= a + m.a_travel.astype(float))  # on the road at once
+        m = m[(m.folio_habitante != m.folio_habitante_c) & (_clock_gap(a, b) <= _COMPANION_TOL) & together]
+        parts.append(m.assign(anchor=anchor))
+    m = pd.concat(parts, ignore_index=True).drop_duplicates(
+        ["folio_vivienda", "folio_habitante", "folio_viaje", "folio_habitante_c", "folio_viaje_c"])
+    out = pd.DataFrame({
+        "household": m.folio_vivienda.to_numpy(dtype=int), "person": m.folio_habitante.to_numpy(dtype=int),
+        "trip": m.folio_viaje.to_numpy(dtype=int), "companion": m.folio_habitante_c.to_numpy(dtype=int),
+        "companion_trip": m.folio_viaje_c.to_numpy(dtype=int), "start": m.start.to_numpy(dtype=float),
+        "companion_start": m.start_c.to_numpy(dtype=float), "reported": m.reported.to_numpy(dtype=float),
+        "companion_reported": m.reported_c.to_numpy(dtype=float), "anchor": m.anchor.to_numpy(),
+    })
+    gap = _clock_gap(out.start, out.companion_start)
+    out["same_entry"] = _clock_gap(out.reported, out.companion_reported) <= _COMPANION_TOL
+    out["apart"] = out.same_entry & (gap > _COMPANION_TOL)
+    out["half_day"] = ~out.same_entry & (np.abs(gap - _HALF_DAY) <= _COMPANION_TOL)
+    return out.sort_values(KEYS + ["companion", "companion_trip"]).reset_index(drop=True)
+
+
 # ------------------------------------------------------------------ screens
 
 # What a consistent chain can still get implausibly wrong, for choosing whom to review: the
 # problemas codes see the order of the times and where the day starts and ends, not how long
-# anything lasts. Each is a threshold on the chain the model reads, read person by person.
+# anything lasts, nor what the household members who made a trip together report. Each is a
+# threshold on the chain the model reads, read person by person; the two companion screens
+# need the shipped tables (:func:`companions`).
 SCREENS = {
     "zero_stay": "a trip leaves the minute the previous one arrives: a stay of no minutes",
     "zero_work": "a trip leaves work the minute it got there: no time at work",
@@ -1183,6 +1266,9 @@ SCREENS = {
     "long_day": "more than 20 hours from the day's first start to its last arrival",
     "early_start": "the day's first trip, to anything but work, starts before 05:00",
     "long_errand": "a stay of 8 hours or more at a place that is not home, work or school",
+    "companion_apart": "a trip made with a household member, reported at the same start, is read more than 20 minutes "
+                       "from theirs",
+    "companion_12h": "a trip made with a household member starts 12 hours from theirs: one of the two is a 12-hour slip",
 }
 _SHORT_WORK = 30  # minutes
 _LONG_WORKDAY = 14 * 60
@@ -1190,7 +1276,7 @@ _LONG_DAY = 20 * 60
 _LONG_ERRAND = 8 * 60
 
 
-def screens(tables: EODTables) -> pd.DataFrame:
+def screens(tables: EODTables, shipped: EODTables | None = None) -> pd.DataFrame:
     """Per person with trips, how long the stays and the day last on the chain the model reads.
 
     The rows marked as non-trips are left out and a day that passes midnight
@@ -1205,12 +1291,17 @@ def screens(tables: EODTables) -> pd.DataFrame:
     home, work or school), ``night_shift_end`` (the day ends with a return
     from work the next morning, before 10:00, as a night shift does; until
     2026-09-26 any hour of the next day counted, and days that went to work
-    again after a night passed as night shifts), one boolean column per ``SCREENS`` entry,
-    and ``problems``: the stays of no minutes away from home, work and school,
-    the short stays at work or school, the early start, the long errands and a day of more
-    than 20 hours that does not end with a night shift's morning return,
-    summed — the count a review round reads a day by (``scripts/revisions``).
-    Indexed by person.
+    again after a night passed as night shifts), ``companion_apart_trips`` and
+    ``companion_12h_trips`` (the person's trips that one entry a household
+    member made with them reads to another start, and those that start 12
+    hours from the member's: :func:`companions`, given ``shipped``, the survey
+    as shipped, to tell a reported start from a read one; 0 without it), one
+    boolean column per ``SCREENS`` entry, and ``problems``: the stays of no
+    minutes away from home, work and school, the short stays at work or
+    school, the early start, the long errands, a day of more than 20 hours
+    that does not end with a night shift's morning return and the trips a
+    companion contradicts, summed — the count a review round reads a day by
+    (``scripts/revisions``). Indexed by person.
     """
     t = tables.trips[~non_trips(tables.trips)].sort_index()
     start = _start_minutes(t) + 1440 * days_past_midnight(t).to_numpy()
@@ -1248,18 +1339,31 @@ def screens(tables: EODTables) -> pd.DataFrame:
     out["long_day"] = out.day_minutes > _LONG_DAY
     out["early_start"] = out.early
     out["long_errand"] = out.long_errands > 0
+    out["companion_apart_trips"] = out["companion_12h_trips"] = 0
+    if shipped is not None:
+        pairs = companions(tables, shipped)
+        for column, verdict in (("companion_apart_trips", "apart"), ("companion_12h_trips", "half_day")):
+            flagged = pairs.loc[pairs[verdict], KEYS].drop_duplicates()
+            per = flagged.groupby(["household", "person"]).size().rename_axis(PERSON)
+            out[column] = per.reindex(out.index, fill_value=0).astype(int).to_numpy()
+    out["companion_apart"] = out.companion_apart_trips > 0
+    out["companion_12h"] = out.companion_12h_trips > 0
     out["problems"] = (out.zero_away_stays + out.short_work_stays + out.early.astype(int) + out.long_errands
-                       + (out.long_day & ~out.night_shift_end).astype(int))
+                       + (out.long_day & ~out.night_shift_end).astype(int)
+                       + out.companion_apart_trips + out.companion_12h_trips)
     return out
 
 
-def screened_persons(tables: EODTables, names) -> pd.MultiIndex:
-    """The persons any of the ``SCREENS`` in ``names`` picks out, in chain order."""
+def screened_persons(tables: EODTables, names, shipped: EODTables | None = None) -> pd.MultiIndex:
+    """The persons any of the ``SCREENS`` in ``names`` picks out, in chain order; the companion screens need
+    ``shipped`` (:func:`screens`)."""
     names = list(names)
     unknown = set(names) - set(SCREENS)
     if unknown:
         raise ValueError(f"not a screen: {sorted(unknown)}; the screens are {list(SCREENS)}")
-    s = screens(tables)
+    if shipped is None and {"companion_apart", "companion_12h"} & set(names):
+        raise ValueError("the companion screens need the survey as shipped, to tell a reported start from a read one")
+    s = screens(tables, shipped)
     return s.index[s[names].any(axis=1).to_numpy()]
 
 
@@ -1338,7 +1442,7 @@ def verify_edits(
         bool(set(a.split(";")) - set(b.split(";")) - {""})
         for a, b in zip(persons.after, persons.before)
     ]
-    sr, sb, sa = (screens(t).reindex(who) for t in (rules, cleaned, revised))
+    sr, sb, sa = (screens(t, shipped).reindex(who) for t in (rules, cleaned, revised))
     flags = list(SCREENS)
     on = lambda frame: frame[flags].fillna(False).to_numpy(bool)
     summary = {

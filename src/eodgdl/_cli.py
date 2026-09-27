@@ -56,7 +56,8 @@ def main() -> None:
         help="Comma-separated screens of a consistent chain gone implausible (eodgdl.review.SCREENS): zero_stay (a "
         "trip leaves the minute the previous one arrives), zero_work, short_work (under 30 min at work or school), "
         "long_workday (over 14 h at work), long_day (over 20 h), early_start (a first non-work trip before 05:00), "
-        "long_errand (8 h or more at an errand)",
+        "long_errand (8 h or more at an errand), companion_apart (a start a household member reported alike, read "
+        "otherwise), companion_12h (a trip made with a household member, 12 h from theirs)",
     )
     exp_p.add_argument(
         "--stale", action="store_true",
@@ -242,7 +243,7 @@ def _review(args) -> int:
             if args.persons:
                 chosen += _persons_arg(args.persons, cleaned.hab)
             if args.screen:
-                chosen += list(review.screened_persons(cleaned, [s.strip() for s in args.screen.split(",")]))
+                chosen += list(review.screened_persons(cleaned, [s.strip() for s in args.screen.split(",")], shipped))
             if args.stale:
                 chosen += list(zip(stale.household.astype(int), stale.person.astype(int)))
             if args.since:
@@ -269,7 +270,7 @@ def _review(args) -> int:
         counts["group"] = ["breaking" if c in BREAKING_ISSUES else "tolerated" for c in counts.index]
         left = counts.loc[counts["rows"] > 0]
         print(left.to_string() if len(left) else "no chain carries those codes")
-        picked = review.screens(cleaned).reindex(persons)
+        picked = review.screens(cleaned, shipped).reindex(persons)
         print("\nscreens over the persons exported: "
               + ", ".join(f"{name} {int(picked[name].fillna(False).sum()):,}" for name in review.SCREENS))
         return 0
