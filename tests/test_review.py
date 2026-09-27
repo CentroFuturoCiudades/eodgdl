@@ -395,8 +395,8 @@ def test_the_pending_sheet_round_trips_on_the_survey(stages, tmp_path):
     assert len(rows) == 154_662 and int(rows.dropped.sum()) == 38
     pending = review.pending_persons(rows)
     sheet = review.chain_sheet(rows, cleaned.hab, pending)
-    assert (len(pending), len(sheet)) == (2_184, 6_879)
-    assert sheet.status.value_counts().to_dict() == {"": 6_127, "changed": 751, "dropped": 1}
+    assert (len(pending), len(sheet)) == (3_468, 11_430)
+    assert sheet.status.value_counts().to_dict() == {"": 10_587, "changed": 842, "dropped": 1}
     back = review.read_sheet(review.write_sheet(sheet, tmp_path / "chain_review.csv"))
     ends = back.destination.str.split(" → ")                           # a return that copied its origin goes home
     assert set(ends.str[-1].str.len()) <= {4, 9, 13} and set(ends.str[0].str.len()) <= {4, 9, 13}   # ids as strings
@@ -468,6 +468,7 @@ def test_load_eod_applies_the_hand_decisions(stages):
     assert len(review.pending_persons(review.chain_rows(revised, shipped), ["breaking"])) == 0
     assert int(has_code(t.problemas, "hora_nocturna").sum()) == 216 and int(has_code(t.problemas, "hora_2301").sum()) == 92
     assert int(has_code(t.problemas, "hora_madrugada").sum()) == 60
+    assert int(has_code(t.problemas, "hora_1h01").sum()) == 718 and int(has_code(t.problemas, "hora_5h01").sum()) == 613
     # the zone follows the AGEB on every revised trip end
     ends = pd.concat([pd.DataFrame({"ageb": t[p].astype(str), "zone": t[z].astype(str)})
                       for p, z in (("origen", "zona_origen"), ("destino", "zona_destino"))])

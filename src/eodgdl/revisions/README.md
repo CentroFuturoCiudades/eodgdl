@@ -155,6 +155,23 @@ and round 15 (`scripts/revisions/chains_15.py`, which reads round 14's inputs,
 rules). No breaking code is left, every decision applies and sits on a person the rules' output
 marks, and a second run of the script finds nothing.
 
+## After round 15: the long errands and the capture's return times (2026-09-26)
+
+A review of the long errands and the heaped returns changed the rules once more, the same day:
+
+- The typo search now also reads a return home that starts 12 hours or more after the arrival at a
+  short errand, in a chain whose times hold. It uses the −12 h edit alone (`hora:-12h`).
+- Two tolerated codes mark a return that repeats the trip before it and starts exactly 1h01 or
+  5h01 after it: `hora_1h01` and `hora_5h01`, the capture's own start for a return. The values
+  are kept.
+
+The table did not change. A snapshot taken before the change and `review export --since` after it
+found only the 123 chains the new reading takes, and none of them holds a decision. No decision
+went stale, and round 15's script run on the new rules finds nothing: the 123 days join the days
+it weighs, each keeps the rules' reading, and the rest read as before.
+The codes change no value. They mark about 1,300 more persons, so the default `review export`
+sheet grows; `--codes breaking` does not.
+
 ## History
 
 Pass 1 (`notebooks/chain_review.csv`, every person with a `problemas` code, exported 2026-09-08

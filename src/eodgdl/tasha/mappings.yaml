@@ -372,7 +372,10 @@ trips:
       which the derivation codes past 2400): StartTime runs forward along
       every chain, the days that pass midnight included, and none spans more
       than 24 hours; tasha.chain_report counts what is left on every build. hora_2301 marks a start of 23:01 as reported, the minute the survey
-      heaps its late returns on: the return came then or later. The rules, their
+      heaps its late returns on: the return came then or later. hora_1h01 and
+      hora_5h01 mark a return whose start the capture filled in, 1h01 or 5h01
+      after the trip it repeats: when it came is unknown, and so is the stay
+      before it. The rules, their
       evidence and the rejected alternatives — dropping those people,
       re-sequencing tours — are documented in eodgdl.chains. The builder refuses
       a trip table with untimed rows rather than guess.

@@ -294,14 +294,15 @@ assert counts == {"leg_minutes_corrected": 371, "untimed_trips": 325, "untimed_p
                   "origins_repaired": 147, "origins_continued": 31, "first_origins_copied": 955,
                   "first_origins_answered": 86, "first_origins_typed": 151, "first_trips_rotated": 47,
                   "answers_set_home": 600, "first_return_answers": 75, "short_returns_home": 8,
-                  "short_returns_other": 21, "start_times_edited": 2_479, "chains_repaired": 1_923,
-                  "early_starts_read": 110, "chains_read_after_the_slide": 3, "starts_at_arrival": 687,
+                  "short_returns_other": 21, "start_times_edited": 2_602, "chains_repaired": 2_046,
+                  "early_starts_read": 110, "long_errands_read": 123, "chains_read_after_the_slide": 3,
+                  "starts_at_arrival": 687,
                   "left_hora_invertida": 351, "left_hora_nocturna": 178, "left_hora_anterior": 0,
                   "left_hora_repetida": 0, "left_hora_traslapada": 0, "left_origen_discontinuo": 0,
                   "left_regreso_sin_llegar": 0, "left_tipo_destino_dudoso": 16,
                   "left_inicio_fuera_de_casa": 381, "left_inicio_zona_ajena": 0, "left_fin_fuera_de_casa": 494,
                   "left_actividad_en_casa": 536, "left_motivo_guarderia": 30, "left_hora_2301": 94,
-                  "left_hora_madrugada": 59}
+                  "left_hora_1h01": 718, "left_hora_5h01": 613, "left_hora_madrugada": 59}
 assert len(clean.trips) == len(cleaned_trips) == n_trips - counts["duplicate_returns"]
 assert len(clean.hab) == n_hab
 assert n_non_trips == counts["home_to_home"] + counts["next_morning_returns"] and n_dropped == counts["duplicate_returns"]
@@ -561,17 +562,22 @@ next_day_c = ((((C.prev_start >= 18 * 60) | ((C.prev_start >= 12 * 60) & C.is_re
 overnight_c = pd.Series(_day_wraps(C, C.start.to_numpy()), index=C.index)
 n_night_voided = int((next_day_c & ~overnight_c).sum())       # read overnight but for the day after it: hora_invertida
 night_shift_c = (overnight_c & C.is_return & (C.prev_motivo == "Trabajar") & (C.start > 6 * 60)).fillna(False)
-n_second_menu = int(C.index[has_code(C[FIX_FLAG], "hora:-12h").to_numpy()].droplevel("folio_viaje").nunique())
+# the chains read with a -12h: the second menu's, and the long errands', which take the -12h alone (@sec-errand)
+n_second_menu = int(C.index[has_code(C[FIX_FLAG], "hora:-12h").to_numpy()].droplevel("folio_viaje").nunique()
+                    - counts["long_errands_read"])
 c_beyond = ((C.prev_start + C.prev_leg - C.start) > _START_TIME_TOLERANCE).fillna(False) & ~overnight_c
 repair_tbl = pd.DataFrame({
     "measure": ["chains with a trip starting before the previous arrival, beyond the tolerance",
                 "chains given a unique cheapest reading", "…of them by the second menu",
+                "…of them for their early start alone",
+                "…of them for a long errand alone, with the −12 h edit alone",
                 "rows edited (imputed start times are never edited)",
                 "edited rows that follow a trip starting at or after 17:00",
                 "inversions left (trips / people)",
                 "trips still starting before the previous arrival (trips / people)",
                 "of which beyond the tolerance and not overnight (trips / people)"],
-    "value": [fmt(needs_repair), fmt(counts["chains_repaired"]), fmt(n_second_menu), fmt(counts["start_times_edited"]),
+    "value": [fmt(needs_repair), fmt(counts["chains_repaired"]), fmt(n_second_menu), fmt(counts["early_starts_read"]),
+              fmt(counts["long_errands_read"]), fmt(counts["start_times_edited"]),
               fmt(moved_after_evening),
               f"{fmt(c_inv.sum())} / {fmt(persons_C[c_inv].nunique())}",
               f"{fmt(c_early.sum())} / {fmt(persons_C[c_early].nunique())}",
@@ -612,6 +618,87 @@ school_13_back = int(t2.start.groupby(level=P).shift(-1).reindex(school_13.index
 assert (n_early, n_early_long, len(school_1), school_1_back, len(school_13), school_13_back) == (161, 111, 33, 27, 1_319, 1_202)
 n_madrugada = int(issue_counts.get("hora_madrugada", 0))
 ex_early = school_1.index[early_next.reindex(school_1.index).between(18 * 60, 20 * 60 + 59).to_numpy()][0][:2]
+# a return home half a day after a short errand (@sec-errand): the stays before a return home, on the survey's
+# hours before the time stage, by the kind of activity
+from eodgdl.chains import (_LONG_ERRAND, _SHORT_ERRANDS, _chain_needs_repair, _early_long_stay,
+                           _errands_before_returns, _long_errand)
+t2_next = t2.groupby(level=P)[["start", "motivo_viaje"]].shift(-1)
+t2_stay = t2_next.start - t2.start - t2.legmin
+before_return = t2_next.motivo_viaje == RETURN
+errand_kinds = {"short errand": t2.motivo_viaje.isin(_SHORT_ERRANDS), "visit": t2.motivo_viaje == "Visitar a alguien",
+                "outing": t2.motivo_viaje == "Deportes o recreación"}
+stay_hours = pd.DataFrame({k: (t2_stay[m & before_return] // 60).value_counts() for k, m in errand_kinds.items()}
+                          ).reindex(range(8, 16)).fillna(0).astype(int)
+assert stay_hours.loc[12, "short errand"] > 5 * stay_hours.loc[11, "short errand"]          # the jump at twelve
+assert all(stay_hours.loc[12, k] < stay_hours.loc[11, k] for k in ("visit", "outing"))     # no jump
+long_stays = t2[errand_kinds["short errand"] & before_return & (t2_stay >= _LONG_ERRAND)]
+long_late = int((t2_next.start.reindex(long_stays.index) // 60 == 23).sum())
+late_share = float((t2.start[t2.is_return] // 60 == 23).mean())
+# the chains the reading took, as the time stage saw them: the survey's hours and the motives the earlier rules
+# gave; in order, no early start with a long stay, and a return home 12 hours or more after a short errand
+te_start, te_legs = t2.start.reindex(C.index).to_numpy(), C.legmin.fillna(0).to_numpy()
+te_pid = pd.factorize(C.index.droplevel("folio_viaje"))[0]
+te_errand = _errands_before_returns(C, te_pid)
+te_night = (C.is_return & (C.prev_motivo == "Trabajar")).to_numpy()
+te_mandatory = C.motivo_viaje.isin(["Trabajar", "Estudiar"]).to_numpy()
+te_activity = ~C.motivo_viaje.isin(["Trabajar", RETURN]).to_numpy()
+
+
+def chains_the_reading_took():
+    """True on every row of a chain the long-errand trigger alone sent to the search."""
+    first = np.flatnonzero(np.r_[True, te_pid[1:] != te_pid[:-1]])
+    out = np.zeros(len(C), bool)
+    for a, b in zip(first, np.r_[first[1:], len(C)]):
+        start, travel = te_start[a:b], te_legs[a:b]
+        early = te_activity[a] and b - a > 1 and _early_long_stay(start[0], travel[0], start[1])
+        if not (early or _chain_needs_repair(start, travel, te_night[a:b], te_mandatory[a:b])) and _long_errand(
+                start, travel, te_errand[a:b]):
+            out[a:b] = True
+    return out
+
+
+errand_read = chains_the_reading_took() & has_code(C[FIX_FLAG], "hora:-12h").to_numpy()   # the returns read 12 h earlier
+errand_persons = C.index[errand_read].droplevel("folio_viaje").unique()
+assert len(errand_persons) == int(errand_read.sum()) == counts["long_errands_read"]      # one return a chain
+read_ret, read_errand = C[errand_read], C.shift(1)[errand_read]     # a return is never a day's first trip
+errand_new_stay = read_ret.start - read_errand.start - read_errand.legmin
+errand_from_nine = int((read_ret.start >= 9 * 60).sum())
+assert read_ret.start.between(5 * 60, 12 * 60 - 1).all() and (errand_new_stay >= 0).all()
+# household members who made the same errand — same AGEBs, leaving within 20 minutes: when did they come home?
+went_cols = P + ["origen", "destino", "start", "next_start"]
+went_all = t2.assign(next_start=t2_next.start).reset_index()[went_cols]
+went_long = t2.assign(next_start=t2_next.start).loc[long_stays.index].reset_index()[went_cols]
+went_pairs = went_long.merge(went_all, on=["folio_vivienda", "origen", "destino"], suffixes=("", "_c"))
+went_pairs = went_pairs[went_pairs.folio_habitante != went_pairs.folio_habitante_c]
+went_too = went_pairs[(went_pairs.start_c - went_pairs.start).abs() <= 20]
+home_gap = went_too.next_start - went_too.next_start_c
+
+
+def read_persons(frame):
+    return set(map(tuple, frame[P].drop_duplicates().to_numpy().tolist())) & set(errand_persons)
+
+
+comp_earlier = len(read_persons(went_too[(home_gap - 720).abs() <= 20]))
+comp_same = len(read_persons(went_too[home_gap.abs() <= 20]))
+comp_later = len(read_persons(went_pairs[((went_pairs.start_c - went_pairs.start) - 720).abs() <= 20]))
+assert comp_earlier > 5 * comp_later                               # the return's hour, not the errand's
+
+
+def companions_home_together(kind):
+    """Of a kind's stays of 8 to 12 hours before a return home whose trip a household member made too: how many, and
+    how many of those ended with the companion home at the same hour."""
+    m = errand_kinds[kind] & before_return & (t2_stay >= 8 * 60) & (t2_stay < _LONG_ERRAND)
+    x = t2.assign(next_start=t2_next.start)[m].reset_index()[went_cols]
+    pr = x.merge(went_all, on=["folio_vivienda", "origen", "destino"], suffixes=("", "_c"))
+    pr = pr[(pr.folio_habitante != pr.folio_habitante_c) & ((pr.start_c - pr.start).abs() <= 20)]
+    persons = lambda f: f[P].drop_duplicates().shape[0]
+    return persons(pr), persons(pr[(pr.next_start - pr.next_start_c).abs() <= 20])
+
+
+(visit_comp, visit_same), (outing_comp, outing_same) = companions_home_together("visit"), companions_home_together("outing")
+assert visit_same > 0.8 * visit_comp and outing_same > 0.8 * outing_comp
+ex_errand = (9541, 1)          # to the doctor at 07:00 with a companion home at 11:00; the person home at 23:00
+assert ex_errand in set(errand_persons)
 # starts moved to the arrival: by how much, and what they leave
 slid = has_code(clean.trips[FIX_FLAG], "hora:llegada").reindex(C.index).fillna(False).to_numpy()
 typo_delta = {f"hora:{name}": d * 60 for name, _, _, _, d in _START_TIME_EDITS_2}
@@ -772,6 +859,60 @@ hour_0, hour_1, hour_23 = int(by_hour.get(0, 0)), int(by_hour.get(1, 0)), int(by
 at_2301 = R[(R.hora_inicio_h == 23) & (R.hora_inicio_m == 1)]
 sentinel_last, sentinel_return = float((at_2301.pos == at_2301.n).mean()), float(at_2301.is_return.mean())
 assert at_23[1] > 10 * max(at_23[2], at_23[3], at_23[4]) and hour_0 < min(hour_1, hour_23) / 10
+
+
+# the returns the capture timed: a trip that repeats the one before it the other way — the zones reversed, the
+# same main mode and minutes — started exactly 1h01 or 5h01 after it, both starts as reported
+def repeats_the_trip_before(T):
+    """True where a trip repeats the one before it the other way: the zones reversed, the same main mode and minutes."""
+    g = T.groupby(level=P)
+    return (T.prev_dest.notna() & (T.origen.astype(str) == T.prev_dest.astype(str))
+            & (T.destino.astype(str) == g.origen.shift(1).astype(str)) & (T.legmin == T.prev_leg)
+            & (T.modo_principal.astype(str) == g.modo_principal.shift(1).astype(str)))
+
+
+def capture_timed(T, gap):
+    """A trip that repeats the one before it and starts ``gap`` minutes after it, both starts as reported."""
+    set_by = (T[FIX_FLAG].str.contains(r"(?:^|;)hora:") if FIX_FLAG in T.columns
+              else pd.Series(False, index=T.index))
+    reported = ~set_by & ~set_by.groupby(level=P).shift(1, fill_value=False)
+    return (repeats_the_trip_before(T) & reported & ((T.start - T.prev_start) == gap)).fillna(False).astype(bool)
+
+
+# as shipped: the heap on the two gaps, and nowhere else
+rep_R, gap_R = repeats_the_trip_before(R), R.start - R.prev_start
+at_gap = {g: int((rep_R & (gap_R == g)).sum()) for g in (59, 60, 61, 62, 121, 181, 241, 299, 300, 301, 302)}
+not_copy_at = {g: int((~rep_R & R.prev_start.notna() & (gap_R == g)).sum()) for g in (61, 301)}
+assert at_gap[61] > 10 * max(at_gap[59], at_gap[62]) and at_gap[301] > 10 * max(at_gap[299], at_gap[302])
+assert 5 * max(not_copy_at.values()) < min(at_gap[61], at_gap[301]) and at_gap[61] > 5 * max(at_gap[121], at_gap[181], at_gap[241])
+# the 5h01 by fieldwork week, a default the interviewers learned to overwrite, and what it does to a stay at work
+fecha_R = pd.to_datetime(raw.viv.fecha.reindex(R.index.get_level_values(0)).to_numpy())
+week_R = pd.Series((fecha_R - fecha_R.min()).days // 7, index=R.index)
+month_R = pd.Series(fecha_R.month, index=R.index)
+week_5h01 = (gap_R[rep_R] == 301).groupby(week_R[rep_R]).mean()
+later_5h01 = float((gap_R[rep_R & (week_R >= 2)] == 301).mean())
+assert week_5h01[0] > 5 * later_5h01
+work_rep = rep_R & (R.prev_motivo == "Trabajar")
+work_stay = (gap_R - R.prev_leg)[work_rep]
+work_5h01 = float(work_stay[(gap_R[work_rep] == 301).to_numpy()].median())
+work_rest = float(work_stay[(gap_R[work_rep] != 301).to_numpy()].median())
+# the 1h01: April 2023's evening walks to the shops, which from January to March came back in minutes
+h61 = rep_R & (gap_R == 61)
+april_1h01 = int((h61 & (month_R == 4)).sum())
+walk_1h01 = float((R.modo_principal[h61].astype(str) == "A PIE").mean())
+shop_1h01 = float((R.prev_motivo[h61].str.startswith("Compras") & (R.prev_start[h61] // 60).isin([17, 18])).mean())
+home_1h01 = float(raw.hab.ocupacion.reindex(R.index[h61].droplevel("folio_viaje")).astype(str)
+                  .isin(["Hogar", "Jubilado o pensionado"]).mean())
+walks_before = (rep_R & (month_R < 4) & R.prev_motivo.str.startswith("Compras")
+                & (R.modo_principal.astype(str) == "A PIE") & (R.prev_start // 60).isin([17, 18]))
+walks_before_gap = float(gap_R[walks_before].median())
+assert april_1h01 > 0.9 * at_gap[61] and walks_before_gap < 30
+# the heap on 23:01 grows with the hour of the trip the return repeats, as late returns capped there would
+share_2301 = (rep_R & (R.start == 23 * 60 + 1))[rep_R].groupby((R.prev_start // 60)[rep_R]).mean()
+assert share_2301[22] > 10 * share_2301[19]
+hm = lambda minutes: f"{int(minutes) // 60}h{int(minutes) % 60:02d}"      # 251 -> '4h11'
+n_2301_timed = int((has_code(C[ISSUE_FLAG], "hora_2301")
+                    & (has_code(C[ISSUE_FLAG], "hora_1h01") | has_code(C[ISSUE_FLAG], "hora_5h01"))).sum())
 inv_people = int(persons_C[inv_c].nunique())
 assert int(inv_c.sum()) == 496      # 840 until the third review, 814 until the fourth, 501 until the fifth (2026-09-26)
 
@@ -785,6 +926,8 @@ def day_flags(T):
         "in-order return home at 01:00–06:59 (hidden 12-hour entry?)":
             (T.start >= T.prev_start).fillna(False) & T.prev_start.notna() & T.hora_inicio_h.between(1, 6) & T.is_return,
         "starts at 23:01 as reported": (T.start == 23 * 60 + 1) & ~T[FIX_FLAG].str.contains(r"(?:^|;)hora:"),
+        "returns 1h01 after the trip it repeats, as reported": capture_timed(T, 61),
+        "returns 5h01 after the trip it repeats, as reported": capture_timed(T, 301),
         "does not start where the previous trip ended": T.prev_dest.notna() & (T.origen != T.prev_dest),
         "first trip not from 'Su casa'": (T.pos == 1) & (T.tipo_lugar_origen != HOME),
         "first trip from 'Su casa' but not from the home zone": (T.pos == 1) & (T.tipo_lugar_origen == HOME) & (T.origen != T.home),
@@ -803,6 +946,8 @@ codes_of = {
     "left before the previous trip could have arrived": "hora_traslapada within the tolerance, hora_invertida beyond it; hora_repetida at the same minute",
     "in-order return home at 01:00–06:59 (hidden 12-hour entry?)": "none: a suspicion, not a defect",
     "starts at 23:01 as reported": "hora_2301",
+    "returns 1h01 after the trip it repeats, as reported": "hora_1h01",
+    "returns 5h01 after the trip it repeats, as reported": "hora_5h01",
     "does not start where the previous trip ended": "origen_discontinuo (only a hand edit leaves one)",
     "first trip not from 'Su casa'": "inicio_fuera_de_casa",
     "first trip from 'Su casa' but not from the home zone": "inicio_zona_ajena",
@@ -814,6 +959,9 @@ codes_of = {
 n_code = {c: int(has_code(C[ISSUE_FLAG], c).sum()) for c in ISSUE_CODES}
 n_anterior, n_repetida, n_traslapada = n_code["hora_anterior"], n_code["hora_repetida"], n_code["hora_traslapada"]
 assert int(night_c.sum()) == n_code["hora_nocturna"] and int(sentinel_c.sum()) == n_code["hora_2301"]
+for gap_min, code in ((61, "hora_1h01"), (301, "hora_5h01")):     # the capture's starts: flag and code agree
+    assert (flags[f"returns {gap_min // 60}h01 after the trip it repeats, as reported"].to_numpy()
+            == has_code(C[ISSUE_FLAG], code).to_numpy()).all(), code
 assert int(inv_c.sum()) == int((inv_c & c_beyond).sum()) + n_code["hora_nocturna"] + n_anterior
 assert int(ties_c.sum()) == n_repetida + int((ties_c & c_beyond).sum())
 assert int(left_early_c.sum()) == n_traslapada + int(ties_c.sum()) + int((left_early_c & (gap > 0) & c_beyond).sum())
@@ -823,9 +971,9 @@ per_day = flags.groupby(level=P).any()
 w = clean.hab.ponderador.reindex(per_day.index).astype(float)
 n_days = len(per_day)
 groups = {
-    "time": list(flags.columns[:5]),
-    "anchor / geography": list(flags.columns[5:9]),
-    "purpose": list(flags.columns[9:]),
+    "time": list(flags.columns[:7]),
+    "anchor / geography": list(flags.columns[7:11]),
+    "purpose": list(flags.columns[11:]),
 }
 flag_tbl = pd.DataFrame({
     "defect": flags.columns,
@@ -935,6 +1083,8 @@ def error_masks(T, home_to_home):
         "activity motive with destination type 'Su casa'": (~T.is_return) & (T.tipo_lugar_destino == HOME),
         "Guardería motive, mapped to school": T.motivo_viaje == "Guardería",
         "starts at 23:01 as reported": _b(T.start == 23 * 60 + 1) & ~time_set,
+        "returns 1h01 after the trip it repeats, as reported": capture_timed(T, 61),
+        "returns 5h01 after the trip it repeats, as reported": capture_timed(T, 301),
         "no motive on a timed trip": T.motivo_viaje.isna() & T.start.notna(),
     }
 
@@ -964,6 +1114,10 @@ treatments = {
     "activity motive with destination type 'Su casa'": "a return where it arrives home from another zone (@sec-arrivals); the rest left, marked `actividad_en_casa` (@sec-lingering-purpose)",
     "Guardería motive, mapped to school": "an escort from age 12 (@sec-daycare); the children's left, marked `motivo_guarderia` (@sec-lingering-purpose)",
     "starts at 23:01 as reported": "left, marked `hora_2301`: the minute the survey heaps late returns on (@sec-lingering-time)",
+    "returns 1h01 after the trip it repeats, as reported":
+        "left, marked `hora_1h01`: a start the capture filled in, April's evening walks to the shops (@sec-lingering-time)",
+    "returns 5h01 after the trip it repeats, as reported":
+        "left, marked `hora_5h01`: the capture's default start for a return (@sec-lingering-time)",
     "no motive on a timed trip": "motive and type imputed, marked in `ajustes` (@sec-untimed)",
 }
 # the problemas codes that mark each kind of error left after the rules
@@ -982,6 +1136,8 @@ codes_for = {
     "activity motive with destination type 'Su casa'": ["actividad_en_casa"],
     "Guardería motive, mapped to school": ["motivo_guarderia"],
     "starts at 23:01 as reported": ["hora_2301"],
+    "returns 1h01 after the trip it repeats, as reported": ["hora_1h01"],
+    "returns 5h01 after the trip it repeats, as reported": ["hora_5h01"],
 }
 assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
 masks_R = error_masks(R, pd.Series(_home_to_home_returns(R, R.home.to_numpy()), index=R.index))
@@ -1059,7 +1215,7 @@ non-trips; makes every trip start where the previous one ended and
 trips recorded leaving another zone start at home, and `{python} counts["first_trips_rotated"]` recorded from a
 place to home go from home to the place; repairs `{python} fmt(counts["start_times_edited"])` mistyped
 start hours in `{python} fmt(counts["chains_repaired"])` chains, reading a day past midnight only where it holds
-together after it; and moves
+together after it and a return home half a day after a short errand as the morning's (@sec-errand); and moves
 `{python} counts["starts_at_arrival"]` starts that overlap the previous arrival to that arrival. Most of these
 rules were the first hand pass's templates, turned into rules in the fourth review of the chains
 (2026-09-26), and two of the next round's criteria became rules in the fifth, the same day. Every change is written to
@@ -1579,7 +1735,9 @@ shift, not a violation, and so is a return home before 10:00 after a trip to wor
 trip and the cheapest combination that makes the chain feasible is kept. It is applied only
 if it is unique, costs at most `{python} _START_TIME_MAX_COST` and leaves
 `{python} _MIN_MANDATORY_STAY` minutes or more at work or school. Where the first menu finds no
-reading, the second adds a morning start typed as an evening one (`hora:-12h`, from 17:00 on).
+reading, the second adds a morning start typed as an evening one (`hora:-12h`, from 17:00 on); the
+−12 h alone also reads a return home half a day after a short errand in a chain whose times hold
+(@sec-errand).
 Three guards keep it honest: a wrap is accepted only between two unedited trips, so the search
 cannot manufacture a night shift; the leading-1 and −12 h edits are allowed only where they yield
 a morning hour, so they cannot invent trips before dawn; and a reading may not leave the person
@@ -1686,6 +1844,47 @@ early market trips as afternoon ones.
 #| label: tbl-ex-early
 #| tbl-cap: "An afternoon school shift typed on a 12-hour clock: school at 01:xx, home in the evening. The search reads the departure 12 hours later."
 show(person_table(ex_early))
+```
+
+## A return home half a day after a short errand is a morning one {#sec-errand}
+
+A return home typed on the afternoon side of the 12-hour clock leaves the order of the times
+intact, and half a day at the errand before it. On the survey's hours the stays before a return
+home from shopping, the doctor, an office errand, a payment or an escort thin out to eleven
+hours and jump at twelve (@tbl-errand-stays): `{python} int(stay_hours.loc[11, "short errand"])` last
+eleven hours and `{python} int(stay_hours.loc[12, "short errand"])` twelve, and
+`{python} long_late` of the `{python} len(long_stays)` returns that come 12 hours or more after
+such an errand start at 23:xx, where `{python} pct(late_share)` of all returns do. A visit or an
+outing thins out with no jump: people do spend the day with family or at a park, and of the
+visits and outings of eight to twelve hours whose trip a household member made too,
+`{python} visit_same` of `{python} visit_comp` and `{python} outing_same` of `{python} outing_comp`
+ended with the companion home at the same hour.
+
+Since 2026-09-26 the search also runs on a chain whose times hold but whose return home starts
+12 hours or more after the arrival at such an errand (`_SHORT_ERRANDS`, `_LONG_ERRAND`), with the
+−12 h edit alone, and keeps the unique reading that leaves no such stay; a chain whose times
+contradict each other is read as before. `{python} counts["long_errands_read"]` chains are read
+this way, every return to between 05:00 and 11:59 (`{python} errand_from_nine` of them from
+09:00), leaving a median stay of `{python} fmt(errand_new_stay.median())` minutes. The companions
+say which hour is wrong. Of the chains read, a household member who made the same errand came
+home exactly 12 hours before the person in `{python} comp_earlier` (@tbl-ex-errand) and left 12
+hours later in `{python} comp_later` — the errand's own hour typed wrong, which the −12 h reads
+with the right stay at the wrong end of the day; the first menu would read nearly every such
+chain that way, a doctor's visit at 21:00. `{python} comp_same` came home at the same hour as a
+companion, mostly days at a hospital, where one slip typed twice and a whole day there look
+alike; they are read too, and marked `hora:-12h` like the rest. 'Otros' is left: it names day
+trips out of town as well as errands.
+
+```{python}
+#| label: tbl-errand-stays
+#| tbl-cap: "Stays of eight hours or more before a return home, by whole hours and the activity, on the survey's hours before the time stage. A short errand is shopping, the doctor, an office errand, a payment or an escort; its stays jump at twelve hours, where a 12-hour slip on a return puts them."
+show(stay_hours.rename_axis("hours").reset_index())
+```
+
+```{python}
+#| label: tbl-ex-errand
+#| tbl-cap: "A return typed on the afternoon side (household 9541, person 1): to the doctor at 07:00 and home at 23:00, where a household member who went along was home at 11:00. The return reads 12 hours earlier."
+show(person_table(ex_errand))
 ```
 
 ## A start before the previous arrival, by minutes, moves to it {#sec-arrival}
@@ -1937,8 +2136,33 @@ start at 23:01 against `{python} at_23[2]` at 23:02, `{python} at_23[3]` at 23:0
 `{python} at_23[4]` at 23:04, `{python} pct(sentinel_last, 0)` of them the person's last trip
 and `{python} pct(sentinel_return, 0)` a return home, while the whole hour from 00:00 holds
 `{python} hour_0` starts against `{python} fmt(hour_23)` from 23:00 and `{python} hour_1`
-from 01:00. The return came at 23:01 or later, likely after midnight; nothing says when, so
-the value is kept and marked.
+from 01:00. The return came at 23:01 or later, likely after midnight: of the returns that
+repeat the trip before them, `{python} pct(share_2301[19])` of those after a trip at 19:xx start
+at 23:01 and `{python} pct(share_2301[22], 0)` of those after one at 22:xx, as returns capped at
+that minute would. Nothing says when, so the value is kept and marked; `{python} n_2301_timed` of
+them are the capture's own start for a return instead (below), and carry that code too.
+
+The capture filled in some returns' starts itself. A return usually repeats the trip before it
+the other way — the zones reversed, the same main mode and minutes — and as shipped
+`{python} fmt(at_gap[61])` such returns start exactly 1h01 after that trip and
+`{python} fmt(at_gap[301])` exactly 5h01, against `{python} at_gap[59]` and `{python} at_gap[62]`
+a minute either side of the first and `{python} at_gap[299]` and `{python} at_gap[302]` of the
+second. Trips that repeat nothing show no heap there (`{python} not_copy_at[61]` and
+`{python} not_copy_at[301]`), and neither do the other whole hours plus a minute
+(`{python} at_gap[121]` at 2h01, `{python} at_gap[181]` at 3h01, `{python} at_gap[241]` at 4h01).
+The 5h01 is the capture's default start for a return, left as it was:
+`{python} pct(week_5h01[0])` of the returns of the first fieldwork week,
+`{python} pct(week_5h01[1])` of the second and `{python} pct(later_5h01)` after, in diaries
+otherwise ordinary; a work tour with such a return spends `{python} hm(work_5h01)` at work
+(median) against `{python} hm(work_rest)` for the rest. The 1h01 is April 2023's:
+`{python} april_1h01` of the `{python} fmt(at_gap[61])` are April's, `{python} pct(walk_1h01, 0)`
+on foot and `{python} pct(shop_1h01, 0)` after a trip to the shops that left at 17:xx or 18:xx,
+`{python} pct(home_1h01, 0)` of them by homemakers and retirees, while from January to March the
+same evening walks to the shops came back after a median `{python} fmt(walks_before_gap)`
+minutes. The walks may well be real; their times are not the person's. When such a return came is
+unknown, and so is the stay before it: the rules mark the return `hora_1h01`
+(`{python} fmt(n_code["hora_1h01"])` trips) or `hora_5h01` (`{python} fmt(n_code["hora_5h01"])`)
+and keep the value, and an estimation of activity durations can set them aside.
 
 ```{python}
 #| label: tbl-ex-lt1
@@ -2124,7 +2348,7 @@ the rules' output alone is shown beside them.
 | any of the above | `{python} pct(any_share)` | `{python} pct(any_share_m)` |
 | **monotone, continuous and home-to-home** | **`{python} pct(buildable_share)`** | **`{python} pct(buildable_share_m)`** |
 
-: What the residual defects cost in person-days. On `load_eod()`'s tables the time defects left are the days that pass midnight and the late returns heaped on 23:01; no trip overlaps the one before it. {#tbl-days}
+: What the residual defects cost in person-days. On `load_eod()`'s tables the time defects left are the days that pass midnight, the late returns heaped on 23:01 and the returns whose start the capture filled in; no trip overlaps the one before it. {#tbl-days}
 
 At the episode level, the rules' output alone gives `{python} pct(neg_ep)` of the activities
 followed by another trip a negative duration, and `{python} pct(neg_work)` of work episodes;
@@ -2194,6 +2418,7 @@ weakens any segmentation the scheduler needs.
 | a first trip that copies home away | fixed | the day started at home where the origin copies the destination's AGEB, the answer says home or copies the destination's type, and the answer becomes 'Su casa'; a day that opens with a return from elsewhere answers where it started (@sec-copied); a first trip recorded from a place to home whose next trip leaves home went there from home (@sec-rotated) | `load_eod` |
 | starts before the previous arrival by minutes | fixed | the start moves to the previous arrival (`hora:llegada`; @sec-arrival), within the tolerance always and up to an hour where no reading of the hours fits, not after work or school; the search runs once more where the move cleared the way | `load_eod` |
 | a day that starts in the small hours with a long stay | fixed | the typo search reads it too (@sec-early); the early starts it leaves are marked `hora_madrugada` | `load_eod` |
+| a return home half a day after a short errand | fixed | the typo search reads the return 12 hours earlier, with the −12 h edit alone, where the chain's times hold otherwise (@sec-errand); visits, outings and 'Otros' keep their long stays | `load_eod` |
 | residual non-monotone times | fixed by hand | round 15 reads every `hora_invertida` the rules leave, which TASHA cannot schedule, by the reading with no overlap and the fewest problems among the rules', the earlier tables' and the fewest minutes moved (@sec-revised); what is left crosses midnight (`hora_nocturna`), which the model build codes past 2400 so every chain runs forward | `eodgdl/revisions/`, `tasha.build` |
 | the first hand pass | retired | taken as a suggestion only: its templates became rules, its readings are one candidate in round 15's, and its decisions and notes left the table (2026-09-26) | `eodgdl.chains`, `eodgdl/revisions/` |
 | leg minutes too long for the distance | fixed | a motorised trip reporting twice the survey's typical minutes for its mode and distance band takes the typical minutes (round 9's corrections), read before the rules, which read the minutes (@sec-minutes) | `eodgdl/revisions/leg_minutes.csv.gz`, `load_eod` |
@@ -2201,8 +2426,8 @@ weakens any segmentation the scheduler needs.
 | Guardería coded as school | fixed | from age 12 a Guardería trip is an escort: `load_eod` recodes it 'Llevar o recoger a alguien' (`motivo:guarderia`, @sec-daycare) and the model build reads the age the same way; under 12 it stays school, marked `motivo_guarderia` | `load_eod`, `mappings.yaml` |
 | people whose every row is a marked non-trip | open | drop the `{python} n_zero_recoded_m` people from estimation rather than count them as non-travellers | estimation |
 | activities typed *Su casa* | decided | the ones arriving home from elsewhere are returns (@sec-arrivals); the ones from the home AGEB to the home AGEB stay activities in the home zone; marked `actividad_en_casa` | `load_eod` |
-| late returns heaped on 23:01 | open | the return came at 23:01 or later; marked `hora_2301`; treat the evening activity's end as censored in estimation | estimation |
-| returns heaped 1h01 and 5h01 after the trip they mirror | open | a capture default like 23:01: 767 and 682 consecutive mirrored pairs start exactly so far apart, against about 40 at the neighbouring gaps; not yet marked (found 2026-09-26) | `load_eod` |
+| late returns heaped on 23:01 | open | most came at 23:01 or later and were capped there; marked `hora_2301`; treat the evening activity's end as censored in estimation (@sec-lingering-time) | estimation |
+| returns started 1h01 or 5h01 after the trip they repeat | marked | the capture's own start for a return — 5h01 its default, 1h01 April's evening walks to the shops; marked `hora_5h01` and `hora_1h01`, the value kept; treat the stay before them as unknown in duration estimation (@sec-lingering-time) | `load_eod`, estimation |
 | zone ids and their census content | done | every id is an urban AGEB, a rural AGEB or an access point; the zone system places every AGEB the survey records in the zone it coded (`check_assignment`), a rural AGEB with its localities' census counts | `eodgdl.reweight.zoning` |
 | instrument design (tours, one weekday, no durations, ages 6+, income) | inherent | state as limitations of the estimated scheduler; consider a supplementary diary | documentation |
 
@@ -2236,5 +2461,6 @@ The rules and their evidence are the docstrings of `clean_trip_chains` and, stag
 `src/eodgdl/chains.py`. The recode table is
 `_MOTIVO_POR_TIPO_LUGAR_DESTINO`, the matcher's features `_IMPUTE_WEIGHTS`, the edit menus
 `_START_TIME_EDITS` and `_START_TIME_EDITS_2`, the early-start thresholds `_EARLY_START` and
-`_EARLY_LONG_STAY`, and the flag vocabulary `FIX_CODES` and `ISSUE_CODES` in the same file. The survey's design is described in
+`_EARLY_LONG_STAY`, the long-errand ones `_SHORT_ERRANDS` and `_LONG_ERRAND`, the capture's return gaps
+`_DEFAULT_RETURN_GAPS`, and the flag vocabulary `FIX_CODES` and `ISSUE_CODES` in the same file. The survey's design is described in
 `data/Informe_Tecnico_Final_EOD_2023.pdf`, pp. 17–25 and 35–37.

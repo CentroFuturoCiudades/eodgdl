@@ -141,8 +141,17 @@ DEFECTOS_ES = {
     "tipo_destino_dudoso": "un 'Regresar a Casa' que sí llegó a la zona de la vivienda pero "
                            "reporta un tipo de lugar de destino que no es una casa",
     "hora_2301": "empieza a las 23:01 tal como se reportó, el minuto en que la encuesta amontona "
-                 "los regresos tardíos: el regreso fue a esa hora o después, quizá pasada la "
-                 "medianoche",
+                 "los regresos tardíos: casi todos fueron a esa hora o después, quizá pasada la "
+                 "medianoche, y unos pocos son la hora que la captura ponía a un regreso (1h01 o "
+                 "5h01 después del viaje de ida)",
+    "hora_1h01": "empieza 1h01 después del viaje anterior, que repite en sentido contrario (las zonas "
+                 "al revés, el mismo modo principal y los mismos minutos), las dos horas tal como se "
+                 "reportaron: una hora que llenó la captura, casi todas en las salidas a la tienda de "
+                 "las tardes de abril de 2023; no se sabe cuándo fue el regreso, y la hora se deja igual",
+    "hora_5h01": "empieza 5h01 después del viaje anterior, que repite en sentido contrario (las zonas "
+                 "al revés, el mismo modo principal y los mismos minutos), las dos horas tal como se "
+                 "reportaron: la hora que la captura ponía por omisión a un regreso; no se sabe cuándo "
+                 "fue el regreso, y la hora se deja igual",
     "hora_madrugada": "el primer viaje del día, a algo que no es el trabajo, empieza antes de las "
                       "05:00: un mercado o un acompañamiento temprano, o una hora de reloj de 12 horas "
                       "que las reglas no pudieron releer",
@@ -732,7 +741,10 @@ y ninguna etiqueta se recodificó salvo donde se indica.
       {c['cadenas_reparadas']:,} cadenas, se releyeron con el menor número de erratas
       posibles (reloj de 12 horas en los dos sentidos, un 1 de más o de menos al principio) que
       permite que cada viaje empiece después de que llegó el anterior y deja al menos media hora
-      en el trabajo o la escuela. Un regreso a casa antes de las 10:00 después de salir al
+      en el trabajo o la escuela. En un día cuyas horas están en orden, un regreso a casa 12 horas
+      o más después de llegar a un mandado corto —compras, el médico, un trámite, un pago, llevar o
+      recoger a alguien— se lee 12 horas antes: una hora de la mañana anotada del lado de la tarde
+      del reloj de 12 horas. Un regreso a casa antes de las 10:00 después de salir al
       trabajo a las 18:00 o más tarde es de la mañana siguiente: un turno nocturno, siempre que
       después no se vuelva al trabajo o a la escuela y el día no llegue a 24 horas. Las horas
       imputadas nunca se editan, y donde no hay una relectura única no se toca nada. Después,

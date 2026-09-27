@@ -563,6 +563,40 @@ def test_a_day_that_starts_in_the_small_hours_with_a_long_stay_is_read_by_the_ty
     assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
 
 
+def test_a_return_home_half_a_day_after_a_short_errand_is_a_morning_one():
+    trips = _trips([
+        (1, 9, 0, "Al médico o atención de salud", None, None, 30), (1, 22, 0, "Regresar a Casa", None, None, 30),
+        (2, 9, 0, "Visitar a alguien", None, None, 30), (2, 22, 0, "Regresar a Casa", None, None, 30),   # a visit: left
+        (3, 9, 0, "Compras (comida)", None, None, 30), (3, 21, 0, "Regresar a Casa", None, None, 30),    # 11½ hours: left
+        (4, 9, 0, "Compras (comida)", None, None, 30), (4, 22, 0, "Compras (comida)", None, None, 30),   # no return next
+        (4, 22, 45, "Regresar a Casa", None, None, 30),
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    hours = cleaned.hora_inicio_h.groupby(level="folio_habitante").apply(list)
+    # household 9541, person 1: to the doctor at 07:00 and home at 23:00, where a companion was home at 11:00
+    assert hours[1] == [9, 10] and cleaned.loc[(1, 1)].ajustes.tolist() == ["", "hora:-12h"]
+    assert hours[2] == [9, 22] and hours[3] == [9, 21] and hours[4] == [9, 22, 22]
+    assert counts["long_errands_read"] == 1 and counts["early_starts_read"] == 0 and (cleaned.problemas == "").all()
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
+def test_a_return_the_capture_timed_is_marked():
+    trips = _trips([
+        (1, 17, 24, "Compras (comida)", None, None, 8), (1, 18, 25, "Regresar a Casa", None, None, 8),   # 1h01 after
+        (2, 8, 0, "Trabajar", None, None, 30), (2, 13, 1, "Regresar a Casa", None, None, 30),          # 5h01 after
+        (3, 8, 0, "Trabajar", None, None, 30), (3, 13, 0, "Regresar a Casa", None, None, 30),          # a time of its own
+        (4, 8, 0, "Trabajar", None, None, 30), (4, 13, 1, "Regresar a Casa", None, None, 20),          # not a copy
+        (5, 8, 0, "Trabajar", None, None, 30), (5, 1, 1, "Regresar a Casa", None, None, 30),           # 13:01 by a rule
+    ])
+    cleaned, counts = clean_trip_chains(trips, VIV)
+    issues = cleaned.problemas.groupby(level="folio_habitante").apply(list)
+    assert issues[1] == ["", "hora_1h01"] and issues[2] == ["", "hora_5h01"]
+    assert issues[3] == issues[4] == issues[5] == ["", ""]
+    assert cleaned.loc[(1, 5, 2), ["hora_inicio_h", "ajustes"]].tolist() == [13, "hora:+12h"]
+    assert counts["left_hora_1h01"] == counts["left_hora_5h01"] == 1
+    assert mark_issues(cleaned, VIV).equals(cleaned.problemas)
+
+
 def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages):
     viv, hab, trips, legs = stages.rules   # load_eod(revise_chains=False): the rules alone
     assert (len(hab), len(trips), len(legs)) == (58_061, 154_662 - 38, 170_509 - 38)
@@ -579,7 +613,8 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages)
         "regreso_en_casa": 556, "regreso_dia_siguiente": 75, "hora_invertida": 351, "hora_nocturna": 178,
         "hora_anterior": 0, "hora_repetida": 0, "hora_traslapada": 0, "origen_discontinuo": 0, "regreso_sin_llegar": 0,
         "tipo_destino_dudoso": 16, "inicio_fuera_de_casa": 381, "inicio_zona_ajena": 0,
-        "fin_fuera_de_casa": 494, "actividad_en_casa": 536, "motivo_guarderia": 30, "hora_2301": 94, "hora_madrugada": 59}
+        "fin_fuera_de_casa": 494, "actividad_en_casa": 536, "motivo_guarderia": 30, "hora_2301": 94, "hora_1h01": 718,
+        "hora_5h01": 613, "hora_madrugada": 59}
     # every change a rule makes, at these counts (the fifth review of the chains added five of them, 2026-09-26)
     assert {c: int(has_code(trips.ajustes, c).sum()) for c in FIX_CODES if not c.endswith(":revision")} == {
         "hora:duplicado": 37, "hora:vecinos": 288, "motivo:duplicado": 38, "motivo:vecinos": 294,
@@ -587,9 +622,9 @@ def test_load_eod_cleans_the_chains_and_drops_only_the_duplicate_returns(stages)
         "destino:casa": 8, "motivo:otros": 21, "origen:casa": 147, "origen:anterior": 77, "origen:copia": 955,
         "origen:respuesta": 86, "origen:tipo_copia": 151, "origen:rotado": 47, "destino:rotado": 47,
         "tipo_destino:rotado": 20, "tipo_origen:copia": 1_602, "tipo_origen:regreso": 113, "hora:+12h": 713,
-        "hora:-12h": 392, "hora:-10h": 392, "hora:+10h": 156, "hora:-10h+12h": 826, "hora:llegada": 687}
+        "hora:-12h": 392 + 123, "hora:-10h": 392, "hora:+10h": 156, "hora:-10h+12h": 826, "hora:llegada": 687}
     hora = sum(has_code(trips.problemas, c) for c in TIME_ORDER_ISSUES)
-    assert (hora <= 1).all() and (trips.problemas != "").sum() == 2_071 + 631
+    assert (hora <= 1).all() and (trips.problemas != "").sum() == 3_377 + 631
     # the travel minutes a review corrected are read before the rules: on those trips, and only there, the rules'
     # legs hold other minutes than the survey's (eodgdl/revisions/leg_minutes.csv.gz)
     minutes = legs.traslado_min.groupby(level=[0, 1, 2]).sum()
