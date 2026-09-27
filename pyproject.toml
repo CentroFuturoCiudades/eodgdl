@@ -1,6 +1,6 @@
 [project]
 name = "eodgdl"
-version = "0.1.0"
+version = "0.2.0"
 description = "IMEPLAN Guadalajara EOD 2023 origin-destination survey: loader, schemas, and TAZ zone tools"
 readme = "README.md"
 authors = [
