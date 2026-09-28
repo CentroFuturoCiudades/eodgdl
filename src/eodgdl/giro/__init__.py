@@ -13,7 +13,8 @@ Typical use::
     workers = giro.impute(eodgdl.load_eod())          # fitted bundle fetched from the data mirror
     workers[["giro_final"] + giro.PROBABILITY_COLUMNS]
 
-``impute`` = :func:`build_worker_features` + :func:`load_model` + :func:`impute_giro`.
+``impute`` = :func:`build_worker_features` + :func:`load_model` + :func:`impute_giro`. The modelling machinery is
+:mod:`eodgdl.impute`; this package binds giro's features, levels and column names to it.
 """
 
 from ._config import (

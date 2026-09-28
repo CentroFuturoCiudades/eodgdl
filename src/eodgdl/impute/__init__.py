@@ -1,0 +1,14 @@
+"""Categorical imputation engine: every imputation model on the survey (giro today; informality, place of work,
+head-of-household education and the AMAI components as they move here, see ``docs/handoff_impute_engine.md``).
+
+Optional extra ``eodgdl[giro]`` (scikit-learn, joblib). The engine knows no survey vocabulary: the numeric features,
+declared category levels, missing label, classes and column names come from the caller (a task).
+
+- :mod:`~eodgdl.impute.levels`: the category-level contract, feature preparation, weight and probability checks
+- :mod:`~eodgdl.impute.harmonize`: value maps that fail on an unmapped code
+- :mod:`~eodgdl.impute.models`: candidate pipelines per family, the auxiliary level model
+- :mod:`~eodgdl.impute.select`: grouped CV (parallel, staged boosting) and the one-SE rule
+- :mod:`~eodgdl.impute.marginalize`: batched marginalization of levels without training support
+- :mod:`~eodgdl.impute.arms`: hybrid scoring by feature arms and the task's output columns
+- :mod:`~eodgdl.impute.evaluate`: held-out metrics, bootstrap, calibration, shift reweighting, delta adjustment
+"""

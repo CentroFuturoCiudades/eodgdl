@@ -1,5 +1,7 @@
 """Tests for the giro extra, with no network: config, schema-derived levels, and the destination crosswalk on a
 stand-in DENUE."""
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -51,3 +53,32 @@ def test_destination_is_its_zone_system_unit(monkeypatch):
 
     with pytest.raises(AssertionError, match="outside the zone system"):
         giro.add_destination_features(od.assign(destino_cvegeo=["140390001", *od["destino_cvegeo"][1:]]), urban, rural)
+
+
+FIXTURE = Path(__file__).parent / "data" / "giro_parity.parquet"
+BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
+
+
+@pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
+def test_scoring_reproduces_the_reference():
+    # 384 workers of outputs/reference/od_giro_imputed.parquet (the 2026-09-28 bundle scored by the notebook), every
+    # marginalization pattern among them: the engine's batched scoring gives the same outputs.
+    fixture = pd.read_parquet(FIXTURE)
+    expected = fixture.filter(like="expected__").rename(columns=lambda column: column.removeprefix("expected__"))
+    bundle = giro.load_model(BUNDLE)
+    scored = giro.impute_giro(
+        bundle["model_with_education"], bundle["model_without_education"], fixture.drop(columns=expected.columns.map("expected__{}".format)),
+        with_education_features=bundle["features_with_education"], without_education_features=bundle["features_without_education"],
+        destination_models=bundle["destination_models"],
+    )
+    columns = [column for column in giro.OUTPUT_COLUMNS if column not in giro.KEYS]
+    scored = scored[columns].reset_index(drop=True)
+    # Exact on every row but one: the recursion that wrote the reference normalized a row's P(destino_trabajo | x)
+    # with numpy's row sum, whose rounding depends on the array layout, and this row (the only one marginalized over
+    # four features) was alone in its recursion call. The engine sums in one order for any batch; 2 ulp apart here.
+    layout = (expected["giro_marginalized_features"] == "estado_civil+parentesco+destino_trabajo+modo_trabajo").to_numpy()
+    assert layout.sum() == 1
+    pd.testing.assert_frame_equal(scored[~layout], expected[columns][~layout], check_dtype=False, check_exact=True)
+    floats = ["giro_prediction_confidence"] + giro.PROBABILITY_COLUMNS
+    np.testing.assert_allclose(scored.loc[layout, floats].to_numpy(float), expected.loc[layout, floats].to_numpy(float), rtol=1e-14, atol=0)
+    pd.testing.assert_frame_equal(scored[layout].drop(columns=floats), expected[columns][layout].drop(columns=floats), check_dtype=False, check_exact=True)

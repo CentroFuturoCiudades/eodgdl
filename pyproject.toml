@@ -36,8 +36,8 @@ notebook = [
 reweight = [
     "mxcensus>=0.1.0",
 ]
-# Extra for the giro-imputation model (eodgdl.giro): scikit-learn pipelines, DENUE and the census (for the
-# zone system's units) through mxcensus.
+# Extra for the imputation engine (eodgdl.impute) and the giro model on it (eodgdl.giro): scikit-learn pipelines,
+# DENUE and the census (for the zone system's units) through mxcensus.
 giro = [
     "scikit-learn>=1.9.0",
     "joblib>=1.5",
