@@ -18,7 +18,7 @@ from eodgdl.impute.models import build_candidates
 
 from ._config import (
     DESTINATION_FEATURES, GIRO_CLASSES, MISSING_EDUCATION_LEVELS, NO_ESPECIFICADO, NUMERIC_FEATURES, ROBUST_SECTOR_FEATURES, SECTOR_FEATURES,
-    SHIFT_PROFILE_FEATURES, build_category_levels,
+    SHIFT_PROFILE_FEATURES, TASK, build_category_levels,
 )
 from ._ml import (
     attach_training_level_shares, fit_level_model, identify_missing_category, normalize_sample_weights, prepare_model_features,
@@ -65,12 +65,10 @@ def prepare_training_data(od, features=SECTOR_FEATURES, weight_column="ponderado
 
 # Models
 def build_models(features=SECTOR_FEATURES, random_state=42, native_categoricals=True):
-    """Candidate families and their grids (:func:`eodgdl.impute.models.build_candidates`). Each pipeline is
+    """Candidate families and their grids (the giro task's ``selection.families``, :func:`eodgdl.impute.models.build_candidates`). Each pipeline is
     self-contained: the first step selects and cleans the features from the raw worker frame, so a pickled bundle
     applies directly to ``build_worker_features`` output."""
-    from eodgdl.impute.models import DEFAULT_FAMILIES
-
-    families = {name: dict(config) for name, config in DEFAULT_FAMILIES.items()}
+    families = {name: dict(config) for name, config in TASK.selection["families"].items()}
     families["GradientBoosting"]["native_categoricals"] = native_categoricals
 
     return build_candidates(features, NUMERIC_FEATURES, build_category_levels(), families=families, random_state=random_state, missing_label=NO_ESPECIFICADO)

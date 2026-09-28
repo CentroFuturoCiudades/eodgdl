@@ -14,14 +14,6 @@ from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEnc
 from .levels import MISSING_LABEL, identify_missing, normalize_sample_weights, prepare_features, split_feature_types
 from .marginalize import attach_training_level_shares
 
-# The default grid (giro's): family -> fixed classifier arguments and the ``params`` grid (classifier arguments).
-DEFAULT_FAMILIES = {
-    "LogisticRegression": {"max_iter": 2000, "params": {"C": [0.1, 1.0, 10.0]}},
-    "RandomForest": {"n_estimators": 500, "n_jobs": -1, "params": {"max_leaf_nodes": [25, 50, 100], "max_features": ["sqrt", 0.7], "min_samples_leaf": [1, 5, 10]}},
-    # early stopping would use a row-level split that ignores households; max_iter is tuned in the grouped CV instead
-    "GradientBoosting": {"native_categoricals": True, "early_stopping": False,
-                         "params": {"max_iter": [50, 100, 200, 400], "learning_rate": [0.05, 0.1], "max_leaf_nodes": [15, 31], "l2_regularization": [0.0, 1.0]}},
-}
 CLASSIFIERS = {"LogisticRegression": LogisticRegression, "RandomForest": RandomForestClassifier, "GradientBoosting": HistGradientBoostingClassifier}
 
 
@@ -44,10 +36,10 @@ def make_tree_preprocessor(numerical_features, categorical_features, categories,
     return preprocessor, categorical_positions
 
 
-def build_candidates(features, numeric, category_levels, families=None, random_state=42, missing_label=MISSING_LABEL):
+def build_candidates(features, numeric, category_levels, families, random_state=42, missing_label=MISSING_LABEL):
     """``{family: {"model": pipeline, "params": grid}}`` for :func:`eodgdl.impute.select.tune`, one entry per family in
-    ``families`` (default :data:`DEFAULT_FAMILIES`), grid keys prefixed ``classifier__``."""
-    families = DEFAULT_FAMILIES if families is None else families
+    ``families`` (a task's ``selection.families``: family -> fixed classifier arguments plus the ``params`` grid;
+    ``native_categoricals`` for boosting), grid keys prefixed ``classifier__``."""
     numerical_features, categorical_features = split_feature_types(features, numeric)
     categories = [category_levels[column] for column in categorical_features]
     step = prepare_step(features, numeric, missing_label=missing_label)

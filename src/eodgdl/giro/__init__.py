@@ -20,7 +20,7 @@ Typical use::
 from ._config import (
     DENUE_RELEASE, DENUE_STATE_CODE, DESTINATION_AMBITO_LEVELS, DESTINATION_FEATURES, EMPLOYED_CATEGORIES, GIRO_CLASSES,
     GIRO_LABELS, GIRO_SLUGS, KEYS, MOBILITY_FEATURES, NO_ESPECIFICADO, NUMERIC_FEATURES, ROBUST_SECTOR_FEATURES,
-    SECTOR_FEATURES, SHIFT_PROFILE_FEATURES, build_category_levels, load_config,
+    SECTOR_FEATURES, SHIFT_PROFILE_FEATURES, TASK, build_category_levels, load_config,
 )
 from ._ml import (
     count_levels_without_training_support, fold_table, identify_missing_category, prepare_model_features, select_one_se,
@@ -42,26 +42,21 @@ OUTPUT_COLUMNS = KEYS + [
 
 
 def load_model(path=None):
-    """The fitted hybrid bundle (dict with ``model_with_education``, ``model_without_education``, the feature lists,
-    ``destination_models``, ``category_levels`` and ``metadata``). Fetched from the data mirror unless ``path`` is
-    given or ``$EODGDL_DATA_DIR`` holds a local copy. Requires the scikit-learn version recorded in
+    """The fitted hybrid bundle as a dict with ``model_with_education``, ``model_without_education``, the feature
+    lists, ``destination_models``, ``category_levels`` and ``metadata`` (an engine bundle is read through
+    :func:`eodgdl.impute.bundle.legacy_view`). Fetched from the data mirror unless ``path`` is given or
+    ``$EODGDL_DATA_DIR`` holds a local copy. Requires the scikit-learn version recorded in
     ``metadata["sklearn_version"]``."""
-    import joblib
+    from eodgdl.impute.bundle import FORMAT, legacy_view, load_bundle
 
-    from eodgdl.data import resolve
-
-    return joblib.load(path if path is not None else resolve(MODEL_FILE))
+    bundle = load_bundle(TASK, path)
+    return legacy_view(bundle) if bundle.get("format") == FORMAT else bundle
 
 
 def impute(tables=None, bundle=None, path=None):
-    """Worker frame (:func:`build_worker_features`) scored with the fitted bundle (:func:`impute_giro`)."""
-    import eodgdl
+    """Worker frame (:func:`build_worker_features`) scored with the fitted bundle (:func:`eodgdl.impute.run.score_task`):
+    the bundle is checked against the task spec (scikit-learn version, category levels, features) first. With
+    ``tables=None`` the survey is loaded and the features are read from the feature cache when present."""
+    from eodgdl.impute.run import score_task
 
-    tables = tables if tables is not None else eodgdl.load_eod()
-    bundle = bundle if bundle is not None else load_model(path)
-
-    return impute_giro(
-        bundle["model_with_education"], bundle["model_without_education"], build_worker_features(tables),
-        with_education_features=bundle["features_with_education"], without_education_features=bundle["features_without_education"],
-        destination_models=bundle.get("destination_models"),
-    )
+    return score_task(TASK, tables=tables, bundle=bundle, path=path)

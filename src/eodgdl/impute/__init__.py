@@ -4,6 +4,10 @@ head-of-household education and the AMAI components as they move here, see ``doc
 Optional extra ``eodgdl[giro]`` (scikit-learn, joblib). The engine knows no survey vocabulary: the numeric features,
 declared category levels, missing label, classes and column names come from the caller (a task).
 
+- :mod:`~eodgdl.impute.spec`: task specs (``impute/tasks/<task>.yaml``) and their hashes
+- :mod:`~eodgdl.impute.sources`, :mod:`~eodgdl.impute.features`: source frames, feature builders, the feature cache
+- :mod:`~eodgdl.impute.bundle`: fitted bundles, their load-time checks, the legacy giro bundle
+- :mod:`~eodgdl.impute.run`: scoring a task (``score_task``)
 - :mod:`~eodgdl.impute.levels`: the category-level contract, feature preparation, weight and probability checks
 - :mod:`~eodgdl.impute.harmonize`: value maps that fail on an unmapped code
 - :mod:`~eodgdl.impute.models`: candidate pipelines per family, the auxiliary level model

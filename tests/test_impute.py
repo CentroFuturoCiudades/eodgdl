@@ -133,7 +133,7 @@ def test_level_subsets_only_narrow_the_averaging(fitted):
 
 
 def test_marginalization_requires_training_shares(fitted):
-    bare = models.build_candidates(FEATURES, NUMERIC, LEVELS)["GradientBoosting"]["model"]
+    bare = models.build_candidates(FEATURES, NUMERIC, LEVELS, families={"GradientBoosting": {"params": {"max_iter": [5]}}})["GradientBoosting"]["model"]
     with pytest.raises(ValueError, match="training_level_shares_"):
         marginalize.predict_proba_marginalizing(bare, scored_rows())
 
@@ -208,3 +208,54 @@ def test_arms_take_the_first_whose_covariates_are_observed():
     arms = [Arm("full", None, ["a", "b"], requires=["a", "b"]), Arm("only_a", None, ["a"], requires=["a"]), Arm("none", None, [])]
     assigned = assign_arms(frame, arms, lambda data, feature: levels.identify_missing(data[feature]))
     assert assigned.tolist() == ["full", "none", "only_a"]
+
+
+def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
+    from eodgdl.impute import features, sources, spec as spec_module
+
+    calls = {"source": 0, "builder": 0}
+
+    def build_source(context, config):
+        calls["source"] += 1
+        frame = synthetic(n=30)[["a", "b", "c", "y"]].assign(k=range(30), label=lambda f: f["y"].str.upper())
+        return sources.SourceFrame(frame, ["k"], "c", "k", {"data": "v1"}, lambda column: LEVELS[column][:-1])
+
+    def build_columns(frame, context, config, spec):
+        calls["builder"] += 1
+        return pd.DataFrame({"d": frame["c"] * config["scale"], "e": pd.Categorical(frame["a"])}, index=frame.index)
+
+    monkeypatch.setitem(sources._SOURCES, "test.rows", sources.Source("test.rows", build_source, {"keys": ["k"], "weight": "c", "group": "k"},
+                                                                    lambda context, config: {"data": "v1"}, lambda column: LEVELS[column][:-1], __file__))
+    monkeypatch.setitem(features._BUILDERS, "test.double", features.Builder("test.double", build_columns, {"scale": 2.0}, lambda context, config: {}, __file__))
+    spec = spec_module.parse_task({
+        "task": "t", "source": "test.rows", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
+        "features": {"builders": ["test.double"], "numeric": ["c", "d"]}, "arms": {"only": {"features": ["a", "b", "c", "d", "e"]}},
+    })
+    context = sources.Context(cache=True, cache_dir=tmp_path)
+    first = features.build_frame(spec, context).frame
+    again = features.build_frame(spec, context).frame
+    assert calls == {"source": 1, "builder": 1}
+    pd.testing.assert_frame_equal(first, again)
+    assert first["e"].dtype == "string" and first["t"].tolist()[:3] == first["y"].tolist()[:3]
+    assert not first["t_desconocido"].any()
+    features.build_frame(spec, context, overrides={"test.double": {"scale": 3.0}})
+    assert calls == {"source": 1, "builder": 2}                           # new configuration, new key
+    features.build_frame(spec, sources.Context(cache=True, cache_dir=tmp_path, refresh=True))
+    assert calls["source"] == 2 and calls["builder"] == 3                  # refresh rebuilds
+
+
+def test_spec_validation():
+    from eodgdl.impute.spec import parse_task
+
+    base = {"task": "t", "source": "s", "target": {"column": "y", "classes": {"A": "a", "B": "b"}},
+            "features": {"groups": {"g": ["u", "v"]}, "numeric": ["v"]}, "arms": {"one": {"features": ["g"], "requires": ["u"]}}}
+    spec = parse_task(base)
+    assert spec.features == ["u", "v"] and spec.arm("one").requires == ("u",)
+    with pytest.raises(ValueError, match="requires features it does not use"):
+        parse_task({**base, "arms": {"one": {"features": ["g"], "exclude": ["u"], "requires": ["u"]}}})
+    with pytest.raises(ValueError, match="numeric features no arm uses"):
+        parse_task({**base, "features": {"groups": {"g": ["u"]}, "numeric": ["v"]}})
+    with pytest.raises(ValueError, match="class slugs repeat"):
+        parse_task({**base, "target": {"column": "y", "classes": {"A": "a", "B": "a"}}})
+    assert parse_task(base).scoring_hash() == spec.scoring_hash()
+    assert parse_task({**base, "missing_values": {"u": ["?"]}}).scoring_hash() != spec.scoring_hash()
