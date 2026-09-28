@@ -96,6 +96,27 @@ def main() -> None:
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
 
+    imp_p = sub.add_parser("impute", help="Imputation tasks (eodgdl.impute): score, retrain, compare feature specifications")
+    imp_sub = imp_p.add_subparsers(dest="impute_cmd", required=True)
+    for name, help_text in (("score", "Score a task's rows with its fitted bundle"),
+                            ("retrain", "Select, evaluate, refit and score a task; write the bundle and evaluation tables"),
+                            ("compare", "Fold log losses of candidate specifications against the task's, at the published winner's hyperparameters")):
+        cmd_p = imp_sub.add_parser(name, help=help_text)
+        cmd_p.add_argument("task", help="Task name (src/eodgdl/impute/tasks/<task>.yaml)")
+        cmd_p.add_argument("--data", default=None, help="Local data directory (else $EODGDL_DATA_DIR or fetch)")
+        cmd_p.add_argument("--refresh", action="store_true", help="Rebuild the cached feature frames")
+        if name != "score":
+            cmd_p.add_argument("--jobs", type=int, default=-1, help="Parallel workers for the CV fits (default: all cores; 1 = in process)")
+    imp_score = imp_sub.choices["score"]
+    imp_score.add_argument("--bundle", default=None, help="Bundle file (default: the task's data file)")
+    imp_score.add_argument("--out", default=None, help="Parquet file for the keys and output columns (default: output/impute/<task>_scores.parquet)")
+    imp_sub.choices["retrain"].add_argument("--out", default=None, help="Directory (default: output/impute/<task>/)")
+    imp_cmp = imp_sub.choices["compare"]
+    imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
+    imp_cmp.add_argument("--seeds", type=int, nargs="+", default=[42], help="CV seeds (repeated CV; default 42)")
+    imp_cmp.add_argument("--bundle", default=None, help="Bundle whose winners fix the hyperparameters (default: the task's)")
+    imp_cmp.add_argument("--out", default=None, help="CSV prefix for <out>_folds.csv and <out>_paired.csv")
+
     args = parser.parse_args()
 
     if args.cmd == "fetch":
@@ -125,6 +146,9 @@ def main() -> None:
 
     elif args.cmd == "reweight":
         raise SystemExit(_reweight(args))
+
+    elif args.cmd == "impute":
+        raise SystemExit(_impute(args))
 
 
 def _report(problems: list[str], ok_message: str) -> int:
@@ -328,6 +352,53 @@ def _reweight(args) -> int:
         return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
 
     return _report(reweight.check(args.directory), "the set is loadable and every constraint is feasible")
+
+
+def _impute(args) -> int:
+    import os
+    from pathlib import Path
+
+    if args.data:
+        os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
+    from eodgdl.impute import run
+    from eodgdl.impute.sources import Context, get_source
+    from eodgdl.impute.spec import load_task
+
+    spec = load_task(args.task)
+    context = Context(refresh=args.refresh)
+    if args.impute_cmd == "score":
+        scored = run.score_task(spec, context=context, path=args.bundle)
+        out = Path(args.out or f"output/impute/{spec.name}_scores.parquet")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        keys = get_source(spec.source).config["keys"]
+        scored[run.output_columns(spec, keys)].to_parquet(out, index=False)
+        imputed = scored[f"{spec.prefix}_fue_imputado"]
+        print(f"scored {len(scored):,} rows, {int(imputed.sum()):,} imputed; wrote {out}")
+        return 0
+    if args.impute_cmd == "retrain":
+        result = run.retrain(spec, context=context, n_jobs=args.jobs)
+        path, digest = run.write_retrain(result, args.out or f"output/impute/{spec.name}")
+        for arm, entry in result.summary["arms"].items():
+            chosen = entry["selected"]
+            print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "
+                  f"held-out {entry['test_metrics']['weighted_log_loss']:.4f}")
+        print(f"wrote {path} (sha256 {digest}); to install it, copy it under data/ and update src/eodgdl/data/registry.txt")
+        return 0
+    import yaml
+
+    with open(args.spec, encoding="utf-8") as handle:
+        candidates = yaml.safe_load(handle)
+    bundle = None
+    if args.bundle:
+        from eodgdl.impute.bundle import load_bundle
+
+        bundle = load_bundle(spec, args.bundle)
+    folds, paired = run.compare(spec, candidates, seeds=tuple(args.seeds), bundle=bundle, context=context, n_jobs=args.jobs)
+    print(paired.round(5).to_string(index=False))
+    if args.out:
+        folds.to_csv(f"{args.out}_folds.csv", index=False)
+        paired.to_csv(f"{args.out}_paired.csv", index=False)
+    return 0
 
 
 if __name__ == "__main__":

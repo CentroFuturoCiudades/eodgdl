@@ -456,6 +456,12 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+giro = [
+    { name = "joblib" },
+    { name = "mxcensus" },
+    { name = "pyyaml" },
+    { name = "scikit-learn" },
+]
 notebook = [
     { name = "colorcet" },
     { name = "folium" },
@@ -476,11 +482,13 @@ requires-dist = [
     { name = "folium", marker = "extra == 'notebook'", specifier = ">=0.20" },
     { name = "geopandas", specifier = ">=1.1.2" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.29" },
+    { name = "joblib", marker = "extra == 'giro'", specifier = ">=1.5" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "mapclassify", marker = "extra == 'notebook'", specifier = ">=2.10" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
-    { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus" },
-    { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus" },
+    { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
+    { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
+    { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=3.0.0" },
     { name = "pandera", specifier = ">=0.29.0" },
@@ -489,10 +497,12 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=18.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'giro'", specifier = ">=6.0" },
+    { name = "scikit-learn", marker = "extra == 'giro'", specifier = ">=1.9.0" },
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13" },
     { name = "tqdm", specifier = ">=4.67" },
 ]
-provides-extras = ["notebook", "reweight", "dev"]
+provides-extras = ["notebook", "reweight", "giro", "dev"]
 
 [[package]]
 name = "executing"
@@ -1245,8 +1255,8 @@ wheels = [
 
 [[package]]
 name = "mxcensus"
-version = "0.1.0"
-source = { git = "https://github.com/CentroFuturoCiudades/mxcensus#5ef1e49545a451716eb0c9fb3ef858cfd8036c62" }
+version = "0.4.0"
+source = { git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0#cf7be37995728768eaafd0b4837f2a1a06016243" }
 dependencies = [
     { name = "chardet" },
     { name = "geopandas" },

@@ -22,7 +22,11 @@ VMRC_CSV = "VMRC_AMG.csv"
 # INEGI ENDUTIH share of dwellings with internet, 2020 and 2023 (scripts/endutih_internet.py)
 ENDUTIH_CSV = "ENDUTIH_internet_AMG.csv"
 
+# Fitted giro-imputation bundle (eodgdl.giro; scikit-learn pickle, see the sklearn version in its metadata)
+GIRO_MODEL_JOBLIB = "od_giro_hybrid_model.joblib"
+
 SURVEY_FILES = [VIVIENDAS_CSV, HABITANTES_CSV, VIAJES_CSV]
 ZONE_FILES = [ZONIFICACION_PARQUET]
 CENSUS_FILES = [CONAPO_CSV, VMRC_CSV, ENDUTIH_CSV]
-FILES = SURVEY_FILES + ZONE_FILES + CENSUS_FILES
+MODEL_FILES = [GIRO_MODEL_JOBLIB]
+FILES = SURVEY_FILES + ZONE_FILES + CENSUS_FILES + MODEL_FILES

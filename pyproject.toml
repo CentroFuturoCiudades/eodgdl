@@ -36,13 +36,21 @@ notebook = [
 reweight = [
     "mxcensus>=0.1.0",
 ]
+# Extra for the imputation engine (eodgdl.impute) and the giro model on it (eodgdl.giro): scikit-learn pipelines,
+# DENUE and the census (for the zone system's units) through mxcensus.
+giro = [
+    "scikit-learn>=1.9.0",
+    "joblib>=1.5",
+    "pyyaml>=6.0",
+    "mxcensus>=0.4.0",
+]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
 eodgdl = "eodgdl._cli:main"
 
 [tool.uv.sources]
-mxcensus = { git = "https://github.com/CentroFuturoCiudades/mxcensus" }
+mxcensus = { git = "https://github.com/CentroFuturoCiudades/mxcensus.git", rev = "v0.4.0" }
 
 [build-system]
 requires = ["uv_build>=0.8.18,<0.9.0"]

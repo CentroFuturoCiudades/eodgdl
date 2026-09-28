@@ -1,0 +1,16 @@
+# Sources and feature builders on the EOD survey (eodgdl.load_eod), read by eodgdl.impute.sources.eod.
+
+eod.workers:
+  # One row per interviewed person who worked last week, with the dwelling's attributes attached.
+  keys: [folio_vivienda, folio_habitante]
+  weight: ponderador          # the person weight (hab)
+  group: folio_vivienda       # CV group: households never straddle two folds
+  employed_categories:        # `trabajo_semana_pasada` levels that define a worker
+    - Tiempo completo
+    - Medio tiempo
+    - Tenía trabajo, pero no trabajó
+  dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]   # of `viv`, those not in `hab`
+
+eod.work_trip:
+  # Most frequent destination type, destination code / zone and main mode of each person's work trips.
+  purpose: Trabajar           # `motivo_viaje` of the trips whose destination describes the workplace

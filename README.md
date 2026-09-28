@@ -138,3 +138,41 @@ IMEPLAN's AGEB-to-zone table (`RELACION_AGEBS-ZONA_con_datos_censales`) and micr
 part of the survey design, and the table disagreed with the survey's own zone coding (it
 left La Aurora, Juanacatlán, whose 221 sampled dwellings the survey coded `49F`, in no
 zone). Zones are built from the census by `reweight.zoning` instead.
+
+## Giro imputation model (`eodgdl[giro]`)
+
+Most workers in the survey did not report the activity of their employer (`giro_empresa`). The optional
+`eodgdl.giro` subpackage imputes it within the survey: a hybrid (with / without education) scikit-learn model
+trained on the workers with an observed giro, using raw survey columns, the work-trip destination and mode, and
+the DENUE establishment mix of the destination's urban or rural AGEB, the unit the survey codes and the zone system
+(`reweight.zoning`) places (DENUE and the census are fetched through `mxcensus`).
+It predicts the five native levels — Comercio, Servicio, Educación, Industria, Gobierno/sector público — and keeps
+the full probability vector (`prob_giro_<slug>`); `giro_final` is the arg-max.
+
+```bash
+uv add "eodgdl[giro]"
+```
+
+```python
+import eodgdl
+from eodgdl import giro
+
+workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the data mirror on first use
+workers[giro.OUTPUT_COLUMNS].head()
+```
+
+The model runs on `eodgdl.impute`, the package's imputation engine: the task is defined in
+`src/eodgdl/impute/tasks/giro.yaml` (classes, features, arms, candidate grid, evaluation settings), and the engine
+scores, compares and retrains it:
+
+```bash
+uv run eodgdl impute score giro --data data             # the fitted bundle's probabilities -> output/impute/giro_scores.parquet
+uv run eodgdl impute compare giro --spec candidates.yaml  # feature specifications at the published winner's hyperparameters, paired folds
+uv run eodgdl impute retrain giro --data data           # grouped-CV selection, held-out evaluation, refit -> output/impute/giro/
+quarto render reports/imputation_giro.qmd               # the retrain's evaluation (reads output/impute/giro/, trains nothing)
+```
+
+The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`) is
+checked against the task on load (scikit-learn version, category levels, features). A retrain writes a new one to
+`output/impute/giro/`; to ship it, copy it to `data/` and update its sha256 in `src/eodgdl/data/registry.txt`. Feature
+frames are cached under the eodgdl cache directory (`--refresh` rebuilds).
