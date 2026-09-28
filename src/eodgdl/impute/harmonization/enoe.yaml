@@ -6,7 +6,7 @@
 # Variable kinds: `map` (codes -> levels; `floordiv` first when given; `otherwise` gives every other code in its
 # `domain` one level), `number` (numeric; `unspecified` codes -> NA, `cap` clips), `bins` (cut an earlier number with
 # common.yaml's bins), `rules` (conditions over several columns, in order: a later match overrides an earlier one;
-# every code of a rule column must be in its `domains` entry).
+# every code of a rule column must be in its `domains` entry; unmatched rows get `default`, else the missing label).
 
 variables:
   genero:
@@ -106,3 +106,17 @@ variables:
   informalidad:
     column: emp_ppal        # INEGI's classification of the main job
     map: {1: informal, 2: formal}
+  # The two components of informality (a diagnostic): informal-sector employment (informal-sector units, paid domestic
+  # work, subsistence agriculture: tue2 5-7), which the type and place of work identify, and unprotected employment in
+  # other units (no social security), which neither survey observes.
+  informalidad_sector:
+    default: "no"
+    domains: {emp_ppal: [1, 2], tue2: [0, 1, 2, 3, 4, 5, 6, 7]}
+    rules:
+      - {all: {emp_ppal: [1], tue2: [5, 6, 7]}, level: "si"}
+  informalidad_desprotegida:
+    default: "no"
+    domains: {emp_ppal: [1, 2], tue2: [0, 1, 2, 3, 4, 5, 6, 7]}
+    rules:
+      - {all: {emp_ppal: [1]}, level: "si"}
+      - {all: {emp_ppal: [1], tue2: [5, 6, 7]}, level: "no"}

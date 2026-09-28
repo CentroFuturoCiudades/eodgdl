@@ -172,6 +172,16 @@ uv run eodgdl impute retrain giro --data data           # grouped-CV selection, 
 quarto render reports/imputation_giro.qmd               # the retrain's evaluation (reads output/impute/giro/, trains nothing)
 ```
 
+Informality (trained on INEGI's ENOE through `mxcensus`, harmonized to the survey's workers) is imputed through the
+giro model by the chain `sector_informality`:
+
+```bash
+uv run eodgdl impute retrain informality --data data                          # -> output/impute/informality/
+uv run eodgdl impute score sector_informality --data data --retrained output/impute
+uv run eodgdl impute evaluate sector_informality --data data                  # benchmark, sensitivity, components, gap decomposition
+quarto render reports/imputation_informality.qmd
+```
+
 The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`) is
 checked against the task on load (scikit-learn version, category levels, features). A retrain writes a new one to
 `output/impute/giro/`; to ship it, copy it to `data/` and update its sha256 in `src/eodgdl/data/registry.txt`. Feature

@@ -68,6 +68,19 @@ evaluation:
   # ENOE workers reweighted to the EOD workers' profile (density ratio, education excluded), models refitted.
   shift:
     profile: [genero, ocupacion, edad_num, municipio, estado_civil, parentesco, tamano_viv_cat]
+  # Each selected configuration cross-validated with ENOE's sampling unit as the group: households of one unit share
+  # neighbourhood-level drivers, so this is the more demanding generalization estimate.
+  robustness_groups: survey_psu
+  # The held-out ENOE rows reweighted to the profile of the EOD workers without education (the rows the arm without
+  # education scores), each arm evaluated under both weightings.
+  target_profile:
+    features: [genero, ocupacion, edad_num, municipio, estado_civil, parentesco, tamano_viv_cat]
+    missing: escolaridad
+  # The two components of the label (harmonization/enoe.yaml), each refitted with the selected configurations: the
+  # part the shared covariates can identify (informal-sector units) and the part they cannot (no social security).
+  components:
+    informalidad_sector: {positive: "si"}
+    informalidad_desprotegida: {positive: "si"}
 
 outputs:
   prefix: informalidad

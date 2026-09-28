@@ -417,3 +417,36 @@ def test_enoe_source_on_a_stand_in(monkeypatch):
     monkeypatch.setattr(mxcensus, "load_enoe_persons", lambda **kwargs: pd.concat([persons(**kwargs)] * 2))
     with pytest.raises(AssertionError, match="do not identify persons"):
         enoe.workers(Context(cache=False), config)
+
+
+def test_retrain_diagnostics_robustness_profile_and_components(labelled_source, tmp_path):
+    from eodgdl.impute import run, sources
+    from eodgdl.impute.spec import parse_task
+
+    raw = {**SYNTHETIC_TASK, "evaluation": {**SYNTHETIC_TASK["evaluation"], "positive_class": "z", "robustness_groups": "psu",
+                                            "target_profile": {"features": ["a", "c"], "missing": "b"},
+                                            "components": {"part": {"positive": "hi", "classes": ["hi", "lo"]}}}}
+    spec = parse_task(raw)
+    original = sources._SOURCES["test.labelled"]
+    sources._SOURCES["test.labelled"] = sources.Source("test.labelled", lambda context, config: _with_parts(original, context, config),
+                                                       original.config, original.versions, original.schema_levels, __file__)
+    try:
+        result = run.retrain(spec, context=sources.Context(cache_dir=tmp_path), n_jobs=1, progress=False)
+    finally:
+        sources._SOURCES["test.labelled"] = original
+    robust = result.tables["robustness_cv__with_b"]
+    assert list(robust.columns) == ["fold", "household_grouped", "psu_grouped"] and len(robust) == 3
+    assert robust["household_grouped"].tolist() == result.bundle["metadata"]["selected"]["with_b"]["fold_log_losses"]
+    profile = result.tables["target_profile"]
+    assert set(profile["weighting"]) == {"training weights", "reweighted to the scored rows' profile"} and "weighted_roc_auc" in profile
+    assert set(result.tables["components_heldout"]["component"]) == {"part"}
+    assert set(result.bundle["components"]["part"]["arms"]) == {"with_b", "without_b"}
+    assert set(result.bundle["components"]["part"]["arms"]["with_b"].named_steps["classifier"].classes_) == {"hi", "lo"}
+
+
+def _with_parts(original, context, config):
+    result = original.build(context, config)
+    frame = result.frame
+    frame["psu"] = (np.arange(len(frame)) // 9).astype(str)
+    frame["part"] = pd.Series(np.where(frame["c"] > 0, "hi", "lo"), index=frame.index).where(frame["label"].notna())
+    return result

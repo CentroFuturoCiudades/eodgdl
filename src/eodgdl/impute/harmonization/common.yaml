@@ -19,6 +19,8 @@ levels:
   edad_cat: ["0_2", "3_4", "5", "6_7", "8_11", "12_14", "15_17", "18_24", "25_49", "50_59", "60_64", "65_y_mas"]
   sector: [comercio, gobierno_otro_agricultura, manufactura_construccion, servicios_transporte]
   informalidad: [informal, formal]
+  informalidad_sector: ["si", "no"]
+  informalidad_desprotegida: ["si", "no"]
 
 # Cut points: left-closed bins, the last one open.
 age:

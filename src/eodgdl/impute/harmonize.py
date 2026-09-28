@@ -90,9 +90,9 @@ def _rules_variable(frame, definition, missing_label, name):
         outside = set(codes.dropna().unique()) - set(domain)
         if outside:
             raise ValueError(f"{name}: codes of {column} outside its declared domain: {sorted(map(str, outside))}")
-    level = pd.Series(missing_label, index=frame.index, dtype=object)
+    level = pd.Series(definition.get("default", missing_label), index=frame.index, dtype=object)
     for rule in definition["rules"]:
-        match = pd.Series(False, index=frame.index)
+        match = pd.Series("any" not in rule, index=frame.index)      # no `any`: the `all` conditions alone decide
         for column, codes in rule.get("any", {}).items():
             match |= _codes(frame[column]).isin(codes).fillna(False)
         for column, codes in rule.get("all", {}).items():

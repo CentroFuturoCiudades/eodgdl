@@ -1,0 +1,372 @@
+---
+title: "Informality imputation"
+subtitle: "How `eodgdl impute retrain informality` trains the informality model on ENOE, and how the `sector_informality` chain applies it to the EOD's workers through the giro imputation"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import json
+import os
+from pathlib import Path
+
+
+def _find_root() -> Path:
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        if (base / "data" / "IMEPLAN_Base_Viviendas_Master.csv").exists():
+            return base.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl repository.")
+
+
+ROOT = _find_root()
+os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
+TASK_OUT = Path(os.environ.get("EODGDL_IMPUTE_INFORMALITY", ROOT / "output" / "impute" / "informality"))
+CHAIN_OUT = Path(os.environ.get("EODGDL_IMPUTE_SECTOR_INFORMALITY", ROOT / "output" / "impute" / "sector_informality"))
+assert (TASK_OUT / "summary.json").exists(), f"No retrain at {TASK_OUT}: run `uv run eodgdl impute retrain informality --data data` first."
+assert (CHAIN_OUT / "evaluation" / "summary.json").exists(), (
+    f"No chain evaluation at {CHAIN_OUT}: run `uv run eodgdl impute score sector_informality --data data --retrained output/impute` "
+    "and `uv run eodgdl impute evaluate sector_informality --data data`.")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+
+from eodgdl.impute.chain import load_chain
+from eodgdl.impute.spec import load_task
+
+SPEC = load_task("informality")
+CHAIN = load_chain("sector_informality")
+SUMMARY = json.loads((TASK_OUT / "summary.json").read_text(encoding="utf-8"))
+CHAIN_SUMMARY = json.loads((CHAIN_OUT / "evaluation" / "summary.json").read_text(encoding="utf-8"))
+ARMS = [arm.name for arm in SPEC.arms]
+ARM_LABEL = {"with_education": "With education", "without_education": "Without education"}
+SECTOR_LABEL = {"comercio": "Commerce", "gobierno_otro_agricultura": "Government, agriculture, other",
+                "manufactura_construccion": "Manufacturing and construction", "servicios_transporte": "Services and transport"}
+
+
+def T(name, arm=None):
+    """A table of the task's retrain."""
+    return pd.read_parquet(TASK_OUT / "evaluation" / (f"{name}__{arm}.parquet" if arm else f"{name}.parquet"))
+
+
+def C(name):
+    """A table of the chain's evaluation."""
+    return pd.read_parquet(CHAIN_OUT / "evaluation" / f"{name}.parquet")
+
+
+def pct(x, digits=1):
+    return f"{100 * x:.{digits}f}%"
+
+
+def fmt(n):
+    return f"{int(n):,}"
+
+
+# The validated default categorical palette (dataviz skill), fixed slot order.
+SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+INK, MUTED, GRID = "#1f1f1f", "#6b6b6b", "#e6e6e6"
+plt.rcParams.update({
+    "figure.dpi": 120, "font.size": 10, "axes.titlesize": 11, "axes.edgecolor": MUTED, "axes.labelcolor": INK,
+    "xtick.color": MUTED, "ytick.color": MUTED, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8, "axes.axisbelow": True, "legend.frameon": False,
+})
+
+chain_scores = pd.read_parquet(CHAIN_OUT / "scores.parquet")
+weights = pd.read_parquet(TASK_OUT / "scores.parquet")[["folio_vivienda", "folio_habitante", "ponderador"]]
+chain_scores = chain_scores.merge(weights, on=["folio_vivienda", "folio_habitante"], validate="one_to_one")
+P = "prob_informalidad_informal"
+headline = C("headline")
+EXPECTED = float(headline.loc[headline["variant"] == "shipped", "expected_rate"].iloc[0])
+assert len(chain_scores) == SUMMARY["rows"] == CHAIN_SUMMARY["rows"]
+assert np.allclose(chain_scores[SPEC.probability_columns].sum(axis=1), 1.0, atol=1e-8)
+assert abs(float((chain_scores["ponderador"] * chain_scores[P]).sum() / chain_scores["ponderador"].sum()) - EXPECTED) < 1e-12
+```
+
+The EOD survey does not ask whether a job is formal. The informality of each worker's main job is imputed with a
+model trained on INEGI's labour survey (ENOE), which records it (`emp_ppal`). Both surveys are first harmonized to
+common levels (`src/eodgdl/impute/harmonization/`). The model's sector input is the imputed giro: the chain
+`sector_informality` computes
+
+$$P(I \mid x) = \sum_s P(s \mid x)\, P(I \mid x, s)$$
+
+over the four harmonized sectors, with the giro model's probabilities summed into sectors.
+
+This report reads what the last retrain and chain evaluation wrote. It trains nothing. The definitions are in
+`src/eodgdl/impute/tasks/informality.yaml` and `src/eodgdl/impute/chains/sector_informality.yaml`.
+
+```{python}
+#| label: headline
+bench = C("benchmark").set_index("group")
+display(Markdown(
+    f"**Expected informality among the EOD's workers: {pct(EXPECTED, 2)}** (weighted mean of the individual "
+    f"probabilities, {fmt(SUMMARY['rows'])} workers). ENOE's metro benchmark, the observed rate among the "
+    f"{fmt(bench.loc['all', 'rows'])} ENOE workers of the metro municipalities over the {len(bench) - 1} pooled quarters, "
+    f"is {pct(bench.loc['all', 'observed_rate'], 2)}. @sec-gap explains the difference."
+))
+```
+
+# Training and scored populations {#sec-populations}
+
+```{python}
+#| label: populations
+from eodgdl.impute.sources.enoe import load_config as enoe_config
+
+ENOE_PERIODS = enoe_config()["enoe.workers"]["periods"]
+display(Markdown(
+    f"The model trains on **{fmt(SUMMARY['known'])} employed ENOE workers** in Jalisco over "
+    f"{', '.join(ENOE_PERIODS)}. "
+    "Weights are divided by the number of quarters, so totals stay at the average quarterly population. Workers outside the metro "
+    "area enter with `municipio = otro`. It scores the **"
+    f"{fmt(SUMMARY['unknown'])} EOD workers**. EOD workers in a metro municipality ENOE did not sample are averaged over "
+    "the sampled metro municipalities (`scoring.level_subsets`)."
+))
+```
+
+```{python}
+#| label: tbl-benchmark
+#| tbl-cap: "ENOE's observed informality among the metro workers, overall and by quarter (weighted)."
+bench.reset_index().assign(observed_rate=lambda d: (d["observed_rate"] * 100).round(2)).rename(columns={"observed_rate": "observed rate (%)"})
+```
+
+```{python}
+#| label: fig-profiles
+#| fig-cap: "Weighted profiles of the ENOE training workers and the EOD workers the model scores."
+profiles = T("profiles")
+variables = list(dict.fromkeys(profiles["variable"]))
+fig, axes = plt.subplots(2, 4, figsize=(15, 7.5))
+for ax, variable in zip(axes.ravel(), variables):
+    rows = profiles[profiles["variable"] == variable]
+    y = np.arange(len(rows))
+    ax.barh(y - 0.2, rows["known_share"] * 100, height=0.38, color=SLOTS[0], label="ENOE (training)")
+    ax.barh(y + 0.2, rows["unknown_share"] * 100, height=0.38, color=SLOTS[1], label="EOD (scored)")
+    ax.set_yticks(y, [str(label)[:24] for label in rows["category"]], fontsize=7.5)
+    ax.invert_yaxis(); ax.grid(axis="y", visible=False)
+    ax.set_title(variable.replace("_", " ")); ax.set_xlabel("weighted share (%)", fontsize=8)
+for ax in axes.ravel()[len(variables):]:
+    ax.axis("off")
+handles, labels = axes[0, 0].get_legend_handles_labels()
+fig.legend(handles, labels, loc="upper center", ncol=2, fontsize=9, bbox_to_anchor=(0.5, 1.0))
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+plt.show()
+```
+
+```{python}
+#| label: tbl-missingness
+#| tbl-cap: "Weighted share with each feature unobserved, in ENOE and in the EOD."
+missing = T("missingness")
+missing.assign(known_missing_share=lambda d: (d["known_missing_share"] * 100).round(2), unknown_missing_share=lambda d: (d["unknown_missing_share"] * 100).round(2)).rename(
+    columns={"known_missing_share": "ENOE (%)", "unknown_missing_share": "EOD (%)"})
+```
+
+# Selection {#sec-selection}
+
+```{python}
+#| label: selection
+cv = SPEC.selection["cv"]
+lines = [f"- **{ARM_LABEL[arm.name]}** ({len(arm.features)} features): " + ", ".join(f"`{f}`" for f in arm.features) for arm in SPEC.arms]
+display(Markdown(
+    "Two arms: an EOD worker with education is scored by the first, one without it by the second.\n\n" + "\n".join(lines)
+    + f"\n\nENOE workers are split by household across the pooled quarters ({cv['splits']} stratified groups, fold "
+    f"{cv['test_fold']} held out; {fmt(SUMMARY['train_rows'])} train). The held-out rows outside the metro area are "
+    f"dropped ({fmt(SUMMARY['test_rows'])} remain), so performance is judged where the model is applied. Each arm tunes "
+    + "; ".join(f"**{name}**" for name in SPEC.selection["families"])
+    + " under a household-grouped CV with the survey weights. The simplest configuration within one standard error of "
+    "the best is kept."
+))
+rows = []
+for arm in ARMS:
+    for _, r in T("selection", arm).iterrows():
+        rows.append({"arm": ARM_LABEL[arm], "family": r["model"], "parameters": ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in json.loads(r["best_params"]).items()),
+                     "CV log loss": round(r["weighted_log_loss"], 4), "Δ vs best": round(r["mean_diff_vs_best"], 4), "SE": round(r["se_diff_vs_best"], 4),
+                     "selected": "✓" if r["selected"] else ""})
+display(pd.DataFrame(rows))
+```
+
+```{python}
+#| label: tbl-robustness
+#| tbl-cap: "Fold log losses of each selected configuration with households as the CV group and with ENOE's sampling unit (PSU): households of one unit share neighbourhood-level drivers, so the second is the more demanding estimate."
+pd.concat([T("robustness_cv", arm).assign(arm=ARM_LABEL[arm]) for arm in ARMS]).round(4)
+```
+
+# Held-out evaluation {#sec-evaluation}
+
+```{python}
+#| label: tbl-heldout
+#| tbl-cap: "Held-out metrics on the metro households (weighted), with 95% household-bootstrap intervals where given."
+rows = []
+for arm in ARMS:
+    m = T("test_metrics", arm).iloc[0]
+    u = T("test_uncertainty", arm).set_index("metric")
+    for metric in ("weighted_log_loss", "weighted_roc_auc", "weighted_brier_score", "weighted_accuracy", "weighted_balanced_accuracy", "observed_rate", "predicted_rate", "calibration_gap_pp", "ece", "calibration_slope"):
+        interval = f"{u.loc[metric, 'ci_low']:.4f} – {u.loc[metric, 'ci_high']:.4f}" if metric in u.index else ""
+        rows.append({"arm": ARM_LABEL[arm], "metric": metric, "estimate": round(float(m[metric]), 4), "95% interval": interval})
+    rows.append({"arm": ARM_LABEL[arm], "metric": "improvement over the marginal", "estimate": round(u.loc["relative_improvement_over_marginal", "estimate"], 4), "95% interval": ""})
+pd.DataFrame(rows)
+```
+
+```{python}
+#| label: fig-reliability
+#| fig-cap: "Held-out reliability of P(informal): observed rate against the mean predicted probability in ten bins (marker area ∝ workers). The dashed diagonal is perfect calibration."
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ax.plot([0, 1], [0, 1], ls="--", lw=1, color=MUTED)
+for arm, color in zip(ARMS, SLOTS):
+    curve = T("reliability", arm)
+    curve = curve[curve["class"] == "informal"]
+    ax.plot(curve["predicted_probability"], curve["observed_rate"], lw=2, color=color, label=ARM_LABEL[arm])
+    ax.scatter(curve["predicted_probability"], curve["observed_rate"], s=np.clip(curve["sample_workers"] / 4, 10, 200), color=color, edgecolor="white", linewidth=1.5, zorder=3)
+ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_xlabel("predicted P(informal)"); ax.set_ylabel("observed rate"); ax.legend(loc="upper left", fontsize=8)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: isotonic
+iso = pd.concat([T("isotonic", arm).assign(arm=ARM_LABEL[arm]) for arm in ARMS])
+display(Markdown(
+    "Isotonic recalibration (maps learned from out-of-fold probabilities on the training households) is evaluated on the "
+    f"same held-out rows. It ships only with `evaluation.isotonic.ship: {str(SPEC.evaluation['isotonic']['ship']).lower()}`."
+))
+display(iso[["arm", "probabilities", "weighted_log_loss", "mean_ece"]].round(4))
+```
+
+## On the profile of the EOD workers without education
+
+```{python}
+#| label: tbl-target-profile
+#| tbl-cap: "Held-out metrics of each arm under the survey weights and with the held-out ENOE rows reweighted to the profile of the EOD workers without education: the rows the arm without education scores."
+profile = T("target_profile")
+profile["arm"] = profile["arm"].map(ARM_LABEL)
+profile[["weighting", "arm", "weighted_log_loss", "weighted_brier_score", "weighted_roc_auc", "observed_rate", "predicted_rate", "calibration_gap_pp", "ece"]].round(4)
+```
+
+# The imputation {#sec-imputation}
+
+```{python}
+#| label: imputation
+usage = T("model_usage").set_index("informalidad_model_used")
+by = C("by_upstream")
+display(Markdown(
+    "Both selected configurations are refitted on every ENOE worker. An EOD worker is scored under each sector, with "
+    "their own giro probabilities weighting the four scenarios; a reported giro is one sector with probability one. "
+    "A worker without a work trip on the survey day has no place of work. Such a worker is averaged over places of "
+    "work with P(lugar_trabajo | x, sector), from an auxiliary model fitted on ENOE within each sector scenario. Arms: "
+    + ", ".join(f"{fmt(usage.loc[arm, 'sample_rows'])} workers by the arm {ARM_LABEL[arm].lower()} ({pct(usage.loc[arm, 'weighted_share'])} weighted)" for arm in ARMS if arm in usage.index) + "."
+))
+```
+
+```{python}
+#| label: fig-sectors
+#| fig-cap: "Expected informality within each sector (Σ w P(s) P(I | x, s) / Σ w P(s)) and overall."
+fig, ax = plt.subplots(figsize=(9, 3.2))
+labels = [SECTOR_LABEL[s] for s in by["sector"]] + ["All workers"]
+values = list(by["expected_rate"] * 100) + [EXPECTED * 100]
+bars = ax.barh(labels, values, color=[SLOTS[0]] * len(by) + [SLOTS[1]], height=0.6)
+ax.bar_label(bars, fmt="%.1f", fontsize=8, color=INK, padding=3)
+ax.invert_yaxis(); ax.set_xlabel("expected informality (%)"); ax.grid(axis="y", visible=False)
+fig.tight_layout()
+plt.show()
+display(by.assign(expected_rate=lambda d: (d["expected_rate"] * 100).round(2)).round(0).rename(columns={"expected_rate": "expected rate (%)"}))
+```
+
+```{python}
+#| label: tbl-unsupported
+#| tbl-cap: "EOD values no ENOE training worker has (the arm with education's features): averaged over the supported levels."
+T("unsupported_levels", ARMS[0])
+```
+
+# Sensitivity {#sec-sensitivity}
+
+```{python}
+#| label: tbl-sensitivity
+#| tbl-cap: "The headline under the giro retrain's sensitivity scenarios, with every EOD worker without a work trip as home-based or mobile (an upper bound), and with the training shares in place of P(lugar_trabajo | x, sector)."
+cols = ["variant", "expected_rate", "difference_pp", "mean_probability_lugar_trabajo_marginalized"] + [c for c in headline if c.startswith("within_")]
+table = headline[cols].copy()
+table.iloc[:, 1:] = table.iloc[:, 1:].astype(float).round(4)
+table
+```
+
+```{python}
+#| label: shift
+shares = T("shares").set_index("class")
+display(Markdown(
+    f"{fmt(CHAIN_SUMMARY['marginalized_rows'].get('lugar_trabajo', 0))} EOD workers have no work trip. A second check "
+    "refits both arms on ENOE reweighted to the EOD workers' profile (density ratio on "
+    + ", ".join(f"`{f}`" for f in SPEC.evaluation["shift"]["profile"])
+    + f"). Scored alone (sector marginalized), that moves the expected rate from {pct(shares.loc['informal', 'imputed'], 2)} "
+    f"to {pct(shares.loc['informal', 'shift_weighted'], 2)}."
+))
+```
+
+# What the covariates identify {#sec-components}
+
+INEGI's informality has two parts. **Informal-sector employment** covers units without registration, paid domestic
+work and subsistence agriculture (ENOE `tue2` 5–7). The type and place of work largely decide it, and the EOD observes
+those through `lugar_trabajo`. **Unprotected employment in other units** means informal jobs inside registered
+businesses, essentially the lack of social security. It depends on the employment contract, which neither survey
+shares. Each part is refitted with the selected configurations.
+
+```{python}
+#| label: tbl-components
+#| tbl-cap: "Held-out performance per component (ENOE metro households) and the EOD's expected rate per component against ENOE's metro benchmark."
+held = T("components_heldout")
+held["arm"] = held["arm"].map(ARM_LABEL)
+display(held[["component", "arm", "observed_rate", "predicted_rate", "weighted_roc_auc", "weighted_log_loss", "ece"]].round(4))
+display(C("components").round(4))
+```
+
+# Why the EOD estimate is below ENOE's {#sec-gap}
+
+```{python}
+#| label: gap
+gap = C("gap_decomposition")
+gap_diag = C("gap_diagnostics").set_index("metric")["value"]
+display(Markdown(
+    "Direct standardization splits the gap between ENOE's metro benchmark and the EOD estimate into three parts: the "
+    "model's own bias on ENOE; the composition effect (the same model on ENOE workers reweighted to the EOD profile, with "
+    "the EOD's sector the most probable one); and a residual that standardization cannot reproduce (sector imputation, "
+    f"levels without ENOE support, education non-response). The reweighting rests on an effective sample of "
+    f"{fmt(gap_diag['effective_sample_size'])} of {fmt(gap_diag['rows'])} ENOE rows, so treat its steps as indicative."
+))
+display(gap.round(4))
+raking = C("raking")
+display(Markdown(
+    "The mirror image reweights the EOD workers to ENOE's metro profile on the shared covariates, including the place of "
+    f"work. The model then implies {pct(float(raking['rate'].iloc[1]), 2)} against ENOE's {pct(float(raking['rate'].iloc[2]), 2)}. "
+    "The remaining difference is model bias plus what the covariates do not capture."
+))
+display(raking.round(4))
+```
+
+# Provenance {#sec-provenance}
+
+```{python}
+#| label: provenance
+versions = SUMMARY["versions"]
+display(Markdown(
+    f"Bundle `{SUMMARY['bundle']['file']}`, sha256 `{SUMMARY['bundle']['sha256']}`; task spec hash `{SUMMARY['spec_hash'][:16]}…`. "
+    f"eodgdl {versions['eodgdl']}, scikit-learn {versions['sklearn']}, mxcensus {versions['training']['mxcensus']}; ENOE "
+    f"{', '.join(versions['training']['periods'])}; EOD survey files `{versions['survey'][:16]}…`. Timings (s): "
+    + ", ".join(f"{k} {v}" for k, v in SUMMARY["timings_s"].items()) + "."
+))
+```

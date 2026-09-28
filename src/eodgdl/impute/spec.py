@@ -143,7 +143,7 @@ class TaskSpec:
             "missing_values": self.missing_values,
             "arms": [{"name": arm.name, "features": list(arm.features), "requires": list(arm.requires)} for arm in self.arms],
             "auxiliary": {feature: {arm.name: self.auxiliary_predictors(feature, arm.name) for arm in self.arms} for feature in self.auxiliary},
-            "level_subsets": self.level_subsets,
+            **({"level_subsets": self.level_subsets} if self.level_subsets else {}),
         })
 
 

@@ -175,10 +175,13 @@ def _aggregate(values, weights, rows, n_rows, levels=None):
     return pd.DataFrame(out, columns=levels)
 
 
-def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=None, specs=None):
+def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=None, specs=None, upstream_outputs=None, options=None):
     """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
     ``bundles`` ({task: bundle}) overrides the tasks' bundle files, ``derive_functions`` ({name: fn}) the derive
-    registry and ``specs`` ({task: TaskSpec}) the task files. Returns a :class:`ChainResult`."""
+    registry and ``specs`` ({task: TaskSpec}) the task files. For sensitivity runs, ``upstream_outputs`` ({task: frame
+    with the source's keys and the task's output columns}) replaces a first-level task's scoring (e.g. a retrain
+    scenario), and ``options`` ({task: {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra
+    level subsets, or no auxiliary models (training shares instead). Returns a :class:`ChainResult`."""
     from .derive import get_derive
 
     chain = load_chain(chain) if isinstance(chain, str) else chain
@@ -234,8 +237,20 @@ def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=N
 
         spec, frame, bundle = specs[step.task], frames[step.task], bundles[step.task]
         classes = spec.class_slugs
-        if not step.uses:
-            scored = score_frame(spec, frame, bundle)
+        option = (options or {}).get(step.task, {})
+        if option.get("auxiliary") is False:
+            bundle = {**bundle, "auxiliary": {}}
+        subsets = {**spec.level_subsets, **option.get("level_subsets", {})} or None
+        if step.task in (upstream_outputs or {}):
+            _check(not step.uses, f"{chain.name}: only a task that uses no other can take given outputs")
+            given = upstream_outputs[step.task]
+            scored = frame[keys].merge(given, on=keys, how="left", validate="one_to_one")
+            _check(scored[spec.probability_columns].notna().all().all(), f"{chain.name}: the given {step.task} outputs miss rows")
+            scored.index = frame.index
+            conditional = scored[spec.probability_columns].to_numpy()[completions["row"].to_numpy()]
+            first = scored
+        elif not step.uses:
+            scored = score_frame(spec, frame, bundle, level_subsets=subsets)
             conditional = scored[spec.probability_columns].to_numpy()[completions["row"].to_numpy()]
             first = scored
         else:
@@ -255,7 +270,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=N
             expanded = frame.iloc[combos["row"].to_numpy()].reset_index(drop=True)
             for use in step.uses:
                 expanded[use.feature] = combos[use.feature].to_numpy()
-            scored_combos = score_frame(spec, expanded, bundle)
+            scored_combos = score_frame(spec, expanded, bundle, level_subsets=subsets)
             position = filled.merge(combos.reset_index(), on=list(filled.columns), how="left")["index"].to_numpy()
             conditional = scored_combos[spec.probability_columns].to_numpy()[position]
             first = scored_combos.iloc[combos.drop_duplicates("row").index].set_index(combos.drop_duplicates("row")["row"].to_numpy()).sort_index()

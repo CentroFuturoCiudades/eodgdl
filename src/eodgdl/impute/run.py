@@ -115,6 +115,30 @@ class RetrainResult:
     keys: list = field(default_factory=list)
 
 
+def component_spec(spec, name, config=None):
+    """The task with one of its ``evaluation.components`` as the target: the component's column (its ``classes``, else
+    the harmonized levels of that name, e.g. si / no), the same features and arms, prefix ``<name>``."""
+    import dataclasses
+
+    from .harmonize import load_harmonization
+
+    config = config or spec.evaluation.get("components", {}).get(name, {})
+    levels = config.get("classes") or load_harmonization("common")["levels"][name]
+    classes = {str(level): str(level) for level in levels}
+    return dataclasses.replace(spec, target_column=name, classes=classes, prefix=name, scores={})
+
+
+def _within_support(spec, target_rows, source_rows):
+    """``target_rows`` with the values of the task's ``level_subsets`` features that the source never holds (e.g. a
+    municipality the ENOE sample does not cover) set to the missing label, so a density ratio is not fitted on a level
+    one side lacks."""
+    target_rows = target_rows.copy()
+    for feature in spec.level_subsets:
+        outside = ~target_rows[feature].isin(set(source_rows[feature].dropna()))
+        target_rows.loc[outside, feature] = spec.missing_label
+    return target_rows
+
+
 def _selected_row(summary):
     row = summary.loc[summary["selected"]].iloc[0]
     return {"model": row["model"], "best_params": dict(row["best_params"]), "weighted_log_loss": float(row["weighted_log_loss"]),
@@ -139,6 +163,10 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     n_bins = ev.get("calibration_bins", 10)
     positive = ev.get("positive_class")
     ship_isotonic = ev.get("isotonic", {}).get("ship", False)
+    components = {name: component_spec(spec, name, config) for name, config in ev.get("components", {}).items()}
+    for name, component in components.items():
+        frame[component.target] = frame[name].astype("string")
+        frame[component.unknown_column] = frame[component.target].isna()
     known = ~frame[spec.unknown_column].astype(bool).to_numpy()          # training rows with an observed target
     unknown = rows[spec.unknown_column].astype(bool).to_numpy()          # scored rows to impute
     train, test = select.split_known(frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
@@ -184,6 +212,19 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
                             ("fold_losses", select.fold_table(tuning).rename_axis("model").reset_index())):
             tables[f"{name}__{arm.name}"] = table
 
+        if ev.get("robustness_groups"):
+            alternative = train[~train[spec.unknown_column].astype(bool)][ev["robustness_groups"]].astype("string").reset_index(drop=True)
+            robust = [fit for fold in select.grouped_splits(X, y, alternative, cv_splits=n_splits, random_state=seed)
+                      for fit in select.fit_fold(model, {}, None, X, y, w, *fold)]
+            tables[f"robustness_cv__{arm.name}"] = pd.DataFrame({"fold": range(n_splits), "household_grouped": selected[arm.name]["fold_log_losses"],
+                                                                 f"{ev['robustness_groups']}_grouped": [fit["log_loss"] for fit in robust]})
+        for name, component in components.items():
+            X_component, y_component, w_component, _, _ = training_data(component, train, features, weight, group)
+            component_model = clone(model).fit(X_component, y_component, classifier__sample_weight=w_component)
+            component_metrics = evaluate.evaluate_classifier(component_model, test, features, component.target, component.class_slugs, spec.numeric, weight_column=weight,
+                                                             missing_label=spec.missing_label, positive=ev["components"][name]["positive"], n_bins=n_bins)[0]
+            tables.setdefault("components_heldout", []).append(component_metrics.assign(component=name, arm=arm.name))
+
         started = time.perf_counter()
         final = refit(model, spec, frame, features, weight, group)
         if ship_isotonic:
@@ -197,11 +238,32 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         summary["arms"][arm.name] = {"selected": selected[arm.name], "test_metrics": test_metrics[arm.name],
                                      "test_uncertainty": uncertainty["estimate"].to_dict(), "isotonic": isotonic.set_index("probabilities").to_dict("index")}
 
+    if "components_heldout" in tables:
+        tables["components_heldout"] = pd.concat(tables["components_heldout"], ignore_index=True)
+    component_models = {name: {"classes": dict(component.classes), "positive": ev["components"][name]["positive"],
+                               "arms": {arm.name: refit(selected_models[arm.name], component, frame, list(arm.features), weight, group) for arm in spec.arms}}
+                        for name, component in components.items()}
+    if ev.get("target_profile"):
+        profile = ev["target_profile"]
+        target_rows = rows[unknown & spec.is_missing(rows, profile["missing"]).to_numpy()] if profile.get("missing") else rows[unknown]
+        reweighted_test, diagnostics = evaluate.reweight_to_target_profile(test, _within_support(spec, target_rows, frame[known]), profile["features"], weight, rows_weight,
+                                                                           spec.numeric, random_state=seed, missing_label=spec.missing_label)
+        evaluations = []
+        for weighting, data in (("training weights", test), ("reweighted to the scored rows' profile", reweighted_test)):
+            for arm in spec.arms:
+                metrics = evaluate.evaluate_classifier(selected_models[arm.name], data, list(arm.features), spec.target, spec.class_slugs, spec.numeric, weight_column=weight,
+                                                       missing_label=spec.missing_label, positive=positive, n_bins=n_bins)[0]
+                evaluations.append(metrics.assign(weighting=weighting, arm=arm.name))
+        tables["target_profile"] = pd.concat(evaluations, ignore_index=True)
+        tables["target_profile_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
+
     metadata = {
         "selected": selected, "test_metrics": test_metrics, "random_state": seed, "cv": cv, "isotonic_shipped": bool(ship_isotonic),
         "data_versions": {"training": source.versions, "scoring": target.versions}, "builders": {name: builder_config(spec, name) for name in spec.all_builders},
     }
     bundle = make_bundle(spec, arms, auxiliary, levels, metadata)
+    if component_models:
+        bundle["components"] = component_models
 
     started = time.perf_counter()
     scored = score_frame(spec, rows, bundle)
@@ -228,7 +290,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     scenarios = {}
     if "shift" in ev:
         started = time.perf_counter()
-        reweighted, diagnostics = evaluate.reweight_to_target_profile(frame[known], rows[unknown], ev["shift"]["profile"], weight, rows_weight, spec.numeric,
+        reweighted, diagnostics = evaluate.reweight_to_target_profile(frame[known], _within_support(spec, rows[unknown], frame[known]), ev["shift"]["profile"], weight, rows_weight, spec.numeric,
                                                                       random_state=seed, missing_label=spec.missing_label)
         shift_arms = {arm.name: refit(selected_models[arm.name], spec, reweighted, list(arm.features), weight, group) for arm in spec.arms}
         # the auxiliary models are the final ones: P(feature | x) is fitted on every training row, whatever its target

@@ -110,7 +110,14 @@ def main() -> None:
     imp_score = imp_sub.choices["score"]
     imp_score.add_argument("--bundle", default=None, help="Bundle file (default: the task's data file)")
     imp_score.add_argument("--out", default=None, help="Parquet file for the keys and output columns (default: output/impute/<task>_scores.parquet); for a chain, a directory")
+    imp_score.add_argument("--retrained", default=None, help="For a chain: take each task's bundle from <dir>/<task>/ when a retrain wrote one there")
     imp_sub.choices["retrain"].add_argument("--out", default=None, help="Directory (default: output/impute/<task>/)")
+    imp_eval = imp_sub.add_parser("evaluate", help="Diagnostics of a chain (its evaluation: section) with the bundles of the retrains under --retrained")
+    imp_eval.add_argument("chain", help="Chain (src/eodgdl/impute/chains/<chain>.yaml)")
+    imp_eval.add_argument("--data", default=None, help="Local data directory (else $EODGDL_DATA_DIR or fetch)")
+    imp_eval.add_argument("--refresh", action="store_true", help="Rebuild the cached feature frames")
+    imp_eval.add_argument("--retrained", default="output/impute", help="Directory of the retrains (<dir>/<task>/; default output/impute)")
+    imp_eval.add_argument("--out", default=None, help="Directory (default: output/impute/<chain>/); tables go to <out>/evaluation/")
     imp_cmp = imp_sub.choices["compare"]
     imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
     imp_cmp.add_argument("--seeds", type=int, nargs="+", default=[42], help="CV seeds (repeated CV; default 42)")
@@ -367,11 +374,25 @@ def _impute(args) -> int:
     context = Context(refresh=args.refresh)
     from eodgdl.impute.chain import CHAINS_DIR, load_chain, retrain_chain, run_chain, write_chain
 
+    if args.impute_cmd == "evaluate":
+        from eodgdl.impute.diagnostics import evaluate_chain, write_evaluation
+
+        tables, summary = evaluate_chain(args.chain, retrained=args.retrained, context=context)
+        out = write_evaluation(tables, summary, args.out or f"{args.retrained}/{args.chain}")
+        print(tables["headline"].round(4).to_string(index=False))
+        print(f"wrote {len(tables)} tables to {out}")
+        return 0
+
     if (CHAINS_DIR / f"{args.task}.yaml").exists() and args.impute_cmd in ("score", "retrain"):
         chain = load_chain(args.task)
         out = Path(args.out or f"output/impute/{chain.name}")
         if args.impute_cmd == "score":
-            result = run_chain(chain, context=context)
+            bundles = None
+            if args.retrained:
+                from eodgdl.impute.diagnostics import _bundle
+
+                bundles = {task: _bundle(task, args.retrained) for task in chain.tasks}
+            result = run_chain(chain, context=context, bundles=bundles)
             write_chain(result, out)
             print(f"{chain.name} ({chain.mode}, {chain.propagation}): {len(result.frame):,} rows, {len(result.completions):,} completions; wrote {out}")
         else:

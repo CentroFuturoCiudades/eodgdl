@@ -186,3 +186,22 @@ def test_undeclared_levels_fail_and_runs_are_written(chain_source, tmp_path):
     out = write_chain(result, tmp_path / "run")
     assert pd.read_parquet(out / "completions.parquet")["completion"].max() == 4
     assert set(pd.read_parquet(out / "scores.parquet").columns) >= set(T1.probability_columns + T2.probability_columns)
+
+
+def test_given_upstream_outputs_and_scoring_options(chain_source):
+    from eodgdl.impute.run import output_columns
+
+    context, bundles = chain_source
+    spec = chain(["t1", {"t2": {"uses": {"t1": {"as": "u1", "transform": U1}}}}])
+    scored = run_chain(spec, context=context, bundles=bundles, specs=SPECS)
+    given = scored.frame[["k"] + output_columns(T1, [])]
+    again = run_chain(spec, context=context, bundles=bundles, specs=SPECS, upstream_outputs={"t1": given})
+    pd.testing.assert_frame_equal(again.frame, scored.frame)                                      # its own scores given back
+    flipped = given.assign(**{T1.probability_columns[0]: given[T1.probability_columns[1]], T1.probability_columns[1]: given[T1.probability_columns[0]]})
+    moved = run_chain(spec, context=context, bundles=bundles, specs=SPECS, upstream_outputs={"t1": flipped})
+    assert not np.allclose(moved.frame[T2.probability_columns], scored.frame[T2.probability_columns])
+    # a level subset only changes what unsupported values average over: every x1 value has support, so nothing moves;
+    # without the auxiliary models (t2 has none) nothing moves either
+    for option in ({"level_subsets": {"x1": ["a0"]}}, {"auxiliary": False}):
+        other = run_chain(spec, context=context, bundles=bundles, specs=SPECS, options={"t2": option})
+        pd.testing.assert_frame_equal(other.frame, scored.frame)
