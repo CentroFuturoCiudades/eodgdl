@@ -486,9 +486,9 @@ requires-dist = [
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "mapclassify", marker = "extra == 'notebook'", specifier = ">=2.10" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
-    { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0" },
-    { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0" },
-    { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0" },
+    { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
+    { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
+    { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=3.0.0" },
     { name = "pandera", specifier = ">=0.29.0" },
@@ -1255,8 +1255,8 @@ wheels = [
 
 [[package]]
 name = "mxcensus"
-version = "0.2.0"
-source = { git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0#8f300520b6497485b66b1adcf7fb4dcbe0c12386" }
+version = "0.4.0"
+source = { git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0#cf7be37995728768eaafd0b4837f2a1a06016243" }
 dependencies = [
     { name = "chardet" },
     { name = "geopandas" },
