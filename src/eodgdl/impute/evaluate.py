@@ -287,3 +287,76 @@ def probabilistic_distribution(frame, prefix, classes, weight_column="ponderador
     distribution["weighted_share"] = distribution["weighted_population"] / distribution["weighted_population"].sum()
 
     return distribution
+
+
+# Isotonic recalibration (a diagnostic; shipped only when the task spec asks for it)
+class IsotonicCalibrated:
+    """A fitted pipeline whose class probabilities pass through one isotonic map per class (one-vs-rest) and are
+    renormalized. Exposes what scoring relies on (``named_steps``, ``predict_proba``, ``predict``,
+    ``training_level_shares_``), so marginalization calibrates every combination before averaging."""
+
+    def __init__(self, pipeline, calibrators):
+        self.pipeline = pipeline
+        self.calibrators = calibrators          # class -> fitted IsotonicRegression, in the pipeline's class order
+        if hasattr(pipeline, "training_level_shares_"):
+            self.training_level_shares_ = pipeline.training_level_shares_
+
+    @property
+    def named_steps(self):
+        return self.pipeline.named_steps
+
+    @property
+    def classes_(self):
+        return self.pipeline.named_steps["classifier"].classes_
+
+    def calibrate(self, raw):
+        calibrated = np.column_stack([self.calibrators[label].predict(raw[:, index]) for index, label in enumerate(self.classes_)])
+        calibrated = np.clip(calibrated, 0.0, 1.0)
+        totals = calibrated.sum(axis=1, keepdims=True)
+        return np.where(totals > 0, calibrated / np.where(totals > 0, totals, 1.0), raw)
+
+    def predict_proba(self, X):
+        return self.calibrate(self.pipeline.predict_proba(X))
+
+    def predict(self, X):
+        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+
+
+def out_of_fold_probabilities(model, X, y, sample_weights, splits):
+    """Each row's probabilities from a clone of ``model`` fitted on the other folds (households never shared)."""
+    from sklearn.base import clone
+
+    X = X.reset_index(drop=True); y = pd.Series(np.asarray(y)); w = pd.Series(np.asarray(sample_weights, dtype=float))
+    probabilities, classes = None, None
+    for train_index, validation_index in splits:
+        fold_model = clone(model).fit(X.iloc[train_index], y.iloc[train_index], classifier__sample_weight=w.iloc[train_index])
+        fold_classes = fold_model.named_steps["classifier"].classes_
+        if probabilities is None:
+            classes = fold_classes
+            probabilities = np.full((len(X), len(classes)), np.nan)
+        assert list(fold_classes) == list(classes), "a fold is missing a class"
+        probabilities[validation_index] = fold_model.predict_proba(X.iloc[validation_index])
+    assert not np.isnan(probabilities).any()
+    return probabilities, classes
+
+
+def fit_isotonic(fitted, unfitted, X, y, sample_weights, splits):
+    """:class:`IsotonicCalibrated` around ``fitted``, its maps learned from the out-of-fold probabilities of
+    ``unfitted`` (the same configuration) on ``X`` under ``splits``, so the maps are not optimistic."""
+    from sklearn.isotonic import IsotonicRegression
+
+    probabilities, classes = out_of_fold_probabilities(unfitted, X, y, sample_weights, splits)
+    y = np.asarray(y); w = np.asarray(sample_weights, dtype=float)
+    calibrators = {label: IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip").fit(probabilities[:, index], (y == label).astype(float), sample_weight=w)
+                   for index, label in enumerate(classes)}
+    return IsotonicCalibrated(fitted, calibrators)
+
+
+def multiclass_calibration_summary(y_true, probabilities, classes, sample_weights, n_bins=10):
+    """Weighted log loss and the population-weighted mean one-vs-rest ECE of a probability matrix."""
+    y = np.asarray(y_true); w = np.asarray(sample_weights, dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    eces = [calibration_metrics((y == label).astype(float), probabilities[:, index], w, n_bins=n_bins)["ece"] for index, label in enumerate(classes)]
+    shares = np.array([w[y == label].sum() for label in classes]) / w.sum()
+    return {"weighted_log_loss": float(log_loss(y, np.clip(probabilities, 1e-15, 1), labels=list(classes), sample_weight=w)),
+            "mean_ece": float(np.mean(eces)), "share_weighted_ece": float(np.dot(shares, eces))}

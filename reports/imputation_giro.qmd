@@ -1,0 +1,423 @@
+---
+title: "Economic activity (giro) imputation"
+subtitle: "How `eodgdl impute retrain giro` selects, evaluates and applies the model that fills in `giro_empresa` for the EOD workers who did not report it"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import json
+import os
+from pathlib import Path
+
+
+def _find_root() -> Path:
+    """Walk up from the working dir to the repository (the directory holding data/)."""
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        if (base / "data" / "IMEPLAN_Base_Viviendas_Master.csv").exists():
+            return base.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl repository.")
+
+
+ROOT = _find_root()
+os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
+OUT = Path(os.environ.get("EODGDL_IMPUTE_GIRO", ROOT / "output" / "impute" / "giro"))
+assert (OUT / "summary.json").exists(), f"No retrain at {OUT}: run `uv run eodgdl impute retrain giro --data data` first."
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+
+from eodgdl.impute.spec import load_task
+
+SPEC = load_task("giro")
+SUMMARY = json.loads((OUT / "summary.json").read_text(encoding="utf-8"))
+ARMS = [arm.name for arm in SPEC.arms]
+ARM_LABEL = {"with_education": "With education", "without_education": "Without education"}
+CLASSES = SPEC.class_slugs
+LABEL = {slug: label for label, slug in SPEC.classes.items()}
+
+
+def T(name, arm=None):
+    """An evaluation table of the retrain."""
+    return pd.read_parquet(OUT / "evaluation" / (f"{name}__{arm}.parquet" if arm else f"{name}.parquet"))
+
+
+def pct(x, digits=1):
+    return f"{100 * x:.{digits}f}%"
+
+
+def fmt(n):
+    return f"{int(n):,}"
+
+
+# The validated default categorical palette (dataviz skill), in fixed slot order: one slot per giro class; the first
+# two slots for any two-series comparison. Three hues sit below 3:1 on white: every chart has a table beside it.
+SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+CLASS_COLOR = dict(zip(CLASSES, SLOTS))
+INK, MUTED, GRID = "#1f1f1f", "#6b6b6b", "#e6e6e6"
+plt.rcParams.update({
+    "figure.dpi": 120, "font.size": 10, "axes.titlesize": 11, "axes.edgecolor": MUTED, "axes.labelcolor": INK,
+    "xtick.color": MUTED, "ytick.color": MUTED, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8, "axes.axisbelow": True, "legend.frameon": False,
+})
+
+scores = pd.read_parquet(OUT / "scores.parquet")
+scenarios = pd.read_parquet(OUT / "scenarios.parquet")
+P = SPEC.probability_columns
+imputed = scores[scores["giro_fue_imputado"]]
+assert len(scores) == SUMMARY["rows"] and int(scores["giro_fue_imputado"].sum()) == SUMMARY["unknown"]
+assert np.allclose(scores[P].sum(axis=1), 1.0, atol=1e-8)
+assert (scores.loc[~scores["giro_fue_imputado"], P].max(axis=1) == 1.0).all()          # observed rows are one-hot
+assert set(imputed["giro_model_used"]) <= set(ARMS)
+```
+
+A share of the survey's workers did not report the activity of the business they work for (`giro_empresa`). The
+imputation estimates
+
+$$P(G = g \mid X)$$
+
+for the survey's five answers (Comercio, Servicio, Educación, Industria, Gobierno/sector público). It keeps the whole
+probability vector. Downstream users collapse or relabel the five probabilities as they need.
+
+This report reads what the last retrain wrote to `output/impute/giro/` (`uv run eodgdl impute retrain giro`). It
+trains nothing. The task is defined in `src/eodgdl/impute/tasks/giro.yaml`: its classes, features, arms, candidate
+grid and evaluation settings.
+
+```{python}
+#| label: counts
+known, unknown = SUMMARY["known"], SUMMARY["unknown"]
+display(Markdown(
+    f"The survey has **{fmt(SUMMARY['rows'])} workers** (persons who worked last week). **{fmt(known)}** report their "
+    f"giro, and **{fmt(unknown)}** ({pct(unknown / SUMMARY['rows'])}) do not; the model imputes those."
+))
+```
+
+# Who reports a giro and who does not {#sec-profiles}
+
+The training population, workers with a reported giro, differs from the population the model is applied to. That
+difference motivates the covariate-shift check in @sec-sensitivity.
+
+```{python}
+#| label: fig-profiles
+#| fig-cap: "Weighted distribution of eight attributes among workers with a reported giro and workers without one."
+profiles = T("profiles")
+variables = list(dict.fromkeys(profiles["variable"]))
+fig, axes = plt.subplots(2, 4, figsize=(15, 7.5))
+for ax, variable in zip(axes.ravel(), variables):
+    rows = profiles[profiles["variable"] == variable]
+    y = np.arange(len(rows))
+    ax.barh(y - 0.2, rows["known_share"] * 100, height=0.38, color=SLOTS[0], label="Giro reported")
+    ax.barh(y + 0.2, rows["unknown_share"] * 100, height=0.38, color=SLOTS[1], label="Giro not reported")
+    ax.set_yticks(y, [str(label)[:22] for label in rows["category"]], fontsize=7.5)
+    ax.invert_yaxis(); ax.grid(axis="y", visible=False)
+    ax.set_title(variable.replace("_", " ")); ax.set_xlabel("weighted share (%)", fontsize=8)
+for ax in axes.ravel()[len(variables):]:
+    ax.axis("off")
+handles, labels = axes[0, 0].get_legend_handles_labels()
+fig.legend(handles, labels, loc="upper center", ncol=2, fontsize=9, bbox_to_anchor=(0.5, 1.0))
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+plt.show()
+```
+
+```{python}
+#| label: tbl-profile-gaps
+#| tbl-cap: "The largest gaps between the two populations (percentage points, not reported minus reported)."
+gaps = profiles.reindex(profiles["difference_pp"].abs().sort_values(ascending=False).index).head(12)
+gaps[["variable", "category", "known_share", "unknown_share", "difference_pp"]].assign(
+    known_share=lambda d: (d["known_share"] * 100).round(1), unknown_share=lambda d: (d["unknown_share"] * 100).round(1),
+    difference_pp=lambda d: d["difference_pp"].round(1)).rename(columns={"known_share": "reported (%)", "unknown_share": "not reported (%)"})
+```
+
+# Predictors and arms {#sec-arms}
+
+```{python}
+#| label: arms
+lines = []
+for arm in SPEC.arms:
+    requires = f", used when `{'`, `'.join(arm.requires)}` is observed" if arm.requires else ", used for every other worker"
+    lines.append(f"- **{ARM_LABEL[arm.name]}** ({len(arm.features)} features{requires}): " + ", ".join(f"`{f}`" for f in arm.features))
+display(Markdown(
+    "The model has two feature arms. A worker without a giro is scored by the first arm whose required covariates they "
+    "have. Education counts as unobserved when it is missing or answered " + ", ".join(f"'{v}'" for v in SPEC.missing_values["escolaridad"]) + ".\n\n" + "\n".join(lines)
+    + "\n\nBesides person and dwelling attributes, the arms use the work trip: destination type, mode, weekend work "
+    "travel and household vehicles. They also use the destination's ámbito and its DENUE establishment mix, taken from "
+    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder)."
+))
+```
+
+```{python}
+#| label: tbl-missingness
+#| tbl-cap: "Weighted share of workers with each feature unobserved, among workers with and without a reported giro."
+missing = T("missingness").assign(known_missing_share=lambda d: (d["known_missing_share"] * 100).round(2),
+                                  unknown_missing_share=lambda d: (d["unknown_missing_share"] * 100).round(2))
+missing[(missing["known_missing_share"] > 0) | (missing["unknown_missing_share"] > 0)].rename(
+    columns={"known_missing_share": "reported (%)", "unknown_missing_share": "not reported (%)"})
+```
+
+# Selection {#sec-selection}
+
+```{python}
+#| label: selection-intro
+cv = SPEC.selection["cv"]
+families = SPEC.selection["families"]
+total = sum(int(np.prod([len(v) for v in f["params"].values()])) for f in families.values())
+display(Markdown(
+    f"Workers with a reported giro are split by household ({cv['splits']} stratified groups, fold {cv['test_fold']} held out): "
+    f"**{fmt(SUMMARY['train_rows'])}** workers in {fmt(SUMMARY['train_groups'])} households train and "
+    f"**{fmt(SUMMARY['test_rows'])}** in {fmt(SUMMARY['test_groups'])} households are held out. Members of one dwelling "
+    f"never straddle the split. On the training rows, each arm tunes {len(families)} families under a {cv['splits']}-fold "
+    f"household-grouped CV with the survey's person weights: " + "; ".join(
+        f"**{name}** over " + ", ".join(f"`{k}` ∈ {v}" for k, v in f["params"].items()) for name, f in families.items())
+    + f". That is {total} configurations × {cv['splits']} folds per arm. Within each family, and then across families, "
+    "the simplest configuration whose paired fold difference to the best mean log loss is within one standard error is "
+    "kept."
+))
+```
+
+```{python}
+#| label: tbl-selection
+#| tbl-cap: "The best configuration of each family per arm: weighted CV log loss, paired difference to the best, and whether it was selected."
+rows = []
+for arm in ARMS:
+    table = T("selection", arm)
+    for _, r in table.iterrows():
+        rows.append({"arm": ARM_LABEL[arm], "family": r["model"], "parameters": ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in json.loads(r["best_params"]).items()),
+                     "CV log loss": round(r["weighted_log_loss"], 4), "Δ vs best": round(r["mean_diff_vs_best"], 4), "SE": round(r["se_diff_vs_best"], 4),
+                     "within 1 SE": bool(r["within_one_se"]), "selected": "✓" if r["selected"] else ""})
+pd.DataFrame(rows)
+```
+
+```{python}
+#| label: selected-text
+parts = []
+for arm in ARMS:
+    s = SUMMARY["arms"][arm]["selected"]
+    params = ", ".join(f"{k.removeprefix('classifier__')} {v}" for k, v in s["best_params"].items())
+    parts.append(f"{ARM_LABEL[arm].lower()}: **{s['model']}** ({params}), CV log loss {s['weighted_log_loss']:.4f}")
+display(Markdown("Selected, " + "; ".join(parts) + "."))
+```
+
+# Held-out evaluation {#sec-evaluation}
+
+The selected configuration of each arm, trained on the training households, is scored on the held-out households. The
+intervals resample households (500 bootstrap draws). The baseline is the constant predictor that outputs the weighted
+class shares.
+
+```{python}
+#| label: tbl-heldout
+#| tbl-cap: "Held-out metrics of each arm (weighted by the person weight), with 95% household-bootstrap intervals."
+rows = []
+for arm in ARMS:
+    u = T("test_uncertainty", arm).set_index("metric")
+    for metric in ("weighted_log_loss", "marginal_log_loss", "weighted_accuracy", "weighted_f1_macro"):
+        rows.append({"arm": ARM_LABEL[arm], "metric": metric, "estimate": round(u.loc[metric, "estimate"], 4),
+                     "95% interval": f"{u.loc[metric, 'ci_low']:.4f} – {u.loc[metric, 'ci_high']:.4f}"})
+    rows.append({"arm": ARM_LABEL[arm], "metric": "improvement over the marginal", "estimate": round(u.loc["relative_improvement_over_marginal", "estimate"], 4), "95% interval": ""})
+pd.DataFrame(rows)
+```
+
+```{python}
+#| label: heldout-text
+a, b = (T("test_uncertainty", arm).set_index("metric")["estimate"] for arm in ARMS)
+cm = T("class_metrics", ARMS[0]).set_index("class")
+rare = cm["recall"].idxmin()
+dist = T("test_distribution", ARMS[0]).set_index("class")
+hard_gap = (dist["hard_predicted_share"] - dist["observed_share"]).abs().max() * 100
+prob_gap = (dist["probabilistic_predicted_share"] - dist["observed_share"]).abs().max() * 100
+display(Markdown(
+    f"With education, the weighted log loss is {a['weighted_log_loss']:.4f}, {pct(a['relative_improvement_over_marginal'])} below "
+    f"the marginal baseline ({a['marginal_log_loss']:.4f}), at a weighted accuracy of {pct(a['weighted_accuracy'])}. Without "
+    f"education it is {b['weighted_log_loss']:.4f} ({pct(b['relative_improvement_over_marginal'])} below the baseline). That arm "
+    f"is a reasonable fallback for the workers whose education is unobserved. Accuracy is uneven across classes: "
+    f"{LABEL[rare]} (recall {pct(cm.loc[rare, 'recall'])}) is rarely the arg-max. Hard assignments distort the held-out "
+    f"composition by up to {hard_gap:.1f} pp, while summing the probabilities stays within {prob_gap:.1f} pp of the observed "
+    "shares. That is why the imputation keeps the whole probability vector and never hands a hard label to a downstream model."
+))
+```
+
+```{python}
+#| label: tbl-classes
+#| tbl-cap: "Per-class held-out metrics (weighted) and class shares: observed, arg-max and summed probabilities."
+rows = []
+for arm in ARMS:
+    cm = T("class_metrics", arm).set_index("class")
+    dist = T("test_distribution", arm).set_index("class")
+    for slug in CLASSES:
+        rows.append({"arm": ARM_LABEL[arm], "class": LABEL[slug], "precision": round(cm.loc[slug, "precision"], 3), "recall": round(cm.loc[slug, "recall"], 3),
+                     "F1": round(cm.loc[slug, "f1"], 3), "observed (%)": round(100 * dist.loc[slug, "observed_share"], 1),
+                     "arg-max (%)": round(100 * dist.loc[slug, "hard_predicted_share"], 1), "probabilities (%)": round(100 * dist.loc[slug, "probabilistic_predicted_share"], 1)})
+pd.DataFrame(rows)
+```
+
+## Calibration {#sec-calibration}
+
+The imputation is probabilistic, so what matters is whether the probabilities are honest. The check is one-vs-rest
+reliability of each class on the held-out households.
+
+```{python}
+#| label: fig-reliability
+#| fig-cap: "Held-out reliability per class: observed share against mean predicted probability, in ten probability bins (marker area ∝ workers in the bin). The dashed diagonal is perfect calibration."
+fig, axes = plt.subplots(1, len(CLASSES), figsize=(16, 3.8), sharex=True, sharey=True)
+for ax, slug in zip(axes, CLASSES):
+    ax.plot([0, 1], [0, 1], ls="--", lw=1, color=MUTED)
+    for arm, color in zip(ARMS, SLOTS):
+        curve = T("reliability", arm)
+        curve = curve[curve["class"] == slug]
+        ax.plot(curve["predicted_probability"], curve["observed_rate"], lw=2, color=color, label=ARM_LABEL[arm])
+        ax.scatter(curve["predicted_probability"], curve["observed_rate"], s=np.clip(curve["sample_workers"] / 4, 10, 200), color=color, edgecolor="white", linewidth=1.5, zorder=3)
+    ax.set_title(LABEL[slug]); ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_xlabel("predicted")
+axes[0].set_ylabel("observed"); axes[0].legend(loc="upper left", fontsize=8)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-calibration
+#| tbl-cap: "Calibration in the large per class on the held-out households: predicted minus observed share (pp), expected calibration error and calibration slope."
+rows = []
+for arm in ARMS:
+    for _, r in T("calibration", arm).iterrows():
+        rows.append({"arm": ARM_LABEL[arm], "class": LABEL[r["class"]], "observed (%)": round(100 * r["observed_share"], 2), "predicted (%)": round(100 * r["predicted_share"], 2),
+                     "gap (pp)": round(r["gap_pp"], 2), "ECE": round(r["ece"], 4), "slope": round(r["calibration_slope"], 3)})
+pd.DataFrame(rows)
+```
+
+```{python}
+#| label: isotonic
+rows = []
+for arm in ARMS:
+    for _, r in T("isotonic", arm).iterrows():
+        rows.append({"arm": ARM_LABEL[arm], "probabilities": r["probabilities"], "log loss": round(r["weighted_log_loss"], 4),
+                     "mean ECE": round(r["mean_ece"], 4), "share-weighted ECE": round(r["share_weighted_ece"], 4)})
+iso = pd.DataFrame(rows)
+display(Markdown(
+    "One isotonic map per class is learned from out-of-fold probabilities on the training households and applied to the "
+    "held-out ones. It is always evaluated and shipped only when the task says so "
+    f"(`evaluation.isotonic.ship: {str(SPEC.evaluation.get('isotonic', {}).get('ship', False)).lower()}`). The table "
+    "shows it trades log loss for calibration error."
+))
+display(iso)
+```
+
+# The imputation {#sec-imputation}
+
+```{python}
+#| label: imputation-text
+usage = T("model_usage").set_index("giro_model_used")
+marginalized = T("marginalized")
+n_marg = int(marginalized.loc[marginalized["features"] != "", "count"].sum())
+display(Markdown(
+    "Both selected configurations are refitted on every worker with a reported giro. Each worker without one is scored "
+    "by their arm: " + ", ".join(f"{fmt(usage.loc[arm, 'sample_rows'])} by the arm {ARM_LABEL[arm].lower()}" for arm in ARMS if arm in usage.index)
+    + ". A worker without a work trip on the survey day has no destination. Such a worker is averaged over destination "
+    "types with their own distribution P(destino | x), from an auxiliary model fitted on the workers who made one. Any "
+    "categorical value no training worker has is averaged over the levels that have training support, with their training "
+    f"shares. {fmt(n_marg)} imputed workers were marginalized over at least one feature; `giro_marginalized_features` "
+    "records which."
+))
+```
+
+```{python}
+#| label: tbl-marginalized
+#| tbl-cap: "Imputed workers by the features they were marginalized over."
+marginalized.assign(features=lambda d: d["features"].replace("", "(none)"))
+```
+
+```{python}
+#| label: tbl-unsupported
+#| tbl-cap: "Categorical values of workers without a giro that no worker with a reported giro has (the with-education arm's features)."
+T("unsupported_levels", ARMS[0]).assign(levels=lambda d: d["levels"].map(lambda v: ", ".join(json.loads(v)) if isinstance(v, str) and v.startswith("[") else v))
+```
+
+```{python}
+#| label: fig-shares
+#| fig-cap: "Weighted giro shares: workers with a reported giro, the imputed workers (summed probabilities), and every worker after imputation."
+shares = T("shares").set_index("class").reindex(CLASSES)
+series = [("observed_known", "Reported"), ("imputed", "Imputed (probabilities)"), ("final", "All workers")]
+fig, ax = plt.subplots(figsize=(10, 3.8))
+x = np.arange(len(CLASSES)); width = 0.26
+for i, (column, label) in enumerate(series):
+    bars = ax.bar(x + (i - 1) * width, shares[column] * 100, width=width - 0.02, color=SLOTS[i], label=label)
+    ax.bar_label(bars, fmt="%.1f", fontsize=7.5, color=INK, padding=1)
+ax.set_xticks(x, [LABEL[c] for c in CLASSES]); ax.set_ylabel("weighted share (%)"); ax.grid(axis="x", visible=False)
+ax.legend(fontsize=8)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: fig-confidence
+#| fig-cap: "Largest class probability of each imputed worker, by arm."
+fig, ax = plt.subplots(figsize=(10, 3.2))
+bins = np.linspace(0.2, 1.0, 33)
+for arm, color in zip(ARMS, SLOTS):
+    values = imputed.loc[imputed["giro_model_used"] == arm, "giro_prediction_confidence"]
+    ax.hist(values, bins=bins, histtype="step", lw=2, color=color, label=f"{ARM_LABEL[arm]} ({fmt(len(values))})")
+ax.set_xlabel("largest class probability"); ax.set_ylabel("imputed workers"); ax.legend(fontsize=8)
+fig.tight_layout()
+plt.show()
+display(T("confidence").round(3))
+```
+
+# Sensitivity {#sec-sensitivity}
+
+```{python}
+#| label: sensitivity-text
+diag = T("shift_diagnostics").set_index("metric")["value"]
+delta_class = SPEC.evaluation["delta"]["class"]
+display(Markdown(
+    "The model is validated on workers with a reported giro and applied to those without one, who differ (@sec-profiles). "
+    "There are two checks. **Shift-weighted**: the selected configurations are refitted on the reported-giro workers, "
+    "reweighted to the unreported profile by density-ratio weights on " + ", ".join(f"`{f}`" for f in SPEC.evaluation["shift"]["profile"])
+    + f" (effective sample size {fmt(diag['effective_sample_size'])} of {fmt(diag['rows'])}; the top decile of odds ratios "
+    f"carries {pct(diag['top_decile_weight_share'])} of the weight). The auxiliary destination models are the final ones "
+    "(until 2026-09-28 this scenario averaged workers without a work trip over global destination shares). "
+    f"**Delta-adjusted**: the imputed probability of {LABEL[delta_class]} is scaled by {SUMMARY['delta_factor']:.3f} so its "
+    "imputed share equals its reported one, and the other classes are renormalized. Both scenarios are in `scenarios.parquet`."
+))
+```
+
+```{python}
+#| label: tbl-sensitivity
+#| tbl-cap: "Weighted giro shares among imputed workers under each scenario (%)."
+columns = {"observed_known": "reported", "imputed": "imputed", "shift_weighted": "shift-weighted", "delta_adjusted": "delta-adjusted"}
+table = (shares[list(columns)] * 100).round(2).rename(columns=columns)
+table.index = [LABEL[c] for c in table.index]
+table
+```
+
+# Provenance {#sec-provenance}
+
+```{python}
+#| label: provenance
+versions = SUMMARY["versions"]
+display(Markdown(
+    f"Bundle `{SUMMARY['bundle']['file']}`, sha256 `{SUMMARY['bundle']['sha256']}`; task spec hash `{SUMMARY['spec_hash'][:16]}…`. "
+    f"eodgdl {versions['eodgdl']}, scikit-learn {versions['sklearn']}; survey files `{versions['survey'][:16]}…`, loader "
+    f"`{versions['eod_loader'][:16]}…`, feature frame `{versions['features'][:16]}…`. Timings (s): "
+    + ", ".join(f"{k} {v}" for k, v in SUMMARY["timings_s"].items()) + ". To ship the bundle, copy it to `data/`, update "
+    "its sha256 in `src/eodgdl/data/registry.txt` and cut a release (`REF`)."
+))
+```

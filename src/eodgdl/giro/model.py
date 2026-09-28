@@ -168,16 +168,18 @@ def calculate_probabilistic_distribution(od, weight_column="ponderador"):
 
 
 # Sensitivity of the imputation to the covariate shift between known- and unknown-giro workers
-def impute_under_covariate_shift(model_with_education, model_without_education, od, with_education_features=SECTOR_FEATURES, without_education_features=ROBUST_SECTOR_FEATURES, profile_features=SHIFT_PROFILE_FEATURES, weight_column="ponderador"):
+def impute_under_covariate_shift(model_with_education, model_without_education, od, with_education_features=SECTOR_FEATURES, without_education_features=ROBUST_SECTOR_FEATURES, profile_features=SHIFT_PROFILE_FEATURES, weight_column="ponderador", destination_models=None):
     """Re-impute after refitting the selected models on known-giro rows reweighted to the unknown-giro profile.
-    Returns ``(od_imputed_under_shift, diagnostics)``."""
+    ``destination_models`` (the final auxiliary models) marginalize the workers without a work trip as in the
+    imputation itself; without them they are averaged over the global destination shares. Returns
+    ``(od_imputed_under_shift, diagnostics)``."""
     known, unknown = od[~od["giro_desconocido"]], od[od["giro_desconocido"]]
     reweighted_known, diagnostics = reweight_to_target_profile(known, unknown, profile_features, weight_column, weight_column)
     shifted = pd.concat([reweighted_known, unknown]).sort_index()
     shift_with, _ = refit_model(model_with_education, shifted, features=with_education_features, weight_column=weight_column)
     shift_without, _ = refit_model(model_without_education, shifted, features=without_education_features, weight_column=weight_column)
 
-    return impute_giro(shift_with, shift_without, od, with_education_features=with_education_features, without_education_features=without_education_features), diagnostics
+    return impute_giro(shift_with, shift_without, od, with_education_features=with_education_features, without_education_features=without_education_features, destination_models=destination_models), diagnostics
 
 
 def adjust_imputed_share(od_imputed, giro, target_share=None, weight_column="ponderador"):

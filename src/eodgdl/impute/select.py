@@ -186,3 +186,13 @@ def get_best_model(summary, best_models):
     name = summary.loc[summary["selected"], "model"].iloc[0]
 
     return name, best_models[name]
+
+
+def split_known(frame, target, group, unknown_column, n_splits=5, test_fold=0, random_state=42):
+    """Household-grouped, stratified split of the rows with an observed target into training and held-out rows
+    (fold ``test_fold`` of ``n_splits``)."""
+    known = frame[~frame[unknown_column].astype(bool)].reset_index(drop=True)
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    train_index, test_index = list(splitter.split(known, known[target], groups=known[group].astype("string")))[test_fold]
+
+    return known.iloc[train_index].copy(), known.iloc[test_index].copy()

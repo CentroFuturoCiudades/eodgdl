@@ -161,7 +161,18 @@ workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the data
 workers[giro.OUTPUT_COLUMNS].head()
 ```
 
-The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`)
-is trained and evaluated in `notebooks/giro_model.ipynb` (household-grouped cross-validation, one-standard-error
-model selection, calibration, covariate-shift sensitivity); after retraining, update its sha256 in
-`src/eodgdl/data/registry.txt`.
+The model runs on `eodgdl.impute`, the package's imputation engine: the task is defined in
+`src/eodgdl/impute/tasks/giro.yaml` (classes, features, arms, candidate grid, evaluation settings), and the engine
+scores, compares and retrains it:
+
+```bash
+uv run eodgdl impute score giro --data data             # the fitted bundle's probabilities -> output/impute/giro_scores.parquet
+uv run eodgdl impute compare giro --spec candidates.yaml  # feature specifications at the published winner's hyperparameters, paired folds
+uv run eodgdl impute retrain giro --data data           # grouped-CV selection, held-out evaluation, refit -> output/impute/giro/
+quarto render reports/imputation_giro.qmd               # the retrain's evaluation (reads output/impute/giro/, trains nothing)
+```
+
+The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`) is
+checked against the task on load (scikit-learn version, category levels, features). A retrain writes a new one to
+`output/impute/giro/`; to ship it, copy it to `data/` and update its sha256 in `src/eodgdl/data/registry.txt`. Feature
+frames are cached under the eodgdl cache directory (`--refresh` rebuilds).

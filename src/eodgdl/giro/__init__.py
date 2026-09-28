@@ -1,7 +1,7 @@
 """Imputation of the economic activity (``giro_empresa``) of EOD workers who did not report it.
 
 Optional extra ``eodgdl[giro]`` (scikit-learn, joblib, pyyaml, mxcensus). The model is trained within the survey
-on the workers with an observed giro (``notebooks/giro_model.ipynb``) and predicts the survey's five native levels
+on the workers with an observed giro (``eodgdl impute retrain giro``, evaluated in ``reports/imputation_giro.qmd``) and predicts the survey's five native levels
 (Comercio, Servicio, Educación, Industria, Gobierno/sector público) from raw survey columns, the work-trip
 destination and mode, and the destination's DENUE establishment mix (fetched through ``mxcensus``).
 

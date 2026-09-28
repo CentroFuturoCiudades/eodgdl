@@ -38,7 +38,7 @@ def make_bundle(spec, arms, auxiliary, category_levels, metadata):
 
 
 def from_legacy_giro(legacy, spec):
-    """The giro bundle as fitted by ``notebooks/giro_model.ipynb`` (keys ``model_with_education``,
+    """The giro bundle as fitted by the retired giro notebook (keys ``model_with_education``,
     ``features_with_education``, ``destination_models``, ...) as a v2 bundle. Its arm features and category levels
     are checked against ``spec`` by :func:`check_bundle`; the hashes it lacks are filled from ``spec`` only after
     those checks pass, and ``metadata["converted_from"]`` says so."""

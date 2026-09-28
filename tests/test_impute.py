@@ -259,3 +259,79 @@ def test_spec_validation():
         parse_task({**base, "target": {"column": "y", "classes": {"A": "a", "B": "a"}}})
     assert parse_task(base).scoring_hash() == spec.scoring_hash()
     assert parse_task({**base, "missing_values": {"u": ["?"]}}).scoring_hash() != spec.scoring_hash()
+
+
+SYNTHETIC_TASK = {
+    "task": "synthetic", "source": "test.labelled", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
+    "features": {"groups": {"core": ["a", "b", "c"]}, "numeric": ["c"]},
+    "levels": {"declared": {"a": ["a0", "a1", "a2", "a3"], "b": ["b0", "b1", "b2", "?"]}},
+    "missing_values": {"b": ["?"]},
+    "arms": {"with_b": {"features": ["core"], "requires": ["b"]}, "without_b": {"features": ["core"], "exclude": ["b"]}},
+    "auxiliary": {"a": {"exclude": ["a"]}},
+    "selection": {"cv": {"splits": 3, "seed": 42, "test_fold": 0}, "families": {
+        "LogisticRegression": {"max_iter": 500, "params": {"C": [1.0]}},
+        "GradientBoosting": {"native_categoricals": True, "early_stopping": False, "params": {"max_iter": [5, 10]}}}},
+    "evaluation": {"bootstrap": 10, "calibration_bins": 5, "profiles": ["a", "b"], "shift": {"profile": ["a", "c"]}, "delta": {"class": "z"}, "isotonic": {"ship": False}},
+}
+
+
+@pytest.fixture
+def labelled_source(monkeypatch):
+    from eodgdl.impute import sources
+
+    def build(context, config):
+        frame = synthetic(n=450, seed=3)
+        frame["label"] = frame["y"].str.upper().where(np.arange(len(frame)) % 5 != 0)   # every fifth row unknown
+        frame.loc[frame.index % 7 == 0, "b"] = "?"                                       # unobserved b: the second arm
+        frame.loc[frame.index % 11 == 0, "a"] = MISSING                                  # unobserved a: marginalized with P(a | x)
+        return sources.SourceFrame(frame, ["g", "k"], "w", "g", {"data": "v1"}, None)
+
+    def build_with_key(context, config):
+        result = build(context, config)
+        result.frame["k"] = np.arange(len(result.frame))
+        return result
+
+    monkeypatch.setitem(sources._SOURCES, "test.labelled", sources.Source("test.labelled", build_with_key, {"keys": ["g", "k"], "weight": "w", "group": "g"},
+                                                                        lambda context, config: {"data": "v1"}, lambda column: [], __file__))
+
+
+def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path):
+    from eodgdl.impute import bundle as bundles, run, sources
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    context = sources.Context(cache_dir=tmp_path / "cache")
+    result = run.retrain(spec, context=context, n_jobs=1, progress=False)
+    assert set(result.bundle["arms"]) == {"with_b", "without_b"} and set(result.bundle["auxiliary"]["with_b"]) == {"a"}
+    scored = result.scored
+    assert scored["synthetic_fue_imputado"].sum() == 90
+    assert set(scored.loc[scored["synthetic_fue_imputado"], "synthetic_model_used"]) == {"with_b", "without_b"}
+    assert scored["synthetic_marginalized_features"].str.contains("a").any()
+    assert set(result.scenarios) == {"shift_weighted", "delta_adjusted"}
+    assert {"selection__with_b", "isotonic__without_b", "shares", "profiles", "unsupported_levels__with_b"} <= set(result.tables)
+
+    path, digest = run.write_retrain(result, tmp_path / "out")
+    assert (tmp_path / "out" / "scores.parquet").exists() and (tmp_path / "out" / "evaluation" / "reliability__with_b.parquet").exists()
+    reloaded = run.score_frame(spec, result.scored.drop(columns=run.output_columns(spec, [])), bundles.load_bundle(spec, path))
+    pd.testing.assert_frame_equal(reloaded, scored)
+
+    shipped = run.retrain(parse_task({**SYNTHETIC_TASK, "evaluation": {**SYNTHETIC_TASK["evaluation"], "isotonic": {"ship": True}}}), context=context, n_jobs=1, progress=False)
+    assert type(shipped.bundle["arms"]["with_b"]["model"]).__name__ == "IsotonicCalibrated"
+    np.testing.assert_allclose(shipped.scored[spec.probability_columns].sum(axis=1), 1.0)
+
+
+def test_compare_pairs_candidates_with_the_baseline(labelled_source, tmp_path):
+    from eodgdl.impute import run, sources
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    context = sources.Context(cache_dir=tmp_path / "cache")
+    bundle = run.retrain(spec, context=context, n_jobs=1, progress=False).bundle
+    folds, paired = run.compare(spec, {"same": {}, "no_c": {"arms": {"with_b": {"features": ["a", "b"], "requires": ["b"]}}}},
+                                seeds=(1, 2), bundle=bundle, context=context, n_jobs=1, progress=False)
+    assert len(folds) == 3 * 2 * 2 * 3                       # candidates x arms x seeds x folds
+    same = paired[paired["candidate"] == "same"]
+    assert (same["mean_difference"] == 0).all()
+    dropped = paired[(paired["candidate"] == "no_c") & (paired["arm"] == "with_b")]
+    assert (dropped["mean_difference"] != 0).all()
+    assert (paired[(paired["candidate"] == "no_c") & (paired["arm"] == "without_b")]["mean_difference"] == 0).all()

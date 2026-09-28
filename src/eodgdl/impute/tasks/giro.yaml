@@ -80,6 +80,11 @@ selection:
 evaluation:
   bootstrap: 500
   calibration_bins: 10
+  # Weighted profiles of the rows with and without an observed giro (the training population vs the imputed one).
+  profiles: [sexo_nacimiento, ocupacion, escolaridad, municipio, estado_civil, parentesco, personas_en_vivienda, n_autos_camionetas]
+  # Isotonic recalibration on out-of-fold probabilities: always evaluated on the held-out rows; shipped in the bundle
+  # only with `ship: true`.
+  isotonic: {ship: false}
   # Covariate-shift sensitivity: the known-giro workers reweighted to the unknown-giro profile (education excluded).
   shift:
     profile: [sexo_nacimiento, edad, municipio, estado_civil, parentesco, personas_en_vivienda, ocupacion, trabajo_semana_pasada]
