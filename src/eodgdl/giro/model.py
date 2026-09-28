@@ -121,31 +121,85 @@ def build_models(features=SECTOR_FEATURES, random_state=42, native_categoricals=
     }
 
 
-def tune_models(X, y, sample_weights, groups, features=SECTOR_FEATURES, cv_splits=5, random_state=42):
+def _fold_metrics(y, weights, predictions, probabilities, classes):
+    probabilities = normalize_predicted_probabilities(probabilities)
+    return {
+        "log_loss": log_loss(y, probabilities, labels=classes, sample_weight=weights),
+        "balanced_accuracy": balanced_accuracy_score(y, predictions, sample_weight=weights),
+        "accuracy": accuracy_score(y, predictions, sample_weight=weights),
+        "f1_macro": f1_score(y, predictions, average="macro", sample_weight=weights, zero_division=0),
+    }
+
+
+def _fit_fold(model, params, stages, X, y, sample_weights, train_index, validation_index):
+    """Fit one configuration on one fold, single-threaded, and score it on the fold's validation rows. With ``stages``
+    (a boosting chain fitted to the largest ``max_iter``), score it at every ``max_iter`` in ``stages`` instead:
+    without early stopping, the first n iterations of the chain are the model fitted with ``max_iter=n``."""
+    from threadpoolctl import threadpool_limits
+
+    with threadpool_limits(limits=1):
+        model = clone(model).set_params(**params)
+        if isinstance(model.named_steps["classifier"], RandomForestClassifier):
+            model.set_params(classifier__n_jobs=1)
+        model.fit(X.iloc[train_index], y.iloc[train_index], classifier__sample_weight=sample_weights.iloc[train_index])
+        X_validation, y_validation, w_validation = X.iloc[validation_index], y.iloc[validation_index], sample_weights.iloc[validation_index]
+        classifier = model.named_steps["classifier"]
+        if not stages:
+            return [_fold_metrics(y_validation, w_validation, model.predict(X_validation), model.predict_proba(X_validation), classifier.classes_)]
+        transformed = model[:-1].transform(X_validation)
+        staged = zip(classifier.staged_predict(transformed), classifier.staged_predict_proba(transformed))
+        return [_fold_metrics(y_validation, w_validation, predictions, probabilities, classifier.classes_)
+                for n, (predictions, probabilities) in enumerate(staged, start=1) if n in stages]
+
+
+def _cv_tasks(models):
+    """The fits of a grid search, per fold: one per configuration, except that a boosting grid over ``max_iter`` becomes one chain per setting of
+    the other parameters, scored at every ``max_iter``. Yields ``(family, fit_params, scored_params)``."""
+    for name, config in models.items():
+        grid = list(ParameterGrid(config["params"]))
+        stages = config["params"].get("classifier__max_iter")
+        if stages is None or not isinstance(config["model"].named_steps["classifier"], HistGradientBoostingClassifier):
+            for params in grid:
+                yield name, params, [params]
+            continue
+        chains = {}
+        for params in grid:
+            rest = tuple(sorted((key, value) for key, value in params.items() if key != "classifier__max_iter"))
+            chains.setdefault(rest, []).append(params)
+        for members in chains.values():
+            members = sorted(members, key=lambda params: params["classifier__max_iter"])
+            yield name, members[-1], members
+
+
+def tune_models(X, y, sample_weights, groups, features=SECTOR_FEATURES, cv_splits=5, random_state=42, n_jobs=-1):
     """Grid search of every family under a household-grouped stratified CV with weighted metrics; within each family
     and then across families the simplest configuration within one standard error of the best is selected.
+    Every (configuration, fold) fit runs in parallel over ``n_jobs`` single-threaded workers, and each boosting grid
+    over ``max_iter`` is fitted once per fold, to its largest value, and scored at every stage in the grid.
     Returns ``(summary, best_models)``; ``summary.attrs["grid_results"]`` holds every configuration."""
+    from joblib import Parallel, delayed
+    from tqdm.auto import tqdm
+
     X, y = X.reset_index(drop=True), y.reset_index(drop=True)
     sample_weights, groups = sample_weights.reset_index(drop=True), groups.reset_index(drop=True)
     models = build_models(features=features, random_state=random_state)
     splits = list(StratifiedGroupKFold(n_splits=cv_splits, shuffle=True, random_state=random_state).split(X, y, groups=groups))
 
+    tasks = [(name, fit, scored, fold) for name, fit, scored in _cv_tasks(models) for fold in range(len(splits))]
+    jobs = (delayed(_fit_fold)(models[name]["model"], fit, [params["classifier__max_iter"] for params in scored] if len(scored) > 1 else None,
+                               X, y, sample_weights, *splits[fold]) for name, fit, scored, fold in tasks)
+    scores = {}
+    results = Parallel(n_jobs=n_jobs, return_as="generator")(jobs)
+    for (name, _, scored, fold), metrics in tqdm(zip(tasks, results), total=len(tasks), desc="grouped CV fits"):
+        for params, fold_metrics in zip(scored, metrics, strict=True):
+            scores.setdefault((name, repr(sorted(params.items()))), {})[fold] = fold_metrics
+
     model_results, grid_results, best_models = [], [], {}
     for model_name, model_config in models.items():
         family_results = []
         for params in ParameterGrid(model_config["params"]):
-            folds = {"log_loss": [], "balanced_accuracy": [], "accuracy": [], "f1_macro": []}
-            for train_index, validation_index in splits:
-                model = clone(model_config["model"]).set_params(**params)
-                model.fit(X.iloc[train_index], y.iloc[train_index], classifier__sample_weight=sample_weights.iloc[train_index])
-                X_validation, y_validation, w_validation = X.iloc[validation_index], y.iloc[validation_index], sample_weights.iloc[validation_index]
-                predictions = model.predict(X_validation)
-                probabilities = normalize_predicted_probabilities(model.predict_proba(X_validation))
-                classes = model.named_steps["classifier"].classes_
-                folds["log_loss"].append(log_loss(y_validation, probabilities, labels=classes, sample_weight=w_validation))
-                folds["balanced_accuracy"].append(balanced_accuracy_score(y_validation, predictions, sample_weight=w_validation))
-                folds["accuracy"].append(accuracy_score(y_validation, predictions, sample_weight=w_validation))
-                folds["f1_macro"].append(f1_score(y_validation, predictions, average="macro", sample_weight=w_validation, zero_division=0))
+            by_fold = scores[(model_name, repr(sorted(params.items())))]
+            folds = {metric: [by_fold[fold][metric] for fold in range(len(splits))] for metric in by_fold[0]}
             family_results.append({
                 "model": model_name,
                 "weighted_log_loss": np.mean(folds["log_loss"]), "weighted_log_loss_std": np.std(folds["log_loss"]),
