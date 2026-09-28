@@ -438,7 +438,7 @@ wheels = [
 
 [[package]]
 name = "eodgdl"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "geopandas" },
@@ -472,6 +472,9 @@ notebook = [
     { name = "mxcensus" },
     { name = "seaborn" },
 ]
+reweight = [
+    { name = "mxcensus" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -485,6 +488,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
     { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0" },
     { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0" },
+    { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.2.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=3.0.0" },
     { name = "pandera", specifier = ">=0.29.0" },
@@ -498,7 +502,7 @@ requires-dist = [
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13" },
     { name = "tqdm", specifier = ">=4.67" },
 ]
-provides-extras = ["notebook", "giro", "dev"]
+provides-extras = ["notebook", "reweight", "giro", "dev"]
 
 [[package]]
 name = "executing"

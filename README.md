@@ -26,15 +26,22 @@ tables:
 ## Zone system
 
 ```python
-from eodgdl import load_taz, load_mtaz, load_imeplan_agebs, load_zm_muns, zone_system_report
+from eodgdl import load_eod, load_taz, load_zm_muns, reweight
 
-taz = load_taz(drop_ap=True)                       # traffic-analysis zones
-mtaz = load_mtaz(taz, drop_ap=True)                # micro-zones, aligned to taz CRS
-agebs = load_imeplan_agebs(taz, drop_ap=True)      # AGEB → zone with census population
-zone_system_report(taz, mtaz)                       # diagnostics
+taz = load_taz(drop_ap=True)                       # the centralidad polygons the survey was fielded on
+
+# every census unit (urban AGEB, rural locality) in at most one zone: the polygons plus the
+# survey's own coding; needs the `reweight` extra (census data through mxcensus)
+tables = load_eod()
+units = reweight.assign_units(tables.viv, tables.trips)   # CVEGEO -> zone, rule, population
+zones = reweight.zone_shapes(units)                # the zones redrawn along AGEB edges
 ```
 
-Every loader fetches from the mirror by default and accepts a local path override.
+Every loader fetches from the mirror by default and accepts a local path override. An
+urban AGEB is never split: a sampled one takes the zone the survey coded there, an
+unsampled one takes the zone the survey coded for its trip ends, or else goes whole to the
+polygon holding most of its population. `reports/reweight_inputs.qmd`
+maps the result; `scripts/zone_system_map.py` writes the map and the redrawn zones.
 
 ## Travel-demand model schema
 
@@ -61,8 +68,10 @@ eodgdl tasha gaps                               # open items
 eodgdl tasha validate output/                   # produced CSVs vs. contract
 ```
 
-Zone columns carry the survey's own AGEB CVEGEO or locality id as a string, so the
-output joins straight to the census tables; read them back with `dtype=str`.
+Zone columns carry the survey's own zone id as a string — a 13-character urban AGEB CVEGEO, a
+9-character rural AGEB key (INEGI's rural AGEB, not a locality) or one of the 7 access points
+(`99999000x`) — and the zone system places every one of them (`eodgdl.reweight.zoning`); read
+them back with `dtype=str`.
 
 See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
 mapping-entry format, and the open items.
@@ -121,14 +130,14 @@ above. The 4 MB technical report (`Informe_Tecnico_Final_EOD_2023.pdf`) is inclu
 reference.
 
 A small number of manual data-entry corrections are applied by the loaders (encoded as
-documented constants in `eod.py`, `chains.py` and `taz.py`): three trip-mode fixes, two micro-zone
-population double-count adjustments, and three AGEB `MZONA` reassignments.
+documented constants in `eod.py`, `chains.py` and `reweight/zoning.py`): three trip-mode
+fixes and four rural localities placed in the zone the survey coded for their rural AGEB.
 
-The AGEB table also mixes locality rows with the AGEB rows that subdivide them, double-
-counting those localities' population. `load_imeplan_agebs` keeps whichever side partitions
-the locality more finely — the AGEBs where there is more than one, otherwise the locality —
-which drops three rows and makes the AGEB and micro-zone population totals reconcile
-exactly.
+IMEPLAN's AGEB-to-zone table (`RELACION_AGEBS-ZONA_con_datos_censales`) and micro-zones
+(`AMG_MicroZONAS2023`) are kept under `data/` as delivered but no longer loaded: neither was
+part of the survey design, and the table disagreed with the survey's own zone coding (it
+left La Aurora, Juanacatlán, whose 221 sampled dwellings the survey coded `49F`, in no
+zone). Zones are built from the census by `reweight.zoning` instead.
 
 ## Giro imputation model (`eodgdl[giro]`)
 

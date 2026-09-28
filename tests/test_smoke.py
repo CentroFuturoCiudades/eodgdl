@@ -23,46 +23,15 @@ def test_rename_map_bundled():
     assert all(isinstance(v, str) for table in m.values() for v in table.values())
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_load_eod_local():
+def test_load_eod_local(stages):
+    # the default load is the last of load_stages' three, table for table
     t = eodgdl.load_eod(DATA_DIR)
-    assert t.viv.shape[0] > 0
-    assert t.hab.shape[0] > 0
-    assert t.trips.shape[0] > 0
-    assert t.legs.shape[0] > 0
+    assert all(len(df) > 0 for df in t)
+    assert all(a.equals(b) for a, b in zip(t, stages.revised))
+    assert [len(s.trips) for s in stages] == [154_662, 154_662 - 38, len(t.trips)]
 
 
 @pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
 def test_load_taz_local():
     taz = eodgdl.load_taz(DATA_DIR / "AMG_Zonificacion_para_encuesta.parquet", drop_ap=True)
-    mtaz = eodgdl.load_mtaz(
-        taz, DATA_DIR / "AMG_MicroZONAS2023.parquet", drop_ap=True
-    )
-    assert len(taz) > 0
-    assert len(mtaz) > 0
-
-
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_ageb_populations_reconcile_with_microzones():
-    """The AGEB and micro-zone tables correct the same double-counts, so they must agree.
-
-    load_imeplan_agebs drops the coarser side of each locality/AGEB overlap;
-    load_mtaz subtracts the same populations from the micro-zone totals. If either
-    half is changed alone, the two stop reconciling.
-    """
-    taz = eodgdl.load_taz(DATA_DIR / "AMG_Zonificacion_para_encuesta.parquet")
-    mtaz = eodgdl.load_mtaz(taz, DATA_DIR / "AMG_MicroZONAS2023.parquet")
-    agebs = eodgdl.load_imeplan_agebs(
-        taz, DATA_DIR / "RELACION_AGEBS-ZONA_con_datos_censales.parquet"
-    )
-
-    per_mzona = agebs.groupby("MZONA").POBTOT.sum()
-    assert (per_mzona - mtaz.POBTOT.reindex(per_mzona.index)).abs().max() < 0.5
-    assert abs(agebs.POBTOT.sum() - mtaz.POBTOT.sum()) < 0.5
-
-    # No locality is represented twice, once whole and once by its AGEBs.
-    from eodgdl.taz import _locality_key
-
-    key = _locality_key(agebs)
-    is_loc = agebs.CVE_AGEB.isna()
-    assert not set(key[is_loc].dropna()) & set(key[~is_loc].dropna())
+    assert len(taz) == 64 and taz.index.is_unique

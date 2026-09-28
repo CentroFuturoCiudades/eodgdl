@@ -3,7 +3,8 @@
 Every coded column is built from ``mappings.yaml`` rather than from a lookup
 retyped here, so changing a mapping changes the output. What the mappings record
 as ``derivation`` prose — the R/C demotion, the passenger override, the
-work/school zone lookups — is implemented below, and the prose is its spec.
+work/school zone lookups, the daycare trips by age, H only at the household's
+zone — is implemented below, and the prose is its spec.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
@@ -27,11 +28,13 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from eodgdl.chains import non_trips
+from eodgdl.chains import DAYCARE, ESCORT_FROM_AGE, days_past_midnight, non_trips
 from eodgdl.tasha._schema import build_map, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
 NO_ZONE = "0"  # sentinel for EmploymentZone / SchoolZone
+# DAYCARE, ESCORT_FROM_AGE: a Guardería trip from this age on is an escort (PurposeDestination, StudentStatus);
+# load_eod's chain rules already recode it so (motivo:guarderia), and the build reads the age the same way
 
 
 class ODTables(NamedTuple):
@@ -48,12 +51,20 @@ def _household_ids(viv: pd.DataFrame) -> pd.Series:
     return pd.Series(range(len(viv)), index=viv.index, name="HouseholdId")
 
 
-def _purposes(trips: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """(destination purpose, first-trip origin purpose), before the R/C demotion."""
+def _purposes(trips: pd.DataFrame, viv: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """(destination purpose, first-trip origin purpose), before the R/C demotion.
+
+    Either is H only where the survey's answer maps to H and the trip end is the
+    household's zone: the first trip leaves from it (see PurposeOrigin's derivation),
+    a return home reaches it (see PurposeDestination's).
+    """
+    home = viv.ageb.astype(str).reindex(trips.index.get_level_values("folio_vivienda")).to_numpy()
     destination = (trips.motivo_viaje.map(build_map("PurposeDestination"))
                         .fillna(mapping("PurposeDestination")["default"]))
+    destination = destination.mask((destination == "H") & (trips.destino.astype(str).to_numpy() != home), "O")
     origin = (trips.tipo_lugar_origen.map(build_map("PurposeOrigin"))
                    .fillna(mapping("PurposeOrigin")["default"]))
+    origin = origin.mask((origin == "H") & (trips.origen.astype(str).to_numpy() != home), "O")
     return destination, origin
 
 
@@ -95,7 +106,9 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
         return (matching.groupby(level=PERSON).destino.first()
                         .reindex(hab.index).fillna(NO_ZONE).astype(str))
 
-    made_school_trip = (trips.motivo_viaje.isin(["Estudiar", "Guardería"])
+    age = hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
+    made_school_trip = (((trips.motivo_viaje == "Estudiar")
+                         | ((trips.motivo_viaje == DAYCARE) & (age < ESCORT_FROM_AGE)))
                              .groupby(level=PERSON).any()
                              .reindex(hab.index).fillna(False))
     student = ((hab.ocupacion == "Estudiante")
@@ -121,12 +134,18 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
     })
 
 
-def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
+def build_trips(
+    trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame, hab: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """od_trips.csv, one row per trip, in chain (folio_viaje) order.
+
+    ``hab`` gives the ages that tell a daycare trip (school) from an escort to one
+    (F); without it every Guardería trip keeps the lookup's S.
 
     The rows ``load_eod`` marked as non-trips (``eodgdl.chains.non_trips``) are
     left out; ``TripNumber`` is renumbered over them and over the gaps in
-    ``folio_viaje``.
+    ``folio_viaje``. ``StartTime`` counts past 2400 once the person's day has
+    passed midnight (``eodgdl.chains.days_past_midnight``).
     """
     untimed = int((trips.hora_inicio_h.isna() | trips.hora_inicio_m.isna()).sum())
     if untimed:
@@ -143,9 +162,12 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
     passenger = trips[override["source"]] == "Acompañante"
     mode = mode.mask(is_auto & passenger, override["values"]["Acompañante"])
 
-    # Purpose: the motivo_viaje lookup, then demote repeat work/school trips,
-    # ranked in chain order.
-    purpose, first_trip = _purposes(trips)
+    # Purpose: the motivo_viaje lookup, a daycare trip from ESCORT_FROM_AGE on as an
+    # escort, then demote repeat work/school trips, ranked in chain order.
+    purpose, first_trip = _purposes(trips, viv)
+    if hab is not None:
+        age = hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
+        purpose = purpose.mask((trips.motivo_viaje == DAYCARE).to_numpy() & (age >= ESCORT_FROM_AGE), "F")
     repeat = trips.assign(_p=purpose).groupby(PERSON + ["_p"]).cumcount() > 0
     destination = (purpose.mask((purpose == "W") & repeat, "R")
                           .mask((purpose == "S") & repeat, "C"))
@@ -163,7 +185,9 @@ def build_trips(trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame) -> p
         "PersonNumber": trips.index.get_level_values("folio_habitante"),
         # Renumbered over the non-trips left out and the gaps in folio_viaje.
         "TripNumber": trips.groupby(level=PERSON).cumcount().to_numpy() + 1,
-        "StartTime": (trips.hora_inicio_h * 100 + trips.hora_inicio_m).astype(int).to_numpy(),
+        # hhmm on the diary's day, past 2400 from the trip where the day passes midnight on
+        "StartTime": (trips.hora_inicio_h * 100 + trips.hora_inicio_m
+                      + 2400 * days_past_midnight(trips)).astype(int).to_numpy(),
         "Mode": mode.to_numpy(),
         "PurposeOrigin": origin.to_numpy(),
         "ZoneOrigin": trips.origen.astype(str).to_numpy(),
@@ -180,5 +204,5 @@ def build(tables) -> ODTables:
     return ODTables(
         build_households(viv, hab),
         build_people(hab, trips, viv),
-        build_trips(trips, legs, viv),
+        build_trips(trips, legs, viv, hab),
     )

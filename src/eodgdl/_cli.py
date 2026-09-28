@@ -40,18 +40,61 @@ def main() -> None:
 
     review_p = sub.add_parser("review", help="Review sheets: the trip chains pending a fix, to edit by hand")
     review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
-    exp_p = review_sub.add_parser("export", help="Write the chains pending a fix as a review sheet (CSV)")
+    exp_p = review_sub.add_parser(
+        "export", help="Write the chains pending a fix as a review sheet (CSV); the selections add up"
+    )
     exp_p.add_argument("--out", default="chain_review.csv", help="Where to write (default: chain_review.csv)")
     exp_p.add_argument(
         "--codes", default=None,
-        help="Comma-separated problemas codes; a person is exported if a row carries one (default: any code)",
+        help="Comma-separated problemas codes, or a group: breaking (the chain is inconsistent, "
+        "fix by hand) or tolerated; a person is exported if a row carries one (default, with no other "
+        "selection: any code)",
+    )
+    exp_p.add_argument("--persons", default=None, help="Comma-separated household/person, e.g. 8992/1,11303/2")
+    exp_p.add_argument(
+        "--screen", default=None,
+        help="Comma-separated screens of a consistent chain gone implausible (eodgdl.review.SCREENS): zero_stay (a "
+        "trip leaves the minute the previous one arrives), zero_work, short_work (under 30 min at work or school), "
+        "long_workday (over 14 h at work), long_day (over 20 h), early_start (a first non-work trip before 05:00), "
+        "long_errand (8 h or more at an errand), companion_apart (a start a household member reported alike, read "
+        "otherwise), companion_12h (a trip made with a household member, 12 h from theirs)",
+    )
+    exp_p.add_argument(
+        "--stale", action="store_true",
+        help="The persons with hand decisions a rule change left stale, each pre-filled for a new look",
+    )
+    exp_p.add_argument(
+        "--since", default=None,
+        help="A snapshot (`eodgdl review snapshot`): the persons whose values moved since it was taken",
     )
     exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
-    ver_p = review_sub.add_parser("verify", help="Read an edited sheet: recover the edits, apply them, recompute problemas")
-    ver_p.add_argument("sheet", help="The edited review sheet")
-    ver_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
-    ver_p.add_argument("--edits", default=None, help="Write the recovered edits to this CSV")
-    ver_p.add_argument("--out", default=None, help="Write the edited persons' sheet, after the edits, to this CSV")
+    snap_p = review_sub.add_parser(
+        "snapshot", help="Write every trip's values as load_eod() gives them, to compare after a rule change"
+    )
+    snap_p.add_argument("--out", required=True, help="Where to write (a .csv.gz)")
+    snap_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    for name, help_text in (
+        ("verify", "Check an edited sheet as freeze does and say what it would change, writing nothing"),
+        ("freeze", "Merge an edited sheet into the hand decisions load_eod applies (eodgdl/revisions/chains.csv.gz)"),
+    ):
+        frz_p = review_sub.add_parser(name, help=help_text)
+        frz_p.add_argument("sheet", help="The edited review sheet, exported from the tables load_eod() returns now")
+        frz_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+        frz_p.add_argument("--source", default=None, help="The review round's name on its decisions (default: the sheet's name)")
+        frz_p.add_argument("--dry-run", action="store_true", default=name == "verify",
+                           help="Check and report, write no decisions (what verify does)")
+        frz_p.add_argument("--edits", default=None, help="Write the edits recovered from the sheet to this CSV")
+        frz_p.add_argument("--sheet-out", default=None,
+                           help="Write the edited persons' sheet, after the edits, to this CSV")
+        frz_p.add_argument("--out", default=None, help="Where to write the decisions (default: eodgdl/revisions/chains.csv.gz)")
+
+    rew_p = sub.add_parser("reweight", help="Inputs for TMG.SurveyReweight: records, zone system, census targets")
+    rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
+    rb_p = rew_sub.add_parser("build", help="Build the record, zone and constraint files from the survey and the census")
+    rb_p.add_argument("--data", default=None, help="Local data directory (else fetch)")
+    rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
+    rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
+    rc_p.add_argument("directory", help="Directory holding the set")
 
     args = parser.parse_args()
 
@@ -79,6 +122,9 @@ def main() -> None:
 
     elif args.cmd == "review":
         raise SystemExit(_review(args))
+
+    elif args.cmd == "reweight":
+        raise SystemExit(_reweight(args))
 
 
 def _report(problems: list[str], ok_message: str) -> int:
@@ -154,33 +200,84 @@ def _tasha(args) -> int:
     return _report(tasha.validate_all(**frames), "conforms to model_schema.yaml")
 
 
+def _persons_arg(text: str, hab) -> list[tuple[int, int]]:
+    """``household/person,…`` as keys, each checked against ``hab``."""
+    persons = []
+    for part in text.split(","):
+        household, _, person = part.strip().partition("/")
+        key = (int(household), int(person))
+        if key not in hab.index:
+            raise ValueError(f"no person {household}/{person} in the survey")
+        persons.append(key)
+    return persons
+
+
 def _review(args) -> int:
+    from pathlib import Path
+
     import pandas as pd
 
-    from eodgdl import load_eod, review
-    from eodgdl.chains import ISSUE_CODES, PERSON, has_code
+    from eodgdl import load_stages, review
+    from eodgdl.chains import BREAKING_ISSUES, ISSUE_CODES, PERSON, has_code
 
-    shipped = load_eod(args.data, clean_chains=False)
-    cleaned = load_eod(args.data)
+    # the survey as shipped, after the rules and after the hand decisions, from one read; a decision a rule
+    # change left stale is set aside rather than stopping the tools that let a round decide it again
+    stages = load_stages(args.data, skip_stale=True)
+    shipped, rules, cleaned = stages
+    stale = review.stale_decisions(rules, shipped)
+    if len(stale):
+        print(f"{len(stale):,} hand decisions no longer apply to the rules' output (a rule changed under them) "
+              "and are set aside; `eodgdl review export --stale` puts them on a sheet\n")
+
+    if args.review_cmd == "snapshot":
+        path = review.write_snapshot(review.snapshot(cleaned, shipped), args.out)
+        print(f"wrote {path}  ({len(shipped.trips):,} trips); after the change: eodgdl review export --since {path}")
+        return 0
 
     if args.review_cmd == "export":
         rows = review.chain_rows(cleaned, shipped)
-        codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
-        persons = review.pending_persons(rows, codes)
-        sheet = review.chain_sheet(rows, cleaned.hab, persons)
+        try:
+            chosen = []
+            if args.codes or not (args.persons or args.screen or args.stale or args.since):
+                chosen += list(review.pending_persons(rows, [c.strip() for c in args.codes.split(",")] if args.codes else None))
+            if args.persons:
+                chosen += _persons_arg(args.persons, cleaned.hab)
+            if args.screen:
+                chosen += list(review.screened_persons(cleaned, [s.strip() for s in args.screen.split(",")], shipped))
+            if args.stale:
+                chosen += list(zip(stale.household.astype(int), stale.person.astype(int)))
+            if args.since:
+                moved = review.changed_persons(review.read_snapshot(args.since), review.snapshot(cleaned, shipped))
+                print(f"{len(moved):,} persons' values moved since {args.since}")
+                chosen += list(moved)
+        except ValueError as err:
+            print(err)
+            return 1
+        chosen = sorted(set(map(tuple, chosen)))
+        persons = pd.MultiIndex.from_arrays([[k[0] for k in chosen], [k[1] for k in chosen]], names=PERSON)
+        sheet = review.prefill_stale(review.chain_sheet(rows, cleaned.hab, persons), stale)
         path = review.write_sheet(sheet, args.out)
         print(f"wrote {path}  ({len(persons):,} persons, {len(sheet):,} rows)")
+        shown = stale[pd.MultiIndex.from_arrays([stale.household, stale.person]).isin(persons)]
+        if len(shown):
+            print(f"{len(shown):,} stale decisions written into their new … cells, with why in the note")
         print()
         selected = rows[rows.index.droplevel("folio_viaje").isin(persons)]
         counts = pd.DataFrame({
             "rows": {c: int(has_code(selected.problemas, c).sum()) for c in ISSUE_CODES},
             "persons": {c: int(has_code(selected.problemas, c).groupby(level=PERSON).any().sum()) for c in ISSUE_CODES},
         }).rename_axis("problemas")
-        print(counts.loc[counts["rows"] > 0].to_string())
+        counts["group"] = ["breaking" if c in BREAKING_ISSUES else "tolerated" for c in counts.index]
+        left = counts.loc[counts["rows"] > 0]
+        print(left.to_string() if len(left) else "no chain carries those codes")
+        picked = review.screens(cleaned, shipped).reindex(persons)
+        print("\nscreens over the persons exported: "
+              + ", ".join(f"{name} {int(picked[name].fillna(False).sum()):,}" for name in review.SCREENS))
         return 0
 
-    edited = review.read_sheet(args.sheet)
+    # verify and freeze: the same checks; verify (freeze --dry-run) writes no decisions
     try:
+        edited = review.read_sheet(args.sheet)
         edits = review.sheet_edits(edited)
     except ValueError as err:
         print(err)
@@ -189,22 +286,48 @@ def _review(args) -> int:
     if args.edits:
         edits.to_csv(args.edits, index=False, encoding="utf-8-sig")
         print(f"wrote {args.edits}")
-    if edits.empty:
-        return 0
     try:
-        verified = review.verify_edits(cleaned, shipped, edits)
+        done = review.freeze_round(edits, stages, args.source or Path(args.sheet).stem, shown=review.sheet_keys(edited))
     except ValueError as err:
         print(err)
-        return 1
-    print()
-    print(verified.persons.to_string(index=False))
-    print()
-    for key, value in verified.summary.items():
-        print(f"  {key:<26} {value:>7,}")
-    if args.out:
-        review.write_sheet(verified.sheet, args.out)
-        print(f"\nwrote {args.out}  ({len(verified.sheet):,} rows)")
+        return 0 if args.dry_run and str(err).startswith("nothing to freeze") else 1
+    change = done.changes
+    what = "would write" if args.dry_run else "wrote"
+    path = args.out or review.decisions_path()
+    if not args.dry_run:
+        review.write_decisions(done.decisions, path)
+    print(f"{what} {path}: {len(done.decisions):,} decisions ({change['added']:,} added, {change['changed']:,} "
+          f"changed, {change['removed']:,} removed, {change['notes']:,} with a new note) from {len(done.frozen):,} of "
+          f"the sheet's {len(edits):,} edits; the rest already held, were moot or were notes")
+    if len(done.stale):
+        print(f"{len(done.stale):,} stale decisions decided again or let go")
+    if len(done.dead):
+        print(f"{len(done.dead):,} decisions that no longer changed anything removed")
+    if done.verified is not None:
+        print()
+        print(done.verified.persons.to_string(index=False))
+        print()
+        for key, value in done.verified.summary.items():
+            print(f"  {key:<34} {value:>7,}")
+        if args.sheet_out:
+            review.write_sheet(done.verified.sheet, args.sheet_out)
+            print(f"\nwrote {args.sheet_out}  ({len(done.verified.sheet):,} rows)")
     return 0
+
+
+def _reweight(args) -> int:
+    from eodgdl import reweight
+
+    if args.reweight_cmd == "build":
+        from eodgdl import load_eod
+
+        files = reweight.build(load_eod(args.data), data_dir=args.data)
+        for path in reweight.write(files, args.out):
+            print(f"wrote {path}")
+        print()
+        return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
+
+    return _report(reweight.check(args.directory), "the set is loadable and every constraint is feasible")
 
 
 if __name__ == "__main__":

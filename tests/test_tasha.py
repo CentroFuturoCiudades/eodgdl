@@ -6,14 +6,14 @@ import pandas as pd
 import pytest
 
 import eodgdl
+from eodgdl.chains import PERSON, days_past_midnight, has_code, mark_issues, non_trips
 from eodgdl import tasha
+from eodgdl.eod import EODTables
 from eodgdl.tasha import _schema
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
 
 AGEB = "1409700251418"       # a real 13-character AGEB CVEGEO
-LOCALITY = "140390001"       # a real 9-character locality id
+RURAL_AGEB = "141240029"     # a real 9-character rural AGEB key (INEGI's rural AGEB, not a locality)
 
 
 def test_mappings_agree_with_schema():
@@ -85,6 +85,18 @@ def test_validate_catches_bad_tables():
     assert "first TripNumber is not 1" in problems
 
 
+def test_start_times_run_past_midnight_but_not_past_a_second_one():
+    trips = pd.DataFrame({
+        "HouseholdId": [0] * 4, "PersonNumber": [1] * 4, "TripNumber": [1, 2, 3, 4],
+        "StartTime": [2100, 3000, 4759, 2475], "Mode": ["W"] * 4, "PurposeOrigin": ["H", "W", "H", "W"],
+        "ZoneOrigin": [AGEB] * 4, "PurposeDestination": ["W", "H", "W", "H"], "ZoneDestination": [AGEB] * 4,
+    })
+    problems = tasha.validate(trips, "trips")                 # 30:00 and 47:59 are hours of a diary past midnight...
+    assert problems == ["trips: 1 StartTime values whose last two digits are not minutes 00-59"]   # ...24:75 is no time
+    trips.loc[3, "StartTime"] = 4800                          # a second midnight is past the range
+    assert tasha.validate(trips, "trips") == ["trips.StartTime: 1 values above 4759"]
+
+
 def test_validate_rejects_home_to_home_trips():
     # A return home made from home is not a trip; the builder must drop it.
     trips = pd.DataFrame({
@@ -118,7 +130,7 @@ def test_validate_accepts_a_clean_table():
     trips = pd.DataFrame({
         "HouseholdId": [0], "PersonNumber": [1], "TripNumber": [1],
         "StartTime": [800], "Mode": ["W"], "PurposeOrigin": ["H"],
-        "ZoneOrigin": [LOCALITY], "PurposeDestination": ["W"],
+        "ZoneOrigin": [RURAL_AGEB], "PurposeDestination": ["W"],
         "ZoneDestination": [AGEB],
     })
     assert tasha.validate(trips, "trips") == []
@@ -190,21 +202,20 @@ def test_purpose_origin_is_spelled_correctly():
     assert "PuposeOrigin" not in text
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_refuses_the_survey_as_shipped():
+def test_build_refuses_the_survey_as_shipped(stages):
     with pytest.raises(ValueError, match="no start time"):
-        eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR, clean_chains=False))
+        eodgdl.tasha.build(stages.shipped)
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_conforms():
-    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
+def test_build_conforms(stages):
+    trips = stages.revised.trips
+    od = eodgdl.tasha.build(stages.revised)
 
     assert tasha.validate_all(*od) == []
     assert len(od.households) == 17_901
-    # load_eod drops the 38 duplicate returns; the build leaves out the 491 rows it marks as non-trips.
+    # every person, and every trip load_eod returns but the non-trips (tests/test_review.py pins the counts)
     assert len(od.people) == 58_061
-    assert len(od.trips) == 154_662 - 38 - 491
+    assert len(od.trips) == len(trips) - int(non_trips(trips).sum())
 
     # Zone ids come through as the survey's own codes, not a renumbering.
     assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
@@ -212,15 +223,99 @@ def test_build_conforms():
     assert (od.trips.groupby(["HouseholdId", "PersonNumber"]).TripNumber.min() == 1).all()
     assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
 
-    # What load_eod's cleaning does not repair is reported, at these levels.
+    # What load_eod's cleaning does not repair is reported: no zone break, and no trip that starts before
+    # the one it follows, since a day that passes midnight counts its hours on past 2400 from there
     report = " | ".join(tasha.chain_report(od.trips))
-    assert "32 trips (32 people) do not start in the zone" in report
-    assert "839 trips (766 people) start earlier" in report
+    assert "do not start in the zone" not in report and "start earlier" not in report
+    kept = trips[~non_trips(trips)].sort_index()
+    next_day = (days_past_midnight(kept) > 0).to_numpy()
+    assert (next_day == (od.trips.StartTime >= 2400).to_numpy()).all()
+    assert next_day.sum() > has_code(kept.problemas, "hora_nocturna").sum() > 0     # the trip that passes it, and later ones
+    assert od.trips.StartTime.max() <= 4759
+    # ...and a day's last start comes less than 24 hours after its first
+    start = (od.trips.StartTime // 100) * 60 + od.trips.StartTime % 100
+    span = start.groupby([od.trips.HouseholdId, od.trips.PersonNumber]).agg(lambda s: s.max() - s.min())
+    assert (span < 24 * 60).all()
 
 
-@pytest.mark.skipif(not HAS_DATA, reason="in-repo data/ not present")
-def test_build_round_trips_through_csv(tmp_path):
-    od = eodgdl.tasha.build(eodgdl.load_eod(DATA_DIR))
+def test_a_first_trip_that_leaves_another_zone_does_not_start_at_home(stages):
+    # the rules start at home most activity days that answer 'Su casa' (origen:respuesta) and give a day that opens
+    # with a return from elsewhere another answer (tipo_origen:regreso); the first trips that go to the home zone
+    # itself, and hand edits, can still leave 'Su casa' on a first trip from another zone, and read as H it would
+    # put home in the wrong zone, or go H to H
+    viv, hab, trips, legs = stages.rules
+    kept = trips[~non_trips(trips)]
+    first = kept.groupby(level=PERSON).head(1)
+    home = viv.ageb.astype(str).reindex(first.index.get_level_values(0)).to_numpy()
+    away = first.index[first.origen.astype(str).to_numpy() != home].droplevel("folio_viaje")
+    assert len(away) == 376
+    trips = trips.copy()
+    trips.loc[trips.index.droplevel("folio_viaje").isin(away), "tipo_lugar_origen"] = "Su casa"
+    od = eodgdl.tasha.build(EODTables(viv, hab, trips, legs))
+    assert tasha.validate_all(*od) == []
+    first = od.trips[od.trips.TripNumber == 1].merge(od.households[["HouseholdId", "HouseholdZone"]], on="HouseholdId")
+    away = first.ZoneOrigin != first.HouseholdZone
+    assert not (away & (first.PurposeOrigin == "H")).any() and int(away.sum()) == 376
+
+def test_a_daycare_trip_from_age_12_is_an_escort(stages):
+    # the chain rules recode every such trip (motivo:guarderia), so the model build's age rule is seen at work on the
+    # rules' output with the survey's motive put back
+    viv, hab, trips, legs = stages.rules
+    trips = trips.copy()
+    trips.loc[has_code(trips.ajustes, "motivo:guarderia").to_numpy(), "motivo_viaje"] = "Guardería"
+    tables = EODTables(viv, hab, trips, legs)
+    od = eodgdl.tasha.build(tables)
+    trips = tables.trips[~non_trips(tables.trips)]
+    daycare = (trips.motivo_viaje == "Guardería").to_numpy()
+    age = tables.hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
+    purpose = od.trips.PurposeDestination.to_numpy()
+    assert (purpose[daycare & (age >= 12)] == "F").all() and (daycare & (age >= 12)).any()
+    assert set(purpose[daycare & (age < 12)]) <= {"S", "C"} and (daycare & (age < 12)).any()
+    # an adult's daycare trip does not make them a student
+    people = od.people.set_axis(tables.hab.index)            # build_people keeps hab's row order
+    persons = trips.index.droplevel("folio_viaje")
+    hab = tables.hab
+    declared = hab.index[(hab.ocupacion == "Estudiante") | (hab.trabajo_semana_pasada == "Es estudiante")]
+    studied = persons[(trips.motivo_viaje == "Estudiar").to_numpy()].unique()
+    plain = persons[daycare & (age >= 12)].unique().difference(declared).difference(studied)
+    assert len(plain) > 30 and (people.loc[plain, "StudentStatus"] == "O").all()
+    # load_eod's tables, and the rules' alone: every daycare trip left is a child's
+    for kept in (stages.rules, stages.revised):
+        left = kept.trips[kept.trips.motivo_viaje == "Guardería"]
+        assert len(left) and (kept.hab.edad.reindex(left.index.droplevel("folio_viaje")) < 12).all()
+
+
+def test_a_return_that_misses_the_home_zone_is_not_h(stages):
+    # the chain rules read every return left away from home (_short_returns), so the model build's rule is seen at
+    # work on the rules' output with the returns they sent to 'Otros' put back: the return lands elsewhere, and so
+    # does the purpose; the trip after it leaves from O, so a second return from there is a trip home, not H to H
+    viv, hab, trips, legs = stages.rules
+    trips = trips.copy()
+    other = has_code(trips.ajustes, "motivo:otros").to_numpy()
+    trips.loc[other, "motivo_viaje"] = "Regresar a Casa"
+    trips.loc[other, "tipo_lugar_destino"] = "Su casa"
+    trips["problemas"] = mark_issues(trips, viv, legs)
+    tables = EODTables(viv, hab, trips, legs)
+    od = eodgdl.tasha.build(tables)
+    trips = tables.trips[~non_trips(tables.trips)]
+    missed = has_code(trips.problemas, "regreso_sin_llegar").to_numpy()
+    assert missed.sum() == 21 and (od.trips.PurposeDestination.to_numpy()[missed] == "O").all()
+    after = pd.Series(missed, index=trips.index).groupby(level=["folio_vivienda", "folio_habitante"]).shift(1)
+    assert (od.trips.PurposeOrigin.to_numpy()[after.fillna(False).to_numpy(bool)] == "O").all()
+    assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
+
+
+def test_no_trip_starts_before_the_previous_one_arrives(stages):
+    # TASHA cannot schedule an overlap: on load_eod's tables every trip starts once the previous one has arrived
+    od = eodgdl.tasha.build(stages.revised).trips
+    minutes = (od.StartTime // 100) * 60 + od.StartTime % 100
+    arrival = (minutes + od.Duration).groupby([od.HouseholdId, od.PersonNumber]).shift(1)
+    assert not (minutes < arrival).any()
+    assert not any("could have arrived" in line for line in tasha.chain_report(od))
+
+
+def test_build_round_trips_through_csv(stages, tmp_path):
+    od = eodgdl.tasha.build(stages.revised)
     path = tmp_path / "od_households.csv"
     od.households.to_csv(path, index=False)
 

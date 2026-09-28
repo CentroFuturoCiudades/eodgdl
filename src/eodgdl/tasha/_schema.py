@@ -390,6 +390,11 @@ def _invariants(df, table):
                 "Occupation=='O' disagree; a non-worker must have no sector"
             )
     if table == "trips":
+        if "StartTime" in df.columns and pd.api.types.is_numeric_dtype(df.StartTime):
+            # "hour * 100 + minute": the hours may pass 23, the minutes never 59
+            bad = int((df.StartTime.dropna() % 100 >= 60).sum())
+            if bad:
+                out.append(f"trips: {bad} StartTime values whose last two digits are not minutes 00-59")
         if "PurposeOrigin" in df.columns:
             leaked = int(df.PurposeOrigin.isin(["R", "C"]).sum())
             if leaked:
@@ -478,7 +483,8 @@ def chain_report(trips):
         if early.any():
             lines.append(
                 f"trips: {int(early.sum())} trips ({people(early)} people) start before the "
-                "previous trip could have arrived, its StartTime plus its Duration"
+                "previous trip could have arrived, its StartTime plus its Duration; TASHA cannot "
+                "schedule an overlap"
             )
     ties = has_prev & (t.StartTime == prev_time)
     if ties.any():

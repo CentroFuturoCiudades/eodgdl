@@ -45,18 +45,23 @@ The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
 `load_eod` returns them, trip chains already cleaned by
 `eodgdl.chains.clean_trip_chains` with only the 38 duplicate returns dropped — the 325 untimed trips
-imputed, 84 mislabelled returns recoded, 124 trips after a return home made
-to start at home, 2,032 mistyped start hours repaired — and refuses a trip
-table with untimed rows. Every change is named in `trips.ajustes` and every
+imputed; 545 motives recoded (returns that did not reach home, activity trips that did, daycare
+escorts) and 69 returns that copied their origin sent home; every trip made to start where the
+previous one ended and 1,192 first trips recorded leaving another zone made to start at home;
+2,485 mistyped start hours repaired and 816 starts moved to the previous arrival — and refuses a
+trip table with untimed rows. Every change is named in `trips.ajustes` and every
 defect left in `trips.problemas`; the builder leaves out the rows marked as
-non-trips there (491 returns home made while already at home,
-`eodgdl.chains.non_trips`), since the contract
+non-trips there (returns home made while already at home, and the next morning's return that
+closes a night-shift day; `eodgdl.chains.non_trips`), since the contract
 forbids a trip from H to H. What that cleaning does not repair,
 `tasha.chain_report(od.trips)` counts; see "Validating" below. `hab.diario_repetido` (the persons whose diary is a copy of
-another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: a
-consumer who wants independent observations filters `hab` and `trips` on it before building.
+another household's, see `reports/duplicate_diaries.qmd`) is not read by the builder: the
+repeated diaries were accepted on 2026-09-25 and stay in every build; a consumer who wants
+independent observations filters `hab` and `trips` on it before building.
 
-Zone columns hold the survey's own AGEB CVEGEO or locality id as a **string**.
+Zone columns hold the survey's own zone id as a **string**: a 13-character urban AGEB
+CVEGEO, a 9-character rural AGEB key (INEGI's rural AGEB, not a locality id) or an access
+point (`99999000x`).
 Read them back with `dtype=str` — `tasha.zone_columns(table)` lists them —
 since most ids are all-digit and will otherwise parse as `int64`.
 
@@ -168,16 +173,20 @@ builder cannot repair them without inventing data: that each trip starts in
 the zone the previous one ended in, and that each trip starts after the
 previous one arrived. `tasha.chain_report(trips)` counts those instead, together with tours
 that do not begin or end at home, and the CLI prints it after every build and
-validate without changing the exit code. On the shipped data:
-
-```
-32 trips (32 people) do not start in the zone the previous trip ended in
-838 trips (765 people) start earlier than the trip before them
-1667 trips (1517 people) start before the previous trip could have arrived
-125 trips start at the same minute as the trip before them
-899 people whose first trip does not start at home
-412 people whose last trip does not end at home
-```
+validate without changing the exit code. `StartTime` counts its hours on past midnight
+(2530 is 01:30 on the next day): the trip where a person's day passes midnight — the one
+`load_eod` marks `hora_nocturna` — and every trip after it carry 2400 more
+(`eodgdl.chains.days_past_midnight`), and the contract's range, 0 to 4759, allows the one
+midnight a one-day diary passes. On `load_eod()`'s tables (the chain rules and the hand
+revisions) every trip then starts where the previous one ended and after the previous one
+arrived — TASHA cannot schedule an overlap, and the hand decisions leave none
+(`tests/test_tasha.py` holds the build to it) — and a few hundred days start or end away
+from home. On the rules' output alone (`load_eod(revise_chains=False)`) the same report reads
+no zone break, 306 trips that start earlier than the one before, 355 that start before the
+previous trip could have arrived, 4 same-minute starts, 428 days that do not start at home and
+502 that do not end there (a return that stops short of the home zone is O, not H); on
+`load_eod()`'s, 387 days that do not start at home and 502 that do not end there, and nothing
+else.
 
 ## Open items
 
@@ -210,14 +219,14 @@ rather than about one column's coding, so nothing surfaces them automatically.
   a generated number, but the zones and times pin the sequence and the row
   order matches it for 99.9% of clean multi-trip days; re-sequencing tours by
   time was tested and rejected (under 10% of inversions, misreads night
-  shifts). The evidence and the five chain rules live with the loader,
+  shifts). The evidence and the chain rules live with the loader,
   `eodgdl.chains.clean_trip_chains`; the mapping notes point there, and
   `reports/trip_chains.qmd` walks through every problem with examples. What
   remains is data quality the build reports rather than repairs
-  (`tasha.chain_report`): 839 trips in 766 people still start before the
-  trip before them, 885 start before the previous trip could have arrived by
-  more than the 15-minute tolerance, and 32 trips do not start where the
-  previous one ended; `trips.problemas` marks each, and since 2026-09-04
+  (`tasha.chain_report`): after the rules and the hand decisions
+  (`eodgdl/revisions/`) no trip carries a breaking code — the trips that
+  pass midnight are coded past 2400, so `StartTime` runs forward along every
+  chain, and every trip starts where the previous one ended; `trips.problemas` marks each, and since 2026-09-04
   every other residual defect too — overnight wraps, same-minute starts,
   days that start or end away from home, activities typed `Su casa`,
   `Guardería` (`eodgdl.chains.ISSUE_CODES`) — so the trips with a defect are
@@ -232,16 +241,19 @@ rather than about one column's coding, so nothing surfaces them automatically.
   `eodgdl.chains._impute_untimed_trips`.
 
 - **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
-  `zones.alternatives` offers `ID_ZONAEOD` (71 zones) and `MZONA` (601) as the
-  other choices, but there is no `zones=` selector, and the written tables record
+  `zones.alternatives` offers `ID_ZONAEOD` (64 survey zones plus 7 access points)
+  as the other choice, but there is no `zones=` selector, and the written tables record
   nothing about which system produced them — so the choice is invisible to
   whoever reads the CSVs. 1,701 AGEBs is also likely finer than a model with
   matching networks and skims wants.
 
   Separately, `validate()` checks a zone id's *shape* but never whether it joins.
-  38 locality ids are absent from `RELACION_AGEBS-ZONA_con_datos_censales.parquet`
-  and so carry no census attributes: 7,962 trip origins, 7,961 destinations,
-  1,146 households, 1,275 `EmploymentZone`s and 449 `SchoolZone`s.
+  The 44 rural AGEB ids (9 characters, INEGI's rural AGEB key, not locality ids)
+  have no census row of their own, since INEGI publishes rural counts by locality,
+  and the 7 access points have none: rural AGEBs are the zone of 1,417 households,
+  1,765 `EmploymentZone`s, 586 `SchoolZone`s, 10,111 trip origins and 10,088
+  destinations; access points of 827 `EmploymentZone`s, 58 `SchoolZone`s, 1,554
+  origins and 1,540 destinations.
 
 ## Provenance
 

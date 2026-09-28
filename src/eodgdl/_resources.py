@@ -1,7 +1,7 @@
-"""Lazy loader for bundled package config (the IMEPLAN column rename map).
+"""Lazy loaders for bundled package config: the IMEPLAN column rename map, the hand decisions and the leg minutes.
 
-This is *code config*, not data: ``rename_imeplan`` needs it to run, so it ships inside the
-package (not via the data mirror) and the package works offline.
+This is *code config*, not data: ``rename_imeplan`` and ``load_eod`` need it to run, so it
+ships inside the package (not via the data mirror) and the package works offline.
 """
 from __future__ import annotations
 
@@ -19,3 +19,40 @@ def imeplan_rename_map() -> dict:
     """
     text = (resources.files("eodgdl") / "imeplan_rename_map.json").read_text(encoding="utf-8")
     return json.loads(text)
+
+
+@functools.cache
+def chain_decisions() -> "pd.DataFrame":
+    """The hand decisions over the trip chains that ``load_eod`` applies: ``eodgdl/revisions/chains.csv.gz``.
+
+    One row per trip and field (``household, person, trip, field, before, after, note,
+    source``), each made against the chain rules' output; a review round merges into it
+    (:func:`eodgdl.review.merge_decisions`). See the README there. Keys are integers,
+    every other column text; the frame is shared, so do not modify it.
+    """
+    import pandas as pd
+
+    with (resources.files("eodgdl") / "revisions" / "chains.csv.gz").open("rb") as fh:
+        decisions = pd.read_csv(fh, compression="gzip", dtype=str, keep_default_na=False)
+    for key in ("household", "person", "trip"):
+        decisions[key] = decisions[key].astype(int)
+    return decisions
+
+
+@functools.cache
+def leg_minutes() -> "pd.DataFrame":
+    """The travel minutes a review round corrected, read before the chain rules: ``eodgdl/revisions/leg_minutes.csv.gz``.
+
+    One row per trip (``household, person, trip, before, after, note, source``): the trip's
+    reported minutes summed over its legs, and the minutes it takes instead, which
+    :func:`eodgdl.chains.clean_trip_chains` spreads over its legs in proportion before any rule
+    reads them. See the README there. Keys and minutes are integers, the rest text; the frame
+    is shared, so do not modify it.
+    """
+    import pandas as pd
+
+    with (resources.files("eodgdl") / "revisions" / "leg_minutes.csv.gz").open("rb") as fh:
+        table = pd.read_csv(fh, compression="gzip", dtype=str, keep_default_na=False)
+    for key in ("household", "person", "trip", "before", "after"):
+        table[key] = table[key].astype(int)
+    return table

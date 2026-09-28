@@ -1,6 +1,6 @@
 [project]
 name = "eodgdl"
-version = "0.1.0"
+version = "0.2.0"
 description = "IMEPLAN Guadalajara EOD 2023 origin-destination survey: loader, schemas, and TAZ zone tools"
 readme = "README.md"
 authors = [
@@ -30,6 +30,10 @@ notebook = [
     "folium>=0.20",
     "seaborn>=0.13",
     "colorcet>=3.1",
+    "mxcensus>=0.1.0",
+]
+# Extra for eodgdl.reweight: the census targets come from INEGI through mxcensus.
+reweight = [
     "mxcensus>=0.1.0",
 ]
 # Extra for the giro-imputation model (eodgdl.giro): scikit-learn pipelines, DENUE and the Marco

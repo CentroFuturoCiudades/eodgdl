@@ -647,7 +647,8 @@ household. The survey weight informs seed selection; it is not the final answer.
 `PopulationSim` implements exactly this.
 
 The ingredients are already in this repo — AGEB census counts via `mxcensus`, the zone
-system via `load_taz` / `load_imeplan_agebs`. Three practical constraints:
+system via `load_taz` and `reweight.zoning` (every census AGEB and rural locality in one
+zone). Three practical constraints:
 
 - **Do not synthesize at AGEB level.** `{python} fmt(len(viv))` sampled dwellings spread over
   `{python} fmt(v.ageb.nunique())` AGEBs is about `{python} f"{len(v) / v.ageb.nunique():.0f}"`
