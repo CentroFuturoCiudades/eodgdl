@@ -24,7 +24,7 @@ from ._config import (
 from ._ml import (
     count_levels_without_training_support, fold_table, identify_missing_category, prepare_model_features, select_one_se,
 )
-from .features import add_destination_features, build_worker_features, compute_work_trip_destination
+from .features import add_destination_features, build_worker_features, compute_work_trip_destination, zone_units
 from .model import (
     PROBABILITY_COLUMNS, adjust_imputed_share, build_models, calculate_calibration, calculate_confidence_summary,
     calculate_distribution, calculate_feature_missingness, calculate_model_usage, calculate_probabilistic_distribution,

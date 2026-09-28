@@ -1,6 +1,8 @@
 """Worker-level feature frame for the giro model, built directly from the cleaned EOD tables (``eodgdl.load_eod``):
 person and dwelling attributes, the work-trip destination and mode, and the destination's ámbito and DENUE
-establishment mix (DENUE and the Marco Geoestadístico are fetched through ``mxcensus``)."""
+establishment mix. The destination is a unit of the package's zone system (``eodgdl.reweight.zoning``): the survey
+codes every trip end with its census unit, a 13-character urban AGEB or a 9-character rural AGEB (never a locality).
+DENUE and the census are fetched through ``mxcensus``."""
 
 import numpy as np
 import pandas as pd
@@ -29,71 +31,74 @@ def compute_work_trip_destination(trips):
     return destination.reset_index()
 
 
-def _denue_aggregates(state=DENUE_STATE_CODE, release=DENUE_RELEASE):
-    """Per-AGEB (13-character CVEGEO) and per-locality (9-character) establishment mix from DENUE."""
+def zone_units(tables, state=DENUE_STATE_CODE):
+    """The zone system's urban AGEBs (13-character CVEGEO) and rural AGEBs (9-character key), from
+    :func:`eodgdl.reweight.zoning.assign_units`: every code the survey records is one of them, in the zone it coded."""
+    from eodgdl.reweight.zoning import assign_units
+
+    units = assign_units(tables.viv, tables.trips, state=state)
+
+    return set(units.index[units["unit"] == "ageb"]), set(units["rural_ageb"].dropna())
+
+
+def _denue_aggregates(urban, state=DENUE_STATE_CODE, release=DENUE_RELEASE):
+    """Establishment mix per destination unit -- an urban AGEB (13-character CVEGEO, in ``urban``) or else the rural
+    AGEB DENUE places the establishment in (entity, municipality and AGEB: 9 characters) -- and per urban locality
+    (9-character CVEGEO), the fallback for an urban AGEB with no establishment. A rural AGEB takes every establishment
+    DENUE puts in it, also those in unpopulated places (industrial parks) that no census locality holds."""
     import mxcensus
 
     denue = mxcensus.load_denue(state=state, release=release)
+    key = (denue["cve_ent"].astype(str).str.zfill(2) + denue["cve_mun"].astype(str).str.zfill(3)
+           + denue["cve_loc"].astype(str).str.zfill(4) + denue["ageb"].astype(str).str.zfill(4))
+    is_urban = key.isin(urban)
     frame = pd.DataFrame({
-        "ageb": denue["cve_ent"].astype(str).str.zfill(2) + denue["cve_mun"].astype(str).str.zfill(3)
-        + denue["cve_loc"].astype(str).str.zfill(4) + denue["ageb"].astype(str).str.zfill(4),
+        "unit": key.where(is_urban, key.str[:5] + key.str[9:]),
         "giro": denue["codigo_act"].astype(str).str[:2].map(DENUE_SCIAN2),
         "large": ~denue["per_ocu"].astype(str).str.startswith(SMALL_ESTABLISHMENT_LEVELS),
     })
     unmapped = frame["giro"].isna().sum()
     assert unmapped == 0, f"{unmapped} DENUE establishments with a SCIAN sector missing from config.yaml denue_scian2"
-    frame["localidad"] = frame["ageb"].str[:9]
+    frame["localidad"] = key.str[:9].where(is_urban)
 
     def aggregate(key):
-        grouped = frame.groupby(key)
+        grouped = frame.dropna(subset=[key]).groupby(key)
         table = pd.DataFrame({"dest_establecimientos_log": np.log1p(grouped.size()), "dest_share_grandes": grouped["large"].mean()})
         for giro in GIRO_CLASSES:
             table[f"dest_share_{giro}"] = grouped["giro"].apply(lambda values: (values == giro).mean())
         return table
 
-    return aggregate("ageb"), aggregate("localidad")
+    return aggregate("unit"), aggregate("localidad")
 
 
-def _destination_crosswalk(state=DENUE_STATE_CODE):
-    """IMEPLAN destination code -> INEGI CVEGEO (via the eodgdl zone system) and the set of rural localities."""
-    import eodgdl
-    import mxcensus
-
-    agebs = eodgdl.load_imeplan_agebs(eodgdl.load_taz())
-    crosswalk = agebs[["CVEGEO_EOD", "CVEGEO"]].astype(str).drop_duplicates("CVEGEO_EOD").set_index("CVEGEO_EOD")["CVEGEO"]
-    _, mg_loc_ageb = mxcensus.load_mg_census(state=state)
-    marco = mg_loc_ageb.reset_index()
-    rural = set(marco.loc[marco["AMBITO"].astype(str) == "Rural", "CVEGEO"].astype(str))
-
-    return crosswalk, rural
-
-
-def add_destination_features(od, state=DENUE_STATE_CODE, release=DENUE_RELEASE):
+def add_destination_features(od, urban, rural, state=DENUE_STATE_CODE, release=DENUE_RELEASE):
     """Attach ``destino_ambito`` and the DENUE establishment mix of the work-trip destination (columns
-    ``destino_cvegeo`` and ``destino_zona`` must be present). Unknown, airport and out-of-metro destinations keep
-    NaN in the DENUE columns (imputed inside the pipelines) and carry the information in ``destino_ambito``."""
+    ``destino_cvegeo`` and ``destino_zona`` must be present; ``urban`` and ``rural`` are :func:`zone_units`). Unknown,
+    airport and out-of-metro destinations keep NaN in the DENUE columns (imputed inside the pipelines) and carry the
+    information in ``destino_ambito``; so does a rural AGEB with no establishment."""
     od = od.copy()
-    crosswalk, rural = _destination_crosswalk(state=state)
-    by_ageb, by_localidad = _denue_aggregates(state=state, release=release)
+    by_unit, by_localidad = _denue_aggregates(urban, state=state, release=release)
 
     code = od["destino_cvegeo"].astype("string")
     zona = od["destino_zona"].astype("string")
-    resolved = code.map(crosswalk).fillna(code.where(code.str.len() == 13))
     ambito = pd.Series("desconocido", index=od.index, dtype=object)
-    ambito[resolved.notna() & (resolved.str.len() == 13)] = "ageb_urbana"
-    ambito[resolved.isin(rural)] = "localidad_rural"
+    ambito[code.isin(urban).fillna(False).to_numpy()] = "ageb_urbana"
+    ambito[code.isin(rural).fillna(False).to_numpy()] = "ageb_rural"
     ambito[zona.fillna("").str.startswith("Acceso")] = "fuera_zm"
-    ambito[zona.eq("Aeropuerto")] = "aeropuerto"
+    ambito[zona.eq("Aeropuerto").fillna(False)] = "aeropuerto"
     ambito[code.isna()] = "desconocido"
+    unplaced = code[(ambito == "desconocido") & code.notna()]
+    assert unplaced.empty, f"work destinations outside the zone system: {sorted(unplaced.unique())}"
     od["destino_ambito"] = ambito
 
-    features = by_ageb.reindex(resolved.astype(object))
-    fallback = by_localidad.reindex(resolved.astype(object).str[:9])
+    features = by_unit.reindex(code.astype(object))
+    fallback = by_localidad.reindex(code.astype(object).str[:9])
+    fallback[(ambito != "ageb_urbana").to_numpy()] = np.nan
     features = features.where(features.notna(), fallback.to_numpy())
     features.index = od.index
     for column in DESTINATION_NUMERIC_FEATURES:
         od[column] = features[column].astype(float)
-    od.loc[~od["destino_ambito"].isin(["ageb_urbana", "localidad_rural"]), DESTINATION_NUMERIC_FEATURES] = np.nan
+    od.loc[~od["destino_ambito"].isin(["ageb_urbana", "ageb_rural"]), DESTINATION_NUMERIC_FEATURES] = np.nan
 
     return od
 
@@ -106,7 +111,7 @@ def build_worker_features(tables, state=DENUE_STATE_CODE, release=DENUE_RELEASE)
     od = od.merge(tables.viv[dwelling_columns], left_on="folio_vivienda", right_index=True, how="left", validate="many_to_one")
     od = od.merge(compute_work_trip_destination(tables.trips), on=KEYS, how="left", validate="one_to_one")
     od = od[od["trabajo_semana_pasada"].isin(EMPLOYED_CATEGORIES)].copy()
-    od = add_destination_features(od, state=state, release=release)
+    od = add_destination_features(od, *zone_units(tables, state=state), state=state, release=release)
     categorical_columns = od.columns[od.dtypes.eq("category")]
     od[categorical_columns] = od[categorical_columns].astype("string")
     unknown_labels = set(od["giro_empresa"].dropna().unique()) - set(GIRO_SLUGS)

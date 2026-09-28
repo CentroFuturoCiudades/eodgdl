@@ -144,7 +144,8 @@ zone). Zones are built from the census by `reweight.zoning` instead.
 Most workers in the survey did not report the activity of their employer (`giro_empresa`). The optional
 `eodgdl.giro` subpackage imputes it within the survey: a hybrid (with / without education) scikit-learn model
 trained on the workers with an observed giro, using raw survey columns, the work-trip destination and mode, and
-the destination's DENUE establishment mix (DENUE and the Marco Geoestadístico are fetched through `mxcensus`).
+the DENUE establishment mix of the destination's urban or rural AGEB, the unit the survey codes and the zone system
+(`reweight.zoning`) places (DENUE and the census are fetched through `mxcensus`).
 It predicts the five native levels — Comercio, Servicio, Educación, Industria, Gobierno/sector público — and keeps
 the full probability vector (`prob_giro_<slug>`); `giro_final` is the arg-max.
 

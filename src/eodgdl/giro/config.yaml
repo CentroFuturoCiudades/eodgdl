@@ -24,7 +24,7 @@ features:
   # Person and dwelling attributes (eodgdl names). `edad` is numeric; everything else categorical.
   person: [sexo_nacimiento, edad, escolaridad, municipio, estado_civil, parentesco, personas_en_vivienda, ocupacion, trabajo_semana_pasada, centralidad]
   # Work-trip destination: destination type, its ámbito and the DENUE establishment mix at the destination
-  # AGEB/locality (dest_share_<giro> columns are appended in code).
+  # urban or rural AGEB, the unit the zone system gives it (dest_share_<giro> columns are appended in code).
   destination: [destino_trabajo, destino_ambito, dest_establecimientos_log, dest_share_grandes]
   # Mode of the work trip, weekend work destination, household vehicles.
   mobility: [modo_trabajo, weekend_dest_trabajar, n_autos_camionetas]
@@ -33,9 +33,10 @@ features:
   shift_profile: [sexo_nacimiento, edad, municipio, estado_civil, parentesco, personas_en_vivienda, ocupacion, trabajo_semana_pasada]
 
 destination:
-  state_code: 14              # DENUE and Marco Geoestadístico state (Jalisco)
+  state_code: 14              # DENUE and census state (Jalisco)
   denue_release: "202211"     # November 2022: the DENUE snapshot closest to (and before) the OD fieldwork of Jan-Apr 2023
-  ambito_levels: [ageb_urbana, localidad_rural, aeropuerto, fuera_zm, desconocido]
+  # The destination's unit in the zone system (eodgdl.reweight.zoning): an urban AGEB or a rural AGEB.
+  ambito_levels: [ageb_urbana, ageb_rural, aeropuerto, fuera_zm, desconocido]
   small_establishment_levels: ["0 a 5 personas", "6 a 10 personas"]   # DENUE `per_ocu` strata counted as small
   # DENUE `codigo_act` first two digits (SCIAN sector) -> giro slug, for the establishment-mix shares.
   denue_scian2:
