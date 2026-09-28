@@ -86,13 +86,15 @@ def builder_config(spec, name, overrides=None):
     return {**get_builder(name).config, **spec.builder_config.get(name, {}), **((overrides or {}).get(name, {}))}
 
 
-def build_frame(spec, context, overrides=None):
+def build_frame(spec, context, overrides=None, role="train"):
     """The task's frame: the source's rows with every builder's columns and the target slug (``spec.target``, NA
-    where unobserved) plus ``<prefix>_desconocido``. ``overrides`` ({builder: {key: value}}) changes a builder's
-    configuration for this call. Returns the :class:`~eodgdl.impute.sources.SourceFrame` with the full frame."""
+    where unobserved) plus ``<prefix>_desconocido``. ``role="score"`` builds the rows the task imputes (its
+    ``score_source``, where the target column may be absent: every row unknown). ``overrides`` ({builder: {key:
+    value}}) changes a builder's configuration for this call. Returns the
+    :class:`~eodgdl.impute.sources.SourceFrame` with the full frame."""
     from .sources import file_digest, get_source
 
-    source = get_source(spec.source)
+    source = get_source(spec.source if role == "train" else spec.score_source)
     key = source_key(source, source.config, context)
     built = {}
 
@@ -101,7 +103,7 @@ def build_frame(spec, context, overrides=None):
         built["source"] = result
         return result.frame
 
-    frame = _cached(context, "sources", spec.source, key, build_source)
+    frame = _cached(context, "sources", source.name, key, build_source)
     keys = list(source.config["keys"])
     for name in spec.builders:
         builder = get_builder(name)
@@ -121,7 +123,7 @@ def build_frame(spec, context, overrides=None):
         assert not clashes, f"builder {name} overwrites {sorted(clashes)}"
         frame = pd.concat([frame, columns.drop(columns=keys)], axis=1)
 
-    labels = frame[spec.target_column]
+    labels = frame[spec.target_column] if spec.target_column in frame.columns or role == "train" else pd.Series(pd.NA, index=frame.index, dtype="string")
     unknown_labels = set(labels.dropna().unique()) - set(spec.classes)
     assert not unknown_labels, f"{spec.target_column} labels missing from the {spec.name} task's classes: {sorted(unknown_labels)}"
     frame[spec.target] = labels.map(spec.classes).astype("string")

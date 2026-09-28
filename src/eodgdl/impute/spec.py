@@ -33,9 +33,11 @@ class ArmSpec:
 @dataclass
 class TaskSpec:
     name: str
-    source: str
+    source: str                    # the training rows
+    score_source: str              # the rows the task imputes (default: the training source)
     target_column: str
     classes: dict                  # label -> slug, in output order
+    scores: dict                   # slug -> ordinal score (optional: an expected score is written, and `expected` propagation allowed)
     prefix: str
     missing_label: str
     missing_values: dict           # feature -> answers that count as unobserved
@@ -144,12 +146,14 @@ def parse_task(raw):
     target = raw["target"]
     classes = {str(label): str(slug) for label, slug in target["classes"].items()}
     _check(len(set(classes.values())) == len(classes), f"{name}: class slugs repeat")
+    _check(not target.get("scores") or set(map(str, target["scores"])) == set(classes.values()), f"{name}: target scores must cover every class slug")
     features = raw.get("features", {})
     groups = {group: list(members) for group, members in features.get("groups", {}).items()}
     levels = raw.get("levels", {})
 
     spec = TaskSpec(
-        name=name, source=raw["source"], target_column=target["column"], classes=classes,
+        name=name, source=raw["source"], score_source=raw.get("score_source", raw["source"]), target_column=target["column"], classes=classes,
+        scores={str(slug): float(value) for slug, value in target.get("scores", {}).items()},
         prefix=raw.get("outputs", {}).get("prefix", name), missing_label=raw.get("missing_label", MISSING_LABEL),
         missing_values={feature: list(values) for feature, values in raw.get("missing_values", {}).items()},
         builders=list(features.get("builders", [])), groups=groups, numeric=list(features.get("numeric", [])),

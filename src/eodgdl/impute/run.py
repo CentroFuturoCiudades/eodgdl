@@ -35,9 +35,14 @@ def task_levels(spec):
     return spec.category_levels(get_source(spec.source).schema_levels)
 
 
+def expected_score_column(spec):
+    return f"{spec.prefix}_puntaje_esperado"
+
+
 def output_columns(spec, keys):
-    """Row keys plus the task's output columns."""
-    return list(keys) + [f"{spec.prefix}_{suffix}" for suffix in ("observado", "imputado", "final", "fue_imputado", "model_used", "prediction_confidence", "marginalized_features")] + spec.probability_columns
+    """Row keys plus the task's output columns (and its expected score when the target is ordinal)."""
+    columns = list(keys) + [f"{spec.prefix}_{suffix}" for suffix in ("observado", "imputado", "final", "fue_imputado", "model_used", "prediction_confidence", "marginalized_features")] + spec.probability_columns
+    return columns + ([expected_score_column(spec)] if spec.scores else [])
 
 
 def _spec(task):
@@ -58,6 +63,8 @@ def score_frame(spec, frame, bundle, level_subsets=None):
     scored = impute_with_arms(frame, spec.target, spec.class_slugs, arms, assigned, spec.prefix, spec.numeric, levels,
                               level_subsets=level_subsets, missing_label=spec.missing_label)
     evaluate.validate_probability_rows(scored, spec.probability_columns)
+    if spec.scores:
+        scored[expected_score_column(spec)] = scored[spec.probability_columns].to_numpy() @ np.array([spec.scores[slug] for slug in spec.class_slugs])
 
     return scored
 
@@ -69,7 +76,7 @@ def score_task(task, tables=None, bundle=None, path=None, context=None):
     spec = _spec(task)
     context = context or Context(tables=tables)
     bundle = bundle if bundle is not None else load_bundle(spec, path)
-    frame = build_frame(spec, context).frame
+    frame = build_frame(spec, context, role="score").frame
 
     return score_frame(spec, frame, bundle)
 

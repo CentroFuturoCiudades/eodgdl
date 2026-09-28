@@ -7,7 +7,9 @@ declared category levels, missing label, classes and column names come from the 
 - :mod:`~eodgdl.impute.spec`: task specs (``impute/tasks/<task>.yaml``) and their hashes
 - :mod:`~eodgdl.impute.sources`, :mod:`~eodgdl.impute.features`: source frames, feature builders, the feature cache
 - :mod:`~eodgdl.impute.bundle`: fitted bundles, their load-time checks, the legacy giro bundle
-- :mod:`~eodgdl.impute.run`: scoring a task (``score_task``)
+- :mod:`~eodgdl.impute.run`: a task's modes: ``score_task``, ``retrain`` (+ ``write_retrain``), ``compare``
+- :mod:`~eodgdl.impute.chain`, :mod:`~eodgdl.impute.derive`: chains of tasks, parallel or sequential
+  (``enumerate`` / ``draws`` / ``expected``), and the derive steps run per completion
 - :mod:`~eodgdl.impute.levels`: the category-level contract, feature preparation, weight and probability checks
 - :mod:`~eodgdl.impute.harmonize`: value maps that fail on an unmapped code
 - :mod:`~eodgdl.impute.models`: candidate pipelines per family, the auxiliary level model
