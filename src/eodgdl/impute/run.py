@@ -53,7 +53,8 @@ def _spec(task):
 def score_frame(spec, frame, bundle, level_subsets=None):
     """Score ``frame`` (a task frame: :func:`~eodgdl.impute.features.build_frame`) with a checked ``bundle``: every
     row whose target is unobserved goes to the first arm whose required covariates it has; returns the frame with the
-    task's output columns (:func:`~eodgdl.impute.arms.impute_with_arms`)."""
+    task's output columns (:func:`~eodgdl.impute.arms.impute_with_arms`). ``level_subsets`` defaults to the task's
+    ``scoring.level_subsets``."""
     levels = task_levels(spec)
     bundle = check_bundle(as_v2(bundle, spec), spec, levels)
     arms = [Arm(name, entry["model"], entry["features"], requires=entry["requires"], auxiliary=bundle["auxiliary"].get(name, {}))
@@ -61,7 +62,7 @@ def score_frame(spec, frame, bundle, level_subsets=None):
     assigned = assign_arms(frame, arms, spec.is_missing)
     assigned[~frame[spec.unknown_column].astype(bool).to_numpy()] = pd.NA
     scored = impute_with_arms(frame, spec.target, spec.class_slugs, arms, assigned, spec.prefix, spec.numeric, levels,
-                              level_subsets=level_subsets, missing_label=spec.missing_label)
+                              level_subsets=(spec.level_subsets or None) if level_subsets is None else level_subsets, missing_label=spec.missing_label)
     evaluate.validate_probability_rows(scored, spec.probability_columns)
     if spec.scores:
         scored[expected_score_column(spec)] = scored[spec.probability_columns].to_numpy() @ np.array([spec.scores[slug] for slug in spec.class_slugs])
@@ -122,25 +123,32 @@ def _selected_row(summary):
 
 def retrain(task, context=None, n_jobs=-1, progress=True):
     """Select, evaluate, refit and score ``task``; returns a :class:`RetrainResult` (write it with
-    :func:`write_retrain`). Every model is trained with the source's weights and its CV groups."""
+    :func:`write_retrain`). Every model is trained with the training source's weights and CV groups; the rows scored
+    are the task's scoring source (the training source unless the task names another, e.g. ENOE -> the EOD)."""
     spec = _spec(task)
     context = context or Context()
     timings = {}
     started = time.perf_counter()
     source = build_frame(spec, context)
+    target = source if spec.score_source == spec.source else build_frame(spec, context, role="score")
     frame, weight, group = source.frame, source.weight, source.group
+    rows, rows_weight = target.frame, target.weight
     levels = task_levels(spec)
     cv, ev = spec.selection["cv"], spec.evaluation
     seed, n_splits = cv["seed"], cv["splits"]
     n_bins = ev.get("calibration_bins", 10)
+    positive = ev.get("positive_class")
     ship_isotonic = ev.get("isotonic", {}).get("ship", False)
-    unknown = frame[spec.unknown_column].astype(bool).to_numpy()
+    known = ~frame[spec.unknown_column].astype(bool).to_numpy()          # training rows with an observed target
+    unknown = rows[spec.unknown_column].astype(bool).to_numpy()          # scored rows to impute
     train, test = select.split_known(frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
+    for column, values in cv.get("test_exclude", {}).items():
+        test = test[~test[column].isin(values)].reset_index(drop=True)
     timings["features"] = time.perf_counter() - started
 
-    tables, summary = {}, {"task": spec.name, "rows": len(frame), "known": int((~unknown).sum()), "unknown": int(unknown.sum()),
-                           "train_rows": len(train), "test_rows": len(test), "train_groups": int(train[group].nunique()),
-                           "test_groups": int(test[group].nunique()), "arms": {}}
+    tables, summary = {}, {"task": spec.name, "source": spec.source, "score_source": spec.score_source, "rows": len(rows),
+                           "known": int(known.sum()), "unknown": int(unknown.sum()), "train_rows": len(train), "test_rows": len(test),
+                           "train_groups": int(train[group].nunique()), "test_groups": int(test[group].nunique()), "arms": {}}
     arms, selected_models, auxiliary, selected, test_metrics = {}, {}, {}, {}, {}
     for arm in spec.arms:
         features = list(arm.features)
@@ -154,9 +162,10 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         selected_models[arm.name] = model
 
         started = time.perf_counter()
-        metrics, class_metrics, confusion, distribution = evaluate.evaluate_classifier(model, test, features, spec.target, spec.class_slugs, spec.numeric, weight_column=weight, missing_label=spec.missing_label)
+        metrics, class_metrics, confusion, distribution = evaluate.evaluate_classifier(model, test, features, spec.target, spec.class_slugs, spec.numeric, weight_column=weight,
+                                                                                      missing_label=spec.missing_label, positive=positive, n_bins=n_bins)
         uncertainty = evaluate.test_metrics_with_uncertainty(model, test, features, spec.target, spec.numeric, n_bootstrap=ev.get("bootstrap", 500), random_state=seed,
-                                                            weight_column=weight, group_column=group, missing_label=spec.missing_label)
+                                                            weight_column=weight, group_column=group, missing_label=spec.missing_label, positive=positive)
         in_the_large, reliability = evaluate.calibration_by_class(model, test, features, spec.target, spec.numeric, n_bins=n_bins, weight_column=weight, missing_label=spec.missing_label)
         # isotonic: maps from out-of-fold probabilities on the training rows, applied to the selected model on the held-out rows
         splits = select.grouped_splits(X, y, g, cv_splits=n_splits, random_state=seed)
@@ -190,19 +199,23 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
 
     metadata = {
         "selected": selected, "test_metrics": test_metrics, "random_state": seed, "cv": cv, "isotonic_shipped": bool(ship_isotonic),
-        "data_versions": source.versions, "builders": {name: builder_config(spec, name) for name in spec.builders},
+        "data_versions": {"training": source.versions, "scoring": target.versions}, "builders": {name: builder_config(spec, name) for name in spec.all_builders},
     }
     bundle = make_bundle(spec, arms, auxiliary, levels, metadata)
 
     started = time.perf_counter()
-    scored = score_frame(spec, frame, bundle)
+    scored = score_frame(spec, rows, bundle)
     timings["score"] = time.perf_counter() - started
     imputed = scored[scored[f"{spec.prefix}_fue_imputado"]]
-    known_rows = scored[~unknown]
-    observed = evaluate.weighted_distribution(known_rows, spec.target, weight_column=weight)
-    tables["profiles"] = evaluate.compare_known_unknown_profiles(frame, ev.get("profiles", []), unknown, weight_column=weight) if ev.get("profiles") else pd.DataFrame()
-    tables["missingness"] = evaluate.calculate_feature_missingness(frame, spec.features, unknown, weight_column=weight, missing_label=spec.missing_label)
-    usage = imputed.groupby(f"{spec.prefix}_model_used").agg(sample_rows=(weight, "size"), weighted_population=(weight, "sum")).reset_index()
+    observed = evaluate.weighted_distribution(frame[known], spec.target, weight_column=weight)
+    # the training population (rows with an observed target) against the imputed one, each with its own weight
+    shared = [column for column in dict.fromkeys(ev.get("profiles", []) + spec.features) if column in frame.columns and column in rows.columns]
+    population = pd.concat([frame.loc[known, shared].assign(__weight=frame.loc[known, weight].to_numpy()),
+                            rows.loc[unknown, shared].assign(__weight=rows.loc[unknown, rows_weight].to_numpy())], ignore_index=True)
+    is_imputed = np.r_[np.zeros(int(known.sum()), bool), np.ones(int(unknown.sum()), bool)]
+    tables["profiles"] = evaluate.compare_known_unknown_profiles(population, ev["profiles"], is_imputed, weight_column="__weight") if ev.get("profiles") else pd.DataFrame()
+    tables["missingness"] = evaluate.calculate_feature_missingness(population, [f for f in spec.features if f in shared], is_imputed, weight_column="__weight", missing_label=spec.missing_label)
+    usage = imputed.groupby(f"{spec.prefix}_model_used").agg(sample_rows=(rows_weight, "size"), weighted_population=(rows_weight, "sum")).reset_index()
     usage["weighted_share"] = usage["weighted_population"] / usage["weighted_population"].sum()
     tables["model_usage"] = usage
     tables["confidence"] = imputed.groupby(f"{spec.prefix}_model_used")[f"{spec.prefix}_prediction_confidence"].agg(["count", "mean", "std", "min", "median", "max"]).reset_index()
@@ -210,35 +223,36 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     for arm in spec.arms:
         features = list(arm.features)
         tables[f"unsupported_levels__{arm.name}"] = count_levels_without_training_support(
-            prepare_features(frame[~unknown], features, spec.numeric, spec.missing_label), prepare_features(frame[unknown], features, spec.numeric, spec.missing_label), spec.numeric)
+            prepare_features(frame[known], features, spec.numeric, spec.missing_label), prepare_features(rows[unknown], features, spec.numeric, spec.missing_label), spec.numeric)
 
     scenarios = {}
     if "shift" in ev:
         started = time.perf_counter()
-        known, unknown_rows = frame[~unknown], frame[unknown]
-        reweighted, diagnostics = evaluate.reweight_to_target_profile(known, unknown_rows, ev["shift"]["profile"], weight, weight, spec.numeric, random_state=seed, missing_label=spec.missing_label)
-        shifted = pd.concat([reweighted, unknown_rows]).sort_index()
-        shift_arms = {arm.name: refit(selected_models[arm.name], spec, shifted, list(arm.features), weight, group) for arm in spec.arms}
-        # the auxiliary models are the final ones: P(feature | x) is fitted on every row, whatever its target
+        reweighted, diagnostics = evaluate.reweight_to_target_profile(frame[known], rows[unknown], ev["shift"]["profile"], weight, rows_weight, spec.numeric,
+                                                                      random_state=seed, missing_label=spec.missing_label)
+        shift_arms = {arm.name: refit(selected_models[arm.name], spec, reweighted, list(arm.features), weight, group) for arm in spec.arms}
+        # the auxiliary models are the final ones: P(feature | x) is fitted on every training row, whatever its target
         shift_bundle = make_bundle(spec, shift_arms, auxiliary, levels, {"scenario": "shift_weighted"})
-        scenarios["shift_weighted"] = score_frame(spec, frame, shift_bundle)
+        scenarios["shift_weighted"] = score_frame(spec, rows, shift_bundle)
         tables["shift_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
         timings["shift"] = time.perf_counter() - started
     if "delta" in ev:
-        scenarios["delta_adjusted"], factor = evaluate.adjust_imputed_share(scored, spec.prefix, spec.class_slugs, ev["delta"]["class"], weight_column=weight)
+        label = ev["delta"]["class"]
+        share = float(observed.set_index("class")["weighted_share"].get(label, 0.0))
+        scenarios["delta_adjusted"], factor = evaluate.adjust_imputed_share(scored, spec.prefix, spec.class_slugs, label, target_share=share, weight_column=rows_weight)
         summary["delta_factor"] = factor
 
     shares = {"observed_known": observed.set_index("class")["weighted_share"].reindex(spec.class_slugs)}
     for name, scenario in {"imputed": scored, **scenarios}.items():
-        rows = scenario[scenario[f"{spec.prefix}_fue_imputado"]]
-        shares[name] = evaluate.probabilistic_distribution(rows, spec.prefix, spec.class_slugs, weight_column=weight).set_index("class")["weighted_share"]
-    shares["imputed_hard"] = evaluate.weighted_distribution(imputed, f"{spec.prefix}_final", weight_column=weight).set_index("class")["weighted_share"].reindex(spec.class_slugs).fillna(0.0)
-    shares["final"] = evaluate.probabilistic_distribution(scored, spec.prefix, spec.class_slugs, weight_column=weight).set_index("class")["weighted_share"]
+        chosen = scenario[scenario[f"{spec.prefix}_fue_imputado"]]
+        shares[name] = evaluate.probabilistic_distribution(chosen, spec.prefix, spec.class_slugs, weight_column=rows_weight).set_index("class")["weighted_share"]
+    shares["imputed_hard"] = evaluate.weighted_distribution(imputed, f"{spec.prefix}_final", weight_column=rows_weight).set_index("class")["weighted_share"].reindex(spec.class_slugs).fillna(0.0)
+    shares["final"] = evaluate.probabilistic_distribution(scored, spec.prefix, spec.class_slugs, weight_column=rows_weight).set_index("class")["weighted_share"]
     tables["shares"] = pd.DataFrame(shares).rename_axis("class").reset_index()
     summary["timings_s"] = {name: round(value, 1) for name, value in timings.items()}
-    summary["versions"] = {**source.versions, "sklearn": bundle["metadata"]["sklearn_version"], "eodgdl": bundle["metadata"]["eodgdl_version"]}
+    summary["versions"] = {**target.versions, "training": source.versions, "sklearn": bundle["metadata"]["sklearn_version"], "eodgdl": bundle["metadata"]["eodgdl_version"]}
 
-    return RetrainResult(spec, bundle, scored, scenarios, tables, summary, list(source.keys))
+    return RetrainResult(spec, bundle, scored, scenarios, tables, summary, list(target.keys))
 
 
 def _serializable(frame):
@@ -260,7 +274,7 @@ def write_retrain(result, out):
     spec, out = result.spec, Path(out)
     (out / "evaluation").mkdir(parents=True, exist_ok=True)
     columns = output_columns(spec, result.keys)
-    weight = get_source(spec.source).config["weight"]
+    weight = get_source(spec.score_source).config["weight"]
     result.scored[columns + [weight]].to_parquet(out / "scores.parquet", index=False)
     if result.scenarios:
         pd.concat([frame[columns + [weight]].assign(scenario=name) for name, frame in result.scenarios.items()], ignore_index=True).to_parquet(out / "scenarios.parquet", index=False)

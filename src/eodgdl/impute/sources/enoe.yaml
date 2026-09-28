@@ -1,0 +1,31 @@
+# ENOE sources, read by eodgdl.impute.sources.enoe. Ported from informal-jobs-model's config/enoe.yaml.
+
+enoe.workers:
+  # Employed persons of the pooled quarters, one row per (quarter, person); survey weights divided by the number of
+  # quarters, so weighted totals stay at the average quarterly population.
+  periods: [2022t1, 2022t2, 2022t3, 2022t4, 2023t1, 2023t2, 2023t3, 2023t4]
+  state_code: 14                  # Jalisco (`ent`)
+  # INEGI's employed population (clase2 == 1) on the analytical universe r_def == 0 (definitive interview),
+  # c_res in {1, 3} (habitual or new resident) and ages in [min_age, max_age]. INEGI publishes employment for 15+;
+  # 12 keeps the working 12-14 year olds the EOD also records. 98 is INEGI's "age unspecified (12+)", kept in the
+  # universe and turned into a missing age by the harmonization.
+  min_age: 12
+  max_age: 98
+  resident_codes: ["1", "3"]
+  key_parts:
+    dwelling: [tipo, mes_cal, cd_a, ent, con, v_sel]   # must identify dwellings within a quarter (checked)
+    household: [n_hog, h_mud]
+    person: [n_ren]
+    # tipo / mes_cal distinguish the panel visits of the same dwelling: dropped from the cross-quarter household key
+    # that groups the CV folds and the bootstrap clusters across pooled quarters.
+    panel_visit: [tipo, mes_cal]
+  renames: {fac_tri: survey_weight, est_d_tri: survey_stratum, upm: survey_psu, est: estrato_socioeconomico}
+  columns:                        # kept after the keys; everything but the weight becomes an integer code
+    design: [mun, survey_stratum, survey_psu]
+    weights: [survey_weight]
+    attributes: [estrato_socioeconomico, sex, pos_ocu, scian, eda, cs_p13_1, emp_ppal, e_con, par_c, dwelling_size]
+    workplace: [p4, p4b, p4e, p4f, p4h]
+    components: [tue2, seg_soc]
+  weight: survey_weight
+  group: hogar                    # the cross-quarter household key, joined with "_"
+  keys: [period, tipo, mes_cal, cd_a, ent, con, v_sel, n_hog, h_mud, n_ren]   # one row per (quarter, person)

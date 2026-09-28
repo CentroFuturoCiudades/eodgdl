@@ -101,8 +101,7 @@ def test_enumerate_is_the_exact_scenario_sum(chain_source):
     # conditionals per level of u1, and the observed t2 labels stay one-hot
     for level in ("ua", "ub"):
         conditional = result.frame[[f"prob_t2_{slug}_given_u1_{level}" for slug in T2.class_slugs]].to_numpy()
-        reached = ~np.isnan(conditional[:, 0])
-        np.testing.assert_allclose(conditional[reached], scored_with(T2, frame2, bundles["t2"], u1=level)[reached])
+        np.testing.assert_allclose(conditional, scored_with(T2, frame2, bundles["t2"], u1=level))    # every row, every level
     known = ~result.frame["t2_fue_imputado"].to_numpy()
     assert set(np.unique(result.frame.loc[known, T2.probability_columns].to_numpy())) <= {0.0, 1.0}
     assert (result.frame["t2_condicionado_en"] == "t1:enumerate").all()

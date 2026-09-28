@@ -87,3 +87,18 @@ def work_trip(frame, context, config, spec):
     keys = ["folio_vivienda", "folio_habitante"]
     destination = work_trip_destination(context.eod().trips, config["purpose"], keys)
     return frame[keys].merge(destination, on=keys, how="left", validate="one_to_one").drop(columns=keys)
+
+
+def _harmonization_versions(context, config):
+    from ..harmonize import load_harmonization
+
+    return {**survey_versions(), "harmonization": load_harmonization("eod"), "common": load_harmonization("common")}
+
+
+@register_builder("harmonize.eod", versions=_harmonization_versions, replaces=True)
+def harmonize_eod(frame, context, config, spec):
+    """The harmonized variables of ``impute/harmonization/eod.yaml``; they replace the survey's own columns of the same
+    name (``ocupacion``, ``escolaridad``, ``municipio``, ``estado_civil``, ``parentesco``) in the task frame."""
+    from ..harmonize import apply_variables, load_harmonization
+
+    return apply_variables(frame, load_harmonization("eod")["variables"])

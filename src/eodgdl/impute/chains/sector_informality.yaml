@@ -1,0 +1,15 @@
+# Informality of the EOD workers conditioned on the giro imputation: P(I | x) = Σ_s P(s | x) · P(I | x, s) over the four
+# harmonized sectors (exact). The giro model's five classes collapse to the sectors by summation; a reported giro is
+# one sector with probability one. Ported from informal-jobs-model's stage 5 scoring.
+
+chain: sector_informality
+mode: sequential
+propagation: enumerate
+steps:
+  - giro
+  - informality:
+      uses:
+        giro:
+          as: sector
+          transform: {comercio: comercio, servicio: servicios_transporte, educacion: servicios_transporte,
+                      industria: manufactura_construccion, gobierno: gobierno_otro_agricultura}

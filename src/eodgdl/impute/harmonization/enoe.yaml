@@ -1,0 +1,108 @@
+# ENOE (INEGI's labour survey, raw codes from mxcensus) -> the common levels of common.yaml. Ported from
+# informal-jobs-model's harmonize_enoe_* functions (whose maps were inline Python). Every map fails on a code it does
+# not cover unless the code is listed in `allowed_unmapped` (it becomes the missing label). Read by
+# eodgdl.impute.harmonize.apply_variables, in this order (`from` reads an earlier output).
+#
+# Variable kinds: `map` (codes -> levels; `floordiv` first when given; `otherwise` gives every other code in its
+# `domain` one level), `number` (numeric; `unspecified` codes -> NA, `cap` clips), `bins` (cut an earlier number with
+# common.yaml's bins), `rules` (conditions over several columns, in order: a later match overrides an earlier one;
+# every code of a rule column must be in its `domains` entry).
+
+variables:
+  genero:
+    column: sex
+    map: {1: H, 2: F}
+  ocupacion:
+    column: pos_ocu
+    map:
+      1: trabajador        # subordinados y remunerados
+      2: trabajador        # empleadores
+      3: independiente     # trabajadores por cuenta propia
+      4: sin_pago          # trabajadores sin pago (unpaid family workers); the EOD has no counterpart
+  edad_num:
+    column: eda
+    number: {unspecified: [98]}   # 98 = "no especificada (12 años y más)"
+  edad_cat:
+    from: edad_num
+    bins: age
+  escolaridad:
+    column: cs_p13_1
+    map:
+      0: sin_instruccion
+      1: sin_instruccion
+      2: primaria_o_secundaria
+      3: primaria_o_secundaria
+      4: carrera_tecnica_o_preparatoria
+      5: carrera_tecnica_o_preparatoria
+      6: carrera_tecnica_o_preparatoria
+      7: licenciatura
+      8: postgrado
+      9: postgrado
+      99: no_especificado
+  municipio:
+    column: mun
+    map: {39: guadalajara, 120: zapopan, 98: tlaquepaque, 97: tlajomulco, 101: tonala, 70: el_salto, 51: juanacatlan,
+          44: ixtlahuacan_membrillos, 124: zapotlanejo}
+    otherwise: {level: otro, domain: [1, 125]}   # the rest of Jalisco's 125 municipalities
+  estado_civil:
+    column: e_con
+    map: {1: union_libre, 2: separado, 3: divorciado, 4: viudo, 5: casado, 6: soltero}
+    allowed_unmapped: [9]   # no sabe
+  parentesco:
+    column: par_c
+    floordiv: 100           # par_c is a 3-digit code; its first digit is the relationship group
+    map: {1: jefe_del_hogar, 2: conyuge, 3: hijo, 4: otro_parentesco, 5: sin_parentesco, 6: sin_parentesco}
+  tamano_viv_num:
+    column: dwelling_size   # persons in the dwelling (all its households) on the SDEM roster
+    number: {cap: 10}
+  tamano_viv_cat:
+    from: tamano_viv_num
+    bins: household_size
+  sector:
+    column: scian           # INEGI's precoded SCIAN sector (1-21)
+    map:
+      1: gobierno_otro_agricultura   # Agricultura, ganadería, aprovechamiento forestal, pesca y caza
+      2: manufactura_construccion    # Minería
+      3: manufactura_construccion    # Electricidad, agua y suministro de gas
+      4: manufactura_construccion    # Construcción
+      5: manufactura_construccion    # Industrias manufactureras
+      6: comercio                    # Comercio al por mayor
+      7: comercio                    # Comercio al por menor
+      8: servicios_transporte        # Transportes, correos y almacenamiento
+      9: servicios_transporte        # Información en medios masivos
+      10: servicios_transporte       # Servicios financieros y de seguros
+      11: servicios_transporte       # Servicios inmobiliarios y de alquiler
+      12: servicios_transporte       # Servicios profesionales, científicos y técnicos
+      13: servicios_transporte       # Corporativos
+      14: servicios_transporte       # Servicios de apoyo a los negocios y manejo de residuos
+      15: servicios_transporte       # Servicios educativos
+      16: servicios_transporte       # Servicios de salud y de asistencia social
+      17: servicios_transporte       # Servicios de esparcimiento culturales y deportivos
+      18: servicios_transporte       # Servicios de alojamiento temporal y de preparación de alimentos
+      19: servicios_transporte       # Otros servicios excepto actividades gubernamentales
+      20: gobierno_otro_agricultura  # Actividades gubernamentales y de organismos internacionales
+      21: no_especificado            # No especificado
+  lugar_trabajo:
+    # Place of work from COE1 section IV, on the levels the EOD's work-trip destination type shares: establecimiento
+    # (premises of a non-commercial unit), comercio_o_puesto (premises in commerce, or a fixed / semi-fixed /
+    # improvised stall: the EOD answer "Comercio, mercado, tienda o centro comercial" covers both), otra_vivienda
+    # (employer's or client's home, domestic workers), otro_o_sin_local (field, itinerant, vehicle, own home,
+    # construction site, visiting clients). Unmatched rows are the missing label.
+    domains:
+      p4: [1, 2, 3, 4, 9]     # empresa: con nombre / sin nombre / subordinado de una unidad doméstica / en el extranjero / no sabe
+      p4b: [1, 2, 3, 4, 5]    # agropecuaria / institución educativa u hospital / pública o sin fines de lucro / sector privado / no determinable
+      p4e: [1, 2, 3, 4, 9]    # establecimiento y oficina / sólo oficina / sólo local / sin local / no sabe
+      p4f: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 99]   # dónde se realizan las actividades (see the rules)
+      p4h: [1, 2, 3, 4, 5, 9] # instalaciones propias / de otra empresa / visitando clientes / en la obra / ninguna / no sabe
+      scian: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    rules:
+      - {any: {p4b: [2, 3]}, level: establecimiento}          # institutions (schools, hospitals, government, non-profits) skip 4e-4h
+      - {any: {p4b: [1]}, level: otro_o_sin_local}            # agricultural activity (field)
+      - {any: {p4h: [1, 2], p4e: [1, 2, 3]}, level: establecimiento}                        # premises ...
+      - {any: {p4h: [1, 2], p4e: [1, 2, 3]}, all: {scian: [6, 7]}, level: comercio_o_puesto} # ... in commerce
+      - {any: {p4f: [3, 9, 10]}, level: comercio_o_puesto}    # improvised, semi-fixed or fixed stall
+      - {any: {p4f: [8], p4: [3]}, level: otra_vivienda}      # at the employer's or client's home; domestic workers
+      - {any: {p4f: [1, 2, 4, 5, 6, 7, 11], p4h: [3, 4]}, level: otro_o_sin_local}   # field, street, vehicle, own home, other; clients, site
+  informalidad:
+    column: emp_ppal        # INEGI's classification of the main job
+    map: {1: informal, 2: formal}

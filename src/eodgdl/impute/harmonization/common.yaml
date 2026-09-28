@@ -1,0 +1,31 @@
+# Harmonized variables shared by ENOE and the EOD survey (and ENIGH later): the common levels every source is mapped
+# to, and the cut points. Ported from informal-jobs-model's config/harmonization.yaml; the per-source value maps are
+# enoe.yaml and eod.yaml beside this file. Read by eodgdl.impute.harmonize.
+
+missing_label: no_especificado
+
+# Levels of the harmonized categorical variables (a task declares no levels for these: they come from here). The
+# missing label is appended by the task's level contract.
+levels:
+  genero: [H, F]
+  ocupacion: [trabajador, independiente, sin_pago]
+  escolaridad: [sin_instruccion, primaria_o_secundaria, carrera_tecnica_o_preparatoria, licenciatura, postgrado]
+  estado_civil: [union_libre, separado, divorciado, viudo, casado, soltero]
+  parentesco: [jefe_del_hogar, conyuge, hijo, otro_parentesco, sin_parentesco]
+  lugar_trabajo: [establecimiento, comercio_o_puesto, otra_vivienda, otro_o_sin_local]
+  # The nine municipalities of the Guadalajara metropolitan area as the EOD covers them, then the rest of Jalisco.
+  municipio: [guadalajara, zapopan, tlaquepaque, tlajomulco, tonala, el_salto, juanacatlan, ixtlahuacan_membrillos, zapotlanejo, otro]
+  tamano_viv_cat: ["1", "2", "3", "4", "5", "6", "7_y_mas"]
+  edad_cat: ["0_2", "3_4", "5", "6_7", "8_11", "12_14", "15_17", "18_24", "25_49", "50_59", "60_64", "65_y_mas"]
+  sector: [comercio, gobierno_otro_agricultura, manufactura_construccion, servicios_transporte]
+  informalidad: [informal, formal]
+
+# Cut points: left-closed bins, the last one open.
+age:
+  bins: [0, 3, 5, 6, 8, 12, 15, 18, 25, 50, 60, 65]
+  labels: ["0_2", "3_4", "5", "6_7", "8_11", "12_14", "15_17", "18_24", "25_49", "50_59", "60_64", "65_y_mas"]
+household_size:
+  cap: 10                # the count is capped here in both surveys (the EOD answer stops at "10 y +")
+  # Collapsed at 7+: the ENOE roster count and the EOD self-report diverge 5x above 8 persons.
+  bins: [1, 2, 3, 4, 5, 6, 7]
+  labels: ["1", "2", "3", "4", "5", "6", "7_y_mas"]

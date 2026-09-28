@@ -335,3 +335,85 @@ def test_compare_pairs_candidates_with_the_baseline(labelled_source, tmp_path):
     dropped = paired[(paired["candidate"] == "no_c") & (paired["arm"] == "with_b")]
     assert (dropped["mean_difference"] != 0).all()
     assert (paired[(paired["candidate"] == "no_c") & (paired["arm"] == "without_b")]["mean_difference"] == 0).all()
+
+
+def test_harmonization_variables():
+    variables = {
+        "rel": {"column": "par_c", "floordiv": 100, "map": {1: "jefe", 2: "conyuge"}},
+        "mun": {"column": "mun", "map": {39: "gdl"}, "otherwise": {"level": "otro", "domain": [1, 125]}},
+        "civil": {"column": "e_con", "map": {1: "union", 5: "casado"}, "allowed_unmapped": [9]},
+        "size": {"column": "n", "number": {"map": {"1": 1, "2": 2, "10 y +": 10}, "cap": 7}},
+        "size_cat": {"from": "size", "bins": "household_size"},
+        "age": {"column": "eda", "number": {"unspecified": [98]}},
+        "place": {"domains": {"p4b": [1, 2, 3], "scian": [6, 7, 8]}, "rules": [
+            {"any": {"p4b": [2, 3]}, "level": "establecimiento"},
+            {"any": {"p4b": [2]}, "all": {"scian": [6, 7]}, "level": "comercio"}]},
+    }
+    frame = pd.DataFrame({"par_c": pd.array([101, 203, None], "Int64"), "mun": pd.array([39, 120, None], "Int64"), "e_con": pd.array([1, 9, 5], "Int64"),
+                          "n": ["1", "10 y +", None], "eda": pd.array([30, 98, None], "Int64"), "p4b": pd.array([2, 3, 1], "Int64"), "scian": pd.array([6, 8, 7], "Int64")})
+    out = harmonize.apply_variables(frame, variables)
+    assert out["rel"].tolist() == ["jefe", "conyuge", MISSING]
+    assert out["mun"].tolist() == ["gdl", "otro", MISSING]
+    assert out["civil"].tolist() == ["union", MISSING, "casado"]
+    assert out["size"].tolist()[:2] == [1, 7] and pd.isna(out["size"].iloc[2])
+    assert out["size_cat"].tolist() == ["1", "7_y_mas", MISSING]
+    assert out["age"].tolist()[0] == 30 and out["age"].isna().tolist()[1:] == [True, True]
+    assert out["place"].tolist() == ["comercio", "establecimiento", MISSING]
+    with pytest.raises(ValueError, match=r"Unmapped categories in mun: \['200'\]"):
+        harmonize.apply_variables(frame.assign(mun=pd.array([39, 200, None], "Int64")), {"mun": variables["mun"]})
+    with pytest.raises(ValueError, match="outside its declared domain"):
+        harmonize.apply_variables(frame.assign(p4b=pd.array([2, 4, 1], "Int64")), {"place": variables["place"]})
+
+
+def test_eod_harmonization_covers_the_schema():
+    # every label the eodgdl schemas allow in a harmonized EOD column is mapped (or deliberately left unmapped)
+    from eodgdl.impute.sources.eod import schema_levels
+
+    for name, definition in harmonize.load_harmonization("eod")["variables"].items():
+        if "map" not in definition:
+            continue
+        column = {"destino_trabajo": "tipo_lugar_destino"}.get(definition["column"], definition["column"])
+        unmapped = set(schema_levels(column)) - set(definition["map"]) - set(definition.get("allowed_unmapped", []))
+        assert not unmapped, (name, sorted(unmapped))
+
+
+def test_enoe_source_on_a_stand_in(monkeypatch):
+    # The employed filter, the roster's dwelling size, the weight over pooled quarters and the cross-quarter household
+    # key, on two quarters of a stand-in mxcensus (no network).
+    mxcensus = pytest.importorskip("mxcensus")
+    from eodgdl.impute.sources import Context, enoe
+
+    def dwelling(v_sel, **extra):
+        return {"tipo": "1", "mes_cal": "2", "cd_a": "14", "ent": "14", "con": "0100", "v_sel": v_sel, **extra}
+
+    def persons(period, ent, canonical_filter, labels):
+        base = {"n_hog": "1", "h_mud": "0", "mun": "39", "est_d_tri": "5", "upm": "7", "est": "2", "sex": "1", "pos_ocu": "1", "scian": "7",
+                "cs_p13_1": "3", "emp_ppal": "1", "e_con": "5", "par_c": "101", "p4": "1", "p4b": "4", "p4e": "3", "p4f": "", "p4h": "1",
+                "tue2": "5", "seg_soc": "2", "fac_tri": "300"}
+        rows = [
+            {**dwelling("01"), **base, "n_ren": "01", "eda": "30", "r_def": "00", "c_res": "1", "clase2": "1"},
+            {**dwelling("01"), **base, "n_ren": "02", "eda": "11", "r_def": "00", "c_res": "1", "clase2": "1"},   # too young
+            {**dwelling("02"), **base, "n_ren": "01", "eda": "45", "r_def": "00", "c_res": "2", "clase2": "1"},   # moved out
+            {**dwelling("02"), **base, "n_ren": "02", "eda": "98", "r_def": "00", "c_res": "3", "clase2": "1"},   # age unspecified: kept
+            {**dwelling("03"), **base, "n_ren": "01", "eda": "40", "r_def": "00", "c_res": "1", "clase2": "2"},   # not employed
+        ]
+        return pd.DataFrame(rows)
+
+    def sdem(table, period, ent, labels):
+        return pd.DataFrame([{**dwelling("01"), "c_res": "1"}] * 3 + [{**dwelling("02"), "c_res": "3"}, {**dwelling("02"), "c_res": "2"}])
+
+    monkeypatch.setattr(mxcensus, "load_enoe_persons", persons)
+    monkeypatch.setattr(mxcensus, "load_enoe", sdem)
+    config = {**enoe.load_config()["enoe.workers"], "periods": ["2023t1", "2023t2"]}
+    frame = enoe.workers(Context(cache=False), config).frame
+    assert len(frame) == 4 and frame["period"].tolist() == ["2023t1", "2023t1", "2023t2", "2023t2"]
+    assert frame["survey_weight"].tolist() == [150.0] * 4
+    assert frame["dwelling_size"].tolist() == [3, 1, 3, 1]
+    assert frame["hogar"].tolist()[:2] == ["14_14_100_1_1_0", "14_14_100_2_1_0"]          # no panel-visit fields
+    harmonized = enoe.harmonize_enoe(frame, None, {}, None)
+    assert harmonized["edad_num"].isna().tolist() == [False, True, False, True]
+    assert harmonized[["lugar_trabajo", "sector", "informalidad"]].iloc[0].tolist() == ["comercio_o_puesto", "comercio", "informal"]
+
+    monkeypatch.setattr(mxcensus, "load_enoe_persons", lambda **kwargs: pd.concat([persons(**kwargs)] * 2))
+    with pytest.raises(AssertionError, match="do not identify persons"):
+        enoe.workers(Context(cache=False), config)

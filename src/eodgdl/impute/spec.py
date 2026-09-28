@@ -41,7 +41,7 @@ class TaskSpec:
     prefix: str
     missing_label: str
     missing_values: dict           # feature -> answers that count as unobserved
-    builders: list
+    builders: object               # [builder, ...], or {source: [builder, ...]} when the sources differ
     groups: dict
     numeric: list
     declared_levels: dict
@@ -52,6 +52,7 @@ class TaskSpec:
     evaluation: dict
     builder_config: dict
     bundle_file: str | None
+    level_subsets: dict            # feature -> levels an unsupported value is averaged over at scoring time
     raw: dict = field(repr=False)
 
     @property
@@ -74,6 +75,16 @@ class TaskSpec:
     @property
     def probability_columns(self):
         return [f"prob_{self.prefix}_{slug}" for slug in self.class_slugs]
+
+    def builders_for(self, source):
+        """The feature builders run on ``source``'s frame."""
+        if isinstance(self.builders, dict):
+            return list(self.builders.get(source, []))
+        return list(self.builders)
+
+    @property
+    def all_builders(self):
+        return [name for names in self.builders.values() for name in names] if isinstance(self.builders, dict) else list(self.builders)
 
     def expand(self, names):
         """Feature names with group names replaced by their members, in order, without repeats."""
@@ -132,6 +143,7 @@ class TaskSpec:
             "missing_values": self.missing_values,
             "arms": [{"name": arm.name, "features": list(arm.features), "requires": list(arm.requires)} for arm in self.arms],
             "auxiliary": {feature: {arm.name: self.auxiliary_predictors(feature, arm.name) for arm in self.arms} for feature in self.auxiliary},
+            "level_subsets": self.level_subsets,
         })
 
 
@@ -156,11 +168,12 @@ def parse_task(raw):
         scores={str(slug): float(value) for slug, value in target.get("scores", {}).items()},
         prefix=raw.get("outputs", {}).get("prefix", name), missing_label=raw.get("missing_label", MISSING_LABEL),
         missing_values={feature: list(values) for feature, values in raw.get("missing_values", {}).items()},
-        builders=list(features.get("builders", [])), groups=groups, numeric=list(features.get("numeric", [])),
+        builders=({source: list(names) for source, names in features["builders"].items()} if isinstance(features.get("builders"), dict) else list(features.get("builders", []))), groups=groups, numeric=list(features.get("numeric", [])),
         declared_levels={feature: list(values) for feature, values in levels.get("declared", {}).items()},
         schema_columns=dict(levels.get("schema_columns", {})), arms=[], auxiliary=dict(raw.get("auxiliary", {})),
         selection=dict(raw.get("selection", {})), evaluation=dict(raw.get("evaluation", {})),
-        builder_config=dict(raw.get("builders", {})), bundle_file=raw.get("bundle"), raw=raw,
+        builder_config=dict(raw.get("builders", {})), bundle_file=raw.get("bundle"),
+        level_subsets={feature: list(levels) for feature, levels in raw.get("scoring", {}).get("level_subsets", {}).items()}, raw=raw,
     )
     for arm_name, arm in raw["arms"].items():
         exclude = set(spec.expand(arm.get("exclude", [])))
@@ -172,10 +185,14 @@ def parse_task(raw):
     _check(set(spec.numeric) <= set(spec.features), f"{name}: numeric features no arm uses: {sorted(set(spec.numeric) - set(spec.features))}")
     for feature in spec.auxiliary:
         _check(feature in spec.features and feature not in spec.numeric, f"{name}: auxiliary model for {feature!r}, not a categorical feature of the task")
+    for feature in spec.level_subsets:
+        _check(feature in spec.features and feature not in spec.numeric, f"{name}: level subset for {feature!r}, not a categorical feature of the task")
     for feature in spec.declared_levels:
         _check(feature in spec.features, f"{name}: levels declared for {feature!r}, which no arm uses")
     for builder in spec.builder_config:
-        _check(builder in spec.builders, f"{name}: configuration for builder {builder!r}, which the task does not use")
+        _check(builder in spec.all_builders, f"{name}: configuration for builder {builder!r}, which the task does not use")
+    if isinstance(spec.builders, dict):
+        _check(set(spec.builders) <= {spec.source, spec.score_source}, f"{name}: builders for sources the task neither trains nor scores on")
 
     return spec
 

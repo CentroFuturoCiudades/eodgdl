@@ -141,7 +141,7 @@ def load_chain(name):
 @dataclass
 class ChainResult:
     """``frame``: the source's keys, every task's outputs (marginal probabilities; per-scenario conditionals
-    ``prob_<p>_<class>_given_<feature>_<level>`` for an enumerated step with one upstream) and every derived output
+    ``prob_<p>_<class>_given_<feature>_<level>``, every row at every level, for an enumerated step with one upstream) and every derived output
     (``prob_<column>_<level>`` or ``<column>_media``). ``completions``: the long table (keys, ``completion``,
     ``weight``, each step's value, derived values). ``provenance``: the bundles and settings used."""
 
@@ -246,6 +246,12 @@ def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=N
                 level_map = _level_map(use)
                 filled[use.feature] = values.map(level_map).to_numpy() if level_map else values.to_numpy()
             combos = filled.drop_duplicates().reset_index(drop=True)
+            if chain.propagation == "enumerate" and len(step.uses) == 1:
+                # every row at every level of the feature, so the conditionals P(y | x, level) are complete
+                use = step.uses[0]
+                levels = sorted(set(dict(use.transform).values())) if use.transform else list(specs[use.task].class_slugs)
+                grid = pd.DataFrame({"row": np.repeat(np.arange(n_rows), len(levels)), use.feature: np.tile(np.asarray(levels, dtype=object), n_rows)})
+                combos = pd.concat([combos, grid]).drop_duplicates().reset_index(drop=True)
             expanded = frame.iloc[combos["row"].to_numpy()].reset_index(drop=True)
             for use in step.uses:
                 expanded[use.feature] = combos[use.feature].to_numpy()
