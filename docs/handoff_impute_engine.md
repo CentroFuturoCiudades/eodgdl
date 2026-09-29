@@ -1,54 +1,39 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
-## 0. Status at the end of session 4 (2026-09-28): released as v0.3.0, then reviewed and simplified
+## 0. Status at the end of session 5 (2026-09-28): v0.4.0 released; informal-jobs-model's figures next
 
-Read this section first, starting with **Pending for session 5**; §1–§11 below are the original plan (session 1), kept
+Read this section first, starting with **Pending for session 6**; §1–§11 below are the original plan (session 1), kept
 as the record of the design. Then read `CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every
 module as built) and `src/eodgdl/impute/__init__.py`.
 
-### Pending for session 5 (start here)
+### Pending for session 6 (start here)
 
-Session 4 reviewed the whole engine and refactored it (what changed: "After the release" below). It is **one commit on
-`impute-chains`, after 9950d53, not pushed and not merged into `main`**. Everything it touched was verified to reproduce
-the v0.3.0 outputs exactly, apart from two intended fixes. What is left, in the order to take it up:
-
-1. **Push, merge, release (ask the user).** The commit changes the public API: `eodgdl.giro`'s training and evaluation
-   wrappers are removed (`giro/model.py`: `tune_models`, `evaluate_model`, `impute_under_covariate_shift`, ...), the
-   CLI's `--bundle` is gone, and `retrain --out` names the root (`<out>/<task>/`). `data/` is unchanged, so the mirror
-   and `REF = "v0.3.0"` stay valid and no data tag is needed. Ask: push `impute-chains`; merge it into `main`
-   (`--no-ff`, as a5216c1); release now (a breaking change: 0.4.0 by the CLAUDE.md "Data access" recipe, `REF` set to
-   the new tag) or later.
-
-2. **NSE calibration breaks ties by survey order (the user decides; recommendation below).**
-   `derive/amai.py::nse_ageb_calibrated` sorts each (completion, AGEB) by AMAI points with a stable sort, so dwellings
-   with equal points keep the survey's row order, and their weighted mid-ranks, hence levels, follow it. Measured in
-   session 4 on `output/impute/nse/completions.parquet` joined to the dwellings' `ageb`: 49,980 of 895,050 completions
-   (5.6%) sit in a (draw, AGEB, points) block whose members end at different calibrated levels; there, the dwelling
-   first in survey order averages level 2.58 against 3.44 for the rest (0 = E … 6 = A/B), in every draw alike; 10,848 of
-   the 17,901 dwellings are in such a block in some draw. The AGEB mixes still match AMAI's (what the calibration is
-   for); which dwellings of a tie get the lower level is biased.
-   - Recommended: break ties at random within each completion, seeded (pass the chain's `seed` to derive steps in
-     `chain._derive`'s config, add a random key after `points` in the sort). Alternative: tie-averaged mid-ranks (a tie
-     block shares one level; the AGEB mix then only approximates AMAI's).
-   - No retrain: a derive step only. Rerun `eodgdl impute score nse` and `evaluate nse`, re-render
-     `reports/imputation_nse.qmd`, and add a tie at a level boundary to `tests/test_nse.py::test_points_cut_and_calibration`
-     (its four dwellings have distinct points). Expect `prob_nse_calibrado_*` per dwelling, `completions.parquet` and
-     `evaluation/agreement.parquet` to move, and the AGEB-level `reference` shares to stay within Monte Carlo noise.
-
-3. **Refresh `output/impute/` (local, gitignored; do it with or after item 2).** It still holds the v0.3.0 runs, i.e.
-   the pre-refactor code's giro `evaluation/missingness.parquet` (education 1.84% / 46.48% where the fixed table gives
-   2.50% / 46.54%), giro's `scenarios.parquet` (the delta rows' unadjusted confidence) and a stale
-   `amai_trabajadores/evaluation/missingness.parquet` (a 17:21 leftover; `write_retrain` now clears such files).
-   `for t in giro informality educacion_jefe amai_banos amai_dormitorios amai_trabajadores; do uv run eodgdl impute
-   retrain $t --data data; done` (~25 min), then `score` and `evaluate` both chains with `--retrained output/impute`,
-   and re-render the three reports in place. The new bundles predict exactly as the installed ones, but their bytes
-   differ (eodgdl version, feature-cache keys, the auxiliary pipelines' layout): **do not copy them into `data/`**
-   unless a release is meant to ship them.
-
-4. **informal-jobs-model** (§10.5, open since phase 7): ask the user whether to archive it or reduce it to paper
-   figures that read eodgdl's outputs.
-
-5. **Review notes left as they are** (design points, not bugs; raise them if the user wants to go further):
+1. **informal-jobs-model's figures into a report here, then archive it (user, 2026-09-28).** The user chose the
+   figures of its notebooks 03 and 05 (ENOE vs EOD predictor distributions, ENOE informality profiles, the
+   known-sector comparison, the informality models' calibration, ENOE vs EOD informality overall and by sector), 06
+   and 08 (the head's education observed vs modelled, with the AMAI education score; the predominant NSE by AGEB,
+   AMAI's and the chain's before and after calibration, with the aggregate bars) and `informal_job_plots` (the
+   presentation versions: "OD duro" with the combined calibration curve; original vs modelled sector shares). Not
+   the old notebook-04 sector charts: `reports/imputation_giro.qmd` has them. In the style of eodgdl's reports (plain
+   matplotlib), shown in the report and written as PDF + 600-dpi PNG to `output/figures/`. The calibration figure's
+   isotonic curve is not saved today (`isotonic__<arm>.parquet` holds its metrics only): the retrain is to write it,
+   and the combined curve (each held-out row scored by the arm that scores it, informal-jobs-model's "hybrid")
+   beside it; then retrain informality. What session 5's inventory found:
+   - ENOE: `build_frame(load_task("informality"), Context(), role="train").frame` (`survey_weight` already / 8,
+     `informalidad`, `sector`, `edad_cat`, `municipio`); informal-jobs-model's metro benchmark is `municipio !=
+     "otro"` (38,933 rows, 39.35% informal, identical). EOD workers: the `role="score"` frame, weight `ponderador`
+     from `output/impute/{giro,informality}/scores.parquet`; the four sectors are `prob_giro_*` collapsed with
+     `chains/sector_informality.yaml`'s transform. "OD muestreo" is one seeded Bernoulli draw per worker, "OD duro"
+     `informalidad_final`, "esperado" the probabilities.
+   - NSE maps: per AGEB, the arg-max of the weighted `prob_nse_*` / `prob_nse_calibrado_*`; AMAI's
+     `nivel_predominante` through `derive.amai.read_amai_ageb`; polygons from mxcensus's Marco Geoestadístico 2020
+     (as `reweight.zoning` reads it), which holds every urban AGEB the EOD records. "Before calibration" is the
+     draws' distribution, not informal-jobs-model's plug-in cut.
+   - informal-jobs-model's `outputs/` (its figures, bundles, tables) is gitignored and stays on disk; its tracked
+     `data/GUADALAJARA_SHP/` is replaced by the Marco Geoestadístico. Then its README points to eodgdl and its GitHub
+     repository is archived: ask the user before each GitHub step.
+2. **Review notes left as they are** (design points from session 4, not bugs; raise them if the user wants to go
+   further):
    - Held-out metrics and scoring treat a missing feature differently: `run.heldout` and the evaluators use the
      model's `predict_proba`, where the missing label is a category it was trained with, while scoring
      (`marginalize`) never counts the missing label as supported and averages over the observed levels. The published
@@ -66,6 +51,33 @@ the v0.3.0 outputs exactly, apart from two intended fixes. What is left, in the 
    - `adjust_imputed_share` clips at one (§6.4).
    - ruff warns that `pyproject.toml`'s top-level `[tool.ruff] ignore` should move to `[tool.ruff.lint]` (not impute).
 
+### Session 5 (2026-09-28): session 4's pending list, resolved
+
+1. **Pushed, released, merged** (user). 3539cee pushed; then b321096 (the NSE ties, below) and 2ecfcdd (version
+   0.4.0, `REF = "v0.4.0"`, `uv lock`), tagged `v0.4.0` (lightweight) and pushed; `impute-chains` merged into `main`
+   (`--no-ff`) with the commit that wrote this handoff, and pushed. `data/` is v0.3.0's, unchanged. The mirror check
+   passed (an empty `EODGDL_CACHE_DIR`, no `EODGDL_DATA_DIR`): `giro.load_model()` and `score` of both chains fetched
+   the three survey files, the zone file, five bundles and the AMAI file from the tag, each checksum-verified, and the
+   chains' scores and completions equal the local run's exactly (the provenance differs only in the eodgdl version
+   the bundles recorded: 0.2.0 for the installed ones, 0.3.0 for the retrained ones).
+2. **The NSE calibration ranks tied points at random per draw** (user's choice; b321096). A derive step's config
+   carries `seed`, a `SeedSequence` that `chain._derive` spawns from the chain's seed by the step's position, apart
+   from the draws' stream. The alternative, tie-averaged mid-ranks, moved the AGEB mixes away from AMAI's in a
+   simulation on the v0.3.0 completions (mean total variation per draw and AGEB 0.089 → 0.104). On the survey against
+   the v0.3.0 run: draws, points and uncalibrated levels identical; `nse_calibrado` changes in 2.7% of the
+   completions; the first dwelling of a tie now averages level 3.08 against 3.06 for the others (was 2.58 against
+   3.44); 8,612 dwellings' calibrated distributions move (mean total variation 0.041) and 619 of the 14,887
+   calibrated dwellings change their most probable level; the weighted shares, the Monte Carlo table and the AMAI
+   reference move by at most 5e-6. No retrain.
+3. **`output/impute/` refreshed** (local, gitignored). All six tasks retrained on the release's code (~24 min), both
+   chains scored and evaluated with `--retrained output/impute`, `giro_scores.parquet` rescored from the installed
+   bundle (it was the legacy bundle's), the three reports re-rendered. Against a copy of the v0.3.0 outputs, every
+   selection, CV loss, held-out metric and table is identical except the intended changes: giro's `missingness` row
+   for education (1.84% / 46.48% → 2.50% / 46.54%), giro's `scenarios.parquet` (the delta rows' confidence), the
+   stale `amai_trabajadores/evaluation/missingness.parquet` gone, and the NSE calibration (item 2). The retrained
+   bundles predict as the installed ones (identical scores); their bytes differ, so they were not copied to `data/`.
+4. **informal-jobs-model**: the user decided (pending item 1).
+
 ### Where things are
 
 | phase | commit | branch |
@@ -79,10 +91,12 @@ the v0.3.0 outputs exactly, apart from two intended fixes. What is left, in the 
 | 5b diagnostics (`eodgdl impute evaluate`), `reports/imputation_informality.qmd` | bf112ce | `impute-chains` |
 | 6 NSE: `eod.dwellings`, `enigh.households`, four tasks, chain `nse`, AMAI data file, `reports/imputation_nse.qmd` | 7cfef45 | `impute-chains` |
 | 7 release: six bundles installed in `data/`, giro parity fixture from the v2 bundle, docs, `v0.3.0` | 609938f, 48ae9b3 (tag `v0.3.0`) | `impute-chains`, merged into `main` |
-| review and simplification (session 4), this handoff's pending list | the commit after 9950d53 | `impute-chains` only (not pushed) |
+| review and simplification (session 4) | 3539cee | merged into `main` |
+| NSE ties at random, release `v0.4.0` (session 5) | b321096, 2ecfcdd (tag `v0.4.0`) | merged into `main` |
 
-`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7, with the `v0.3.0` tag on it. It is merged into `main`
-(`--no-ff`, as 00bf5f5) up to 9950d53. `uv run pytest`: 157 passed, ~110 s.
+`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7 and sessions 4–5, with the `v0.3.0` and `v0.4.0`
+tags on it. It is merged into `main` (`--no-ff`) up to the commit that wrote this handoff. `uv run pytest`: 158 passed,
+~110 s.
 
 Parity reached (details in the commit messages):
 - giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
@@ -201,7 +215,7 @@ A full review of `eodgdl.impute` and a refactor for one workflow; every shipped 
   fitted model's predictions (arms, auxiliary, components), except the two intended changes (giro's `missingness` row
   for education, 1.84% / 46.48% → 2.50% / 46.54%, now equal to the arm without education's share; the delta
   scenario's confidence); both chains scored and evaluated from those retrains (`--retrained`) are identical again,
-  and the three reports render from them. `output/impute/` itself was left as it was (pending item 3).
+  and the three reports render from them. `output/impute/` itself was left as it was (refreshed in session 5).
 - **How the parity was checked** (reuse it after any engine change): copy `output/impute/` aside; `score` each task
   and chain and `retrain` each task into another root (`--out`, then `score` / `evaluate --retrained` that root);
   compare every parquet with `pandas.testing.assert_frame_equal(check_exact=True)`, the summaries as dicts (timings,
