@@ -190,9 +190,48 @@ display(Markdown(
     f"never straddle the split. On the training rows, each arm tunes {len(families)} families under a {cv['splits']}-fold "
     f"household-grouped CV with the survey's person weights: " + "; ".join(
         f"**{name}** over " + ", ".join(f"`{k}` ∈ {v}" for k, v in f["params"].items()) for name, f in families.items())
-    + f". That is {total} configurations × {cv['splits']} folds per arm. Within each family, and then across families, "
-    "the simplest configuration whose paired fold difference to the best mean log loss is within one standard error is "
-    "kept."
+    + f". That is {total} configurations × {cv['splits']} folds per arm. Each validation fold is scored as the bundle "
+    "scores an imputed worker (@sec-evaluation), with the fold's training shares and a destination model fitted outside "
+    "the fold, so the CV and the held-out log losses describe the same predictor. Within each family, and then across "
+    "families, the simplest configuration whose paired fold difference to the best mean log loss is within one standard "
+    "error is kept."
+))
+```
+
+```{python}
+#| label: copied-records
+from eodgdl.eod import load_stages, repeated_diary_pairs
+from eodgdl.impute import select as selection
+from eodgdl.impute.features import build_frame
+from eodgdl.impute.sources import Context
+
+KEYS = ["folio_vivienda", "folio_habitante"]
+workers = build_frame(SPEC, Context()).frame.set_index(KEYS)
+shipped = load_stages().shipped
+pairs = repeated_diary_pairs(shipped.trips, shipped.hab, shipped.viv, shipped.legs)
+side = {s: workers.reindex(pd.MultiIndex.from_arrays([pairs[f"folio_vivienda_{s}"], pairs[f"folio_habitante_{s}"]])) for s in ("a", "b")}
+both = side["a"]["giro"].notna().to_numpy() & side["b"]["giro"].notna().to_numpy()      # two workers with a reported giro
+agree = {column: float((side["a"][column].astype(str).to_numpy()[both] == side["b"][column].astype(str).to_numpy()[both]).mean()) for column in ("giro", "ocupacion", "edad")}
+flagged = workers["diario_repetido"].astype(bool) & ~workers["giro_desconocido"].astype(bool)
+train, test = selection.split_known(workers.reset_index(), "giro", "folio_vivienda", "giro_desconocido", n_splits=cv["splits"], test_fold=cv["test_fold"], random_state=cv["seed"])
+in_train = pd.MultiIndex.from_frame(train[KEYS])
+a_in, b_in = (pd.MultiIndex.from_arrays([pairs[f"folio_vivienda_{s}"], pairs[f"folio_habitante_{s}"]]).isin(in_train) for s in ("a", "b"))
+a_test, b_test = (pd.MultiIndex.from_arrays([pairs[f"folio_vivienda_{s}"], pairs[f"folio_habitante_{s}"]]).isin(pd.MultiIndex.from_frame(test[KEYS])) for s in ("a", "b"))
+leaked = pd.concat([pairs.loc[a_test & b_in, ["folio_vivienda_a", "folio_habitante_a"]].set_axis(KEYS, axis=1),
+                    pairs.loc[b_test & a_in, ["folio_vivienda_b", "folio_habitante_b"]].set_axis(KEYS, axis=1)]).drop_duplicates()
+leak_share = test.set_index(KEYS).loc[pd.MultiIndex.from_frame(leaked), "ponderador"].sum() / test["ponderador"].sum()
+assert len(test) == SUMMARY["test_rows"] and agree["giro"] > 0.95 and agree["edad"] < 0.3 and len(leaked) > 0
+display(Markdown(
+    f"Copied worker records do straddle the split. {fmt(flagged.sum())} of the {fmt(known)} workers with a reported giro "
+    "repeat another household's whole diary (`hab.diario_repetido`, `reports/duplicate_diaries.qmd`), and in the "
+    f"{fmt(both.sum())} pairs of two such workers the giro agrees {pct(agree['giro'])} of the time, the occupation "
+    f"{pct(agree['ocupacion'])}, the age {pct(agree['edad'])}: the copies are person records with the age changed, not "
+    f"only trips. {fmt(len(leaked))} held-out workers ({pct(leak_share)} of the held-out weight) have their copy among the "
+    "training workers, and the CV folds split pairs the same way. Measured by repeated CV (2026-09-29, "
+    "`docs/handoff_impute_engine.md` §0, session 7), the model partly memorizes the copies: keeping them in one fold "
+    "makes the CV log loss some 0.006 higher and the held-out log loss some 0.003–0.005 higher, and the families keep "
+    "their order under either grouping. "
+    "The CV groups stay the households (decided 2026-09-29), so the losses below carry that optimism."
 ))
 ```
 

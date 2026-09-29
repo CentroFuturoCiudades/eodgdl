@@ -138,8 +138,8 @@ display(Markdown(
     "tenure, income, cars and internet, the head's weekend travel, and the dwelling's centrality. The model trains "
     "with the dwelling weight. "
     f"Selected: **{sel['model']}** ({params}), "
-    f"CV log loss {sel['weighted_log_loss']:.4f}. On held-out households, scored as the imputed ones are (an unanswered "
-    f"income averaged over the reported ones: @sec-income), the log loss is {m['weighted_log_loss']:.4f}, "
+    f"CV log loss {sel['weighted_log_loss']:.4f}, each fold scored as the imputed dwellings are (an unanswered income "
+    f"averaged over the reported ones: @sec-income). On held-out households, scored the same way, the log loss is {m['weighted_log_loss']:.4f}, "
     f"{pct(u['relative_improvement_over_marginal'])} below the weighted-marginal baseline, at a weighted accuracy of "
     f"{pct(m['weighted_accuracy'])}."
 ))
@@ -195,7 +195,8 @@ display(Markdown(
     "every AMAI level of the AGEB, the poorest included (the table, by AMAI's mean level of the AGEB: 0 = E, 2 = D+, "
     "3 = C-, 4 = C, 6 = A/B). One answer inflated rather than a better-educated group: it looks like a capture pattern, "
     "which the survey records no interviewer to trace. So the imputation does not read a refused income as a category: "
-    "like the held-out evaluation, it averages an unanswered income over the reported ones by their training shares. "
+    "like the selection's CV and the held-out evaluation, it averages an unanswered income over the reported ones by "
+    "their training shares. "
     "Read as a category, it would fit the known heads better and carry the pattern to the imputed heads, whose AGEBs "
     f"are poorer (AMAI mean level {where['imputed']:.2f}, against {where['known, reported']:.2f} for the known heads "
     f"that report an income and {where['known, refused']:.2f} for those that refused)."
@@ -307,8 +308,10 @@ mc = C("monte_carlo")
 worst = mc.loc[mc["monte_carlo_se"].idxmax()]
 display(Markdown(
     f"Across the {CHAIN.draws} draws each level's weighted share varies with a standard deviation of up to "
-    f"{100 * mc['sd_between_draws'].max():.2f} pp. The draw-to-draw spread is the imputation's own uncertainty, which "
-    f"a hard level would hide. The Monte Carlo error of the mean share is at most {100 * worst['monte_carlo_se']:.3f} pp "
+    f"{100 * mc['sd_between_draws'].max():.2f} pp. The draw-to-draw spread is the imputation's predictive uncertainty, "
+    "which a hard level would hide. It leaves out the models' own estimation uncertainty: each task has one fitted "
+    "model, so draws from it are narrower than proper multiple imputations. The Monte Carlo error of the mean share is "
+    f"at most {100 * worst['monte_carlo_se']:.3f} pp "
     f"({LEVEL_LABEL[worst['level']]}, `{worst['column']}`)."
 ))
 display(mc.assign(**{c: (mc[c] * 100).round(3) for c in ("mean_over_draws", "sd_between_draws", "monte_carlo_se")}))
@@ -338,8 +341,9 @@ display(pivot)
 The pipeline ports informal-jobs-model's notebooks 06–08, with these deliberate changes:
 
 - **The head's education** trains with the dwelling weight (the notebook used the person weight). The model is
-  selected by the engine's grouped CV and one-SE rule rather than the lowest mean over three preset feature sets. The
-  dwelling's centrality stands in for its AGEB, whose 1,700 levels exceed the boosting model's categorical limit.
+  selected by the engine's grouped CV and one-SE rule, each fold scored as the imputed dwellings are, rather than the
+  lowest mean over three preset feature sets. The dwelling's centrality stands in for its AGEB, whose 1,700 levels
+  exceed the 255 categories of the boosting candidates.
 - **Workers aged 14+** are counted from the EOD's roster (@sec-workers) instead of imputed from ENIGH.
 - **Vehicles** in ENIGH count cars, vans and pickups (the notebook counted cars only), as the EOD and AMAI do.
 - **Bathrooms and bedrooms** train on ENIGH's large cities rather than the whole country. They take the counted

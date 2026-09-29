@@ -188,6 +188,24 @@ selection compares configurations (the scoring path, and repeated CV against the
   either grouping), where a single run does in 1–2 of 10 seeds.
 - Option B for giro (the missing destination and mode as learned categories) is still the user's.
 
+**Decided (user, 2026-09-29) and done.** (1) The CV groups stay the households; the copied records are documented:
+`eod.repeated_diary_pairs` returns the pairs `flag_repeated_diaries` reads (exported; the flag unchanged, pinned at
+1,238 pairs in `tests/test_eod.py`), and `reports/imputation_giro.qmd` #sec-selection counts at render time what the
+copies do to the split (333 flagged known workers, giro agreeing 98.8% in 164 pairs, 50 held-out workers with their copy
+in training) and cites the measured optimism. (2) Selection on the scoring path, for every task (41cd5a7):
+`select.tune(expand=)`, `run.fold_expander`, the robustness CV and `run.compare`. (3) One five-fold run: asked whether
+ROPE would be steadier, measured that it would not (the Bayesian correlated t-test on the same folds, "keep the simpler
+family unless the best is credibly better by more than r", keeps RandomForest in 90% of single runs at r = 0 and in
+100% of three-run sets at r ≥ 0.005: stable only where the width decides, and every tie goes to the family order LR <
+RF < GB, which says little about complexity); the user kept the single run. (4) One income arm.
+The rerun (`scripts/impute/rerun.sh`, then `parity.py output/impute_7f783b3 output/impute --models`) moved exactly
+what was intended: educacion_jefe's selection (LogisticRegression C 0.1; CV as scored 1.4562; held-out 1.4204, accuracy
+44.3%) and with it its scores, tables and the `nse` chain (the calibrated shares by at most 0.03 pp); giro's and
+informality's CV tables and the summaries' CV losses (giro 0.9113 / 0.9276, informality 0.4386 / 0.4588), their fitted
+models predicting identically and their scores and `sector_informality` unchanged; the three ENIGH bundles byte-identical.
+`output/impute/` holds the new run; the one before is `output/impute_7f783b3/` (with `output/figures_7f783b3/` and the
+four reports' HTML in `output/reports_7f783b3/`). The four impute reports were re-rendered.
+
 ### Session 6 (2026-09-28): session 5's pending list
 
 The user asked for the numbers and the options of items 1 and 2 and the fixes of items 3–8; later that night they

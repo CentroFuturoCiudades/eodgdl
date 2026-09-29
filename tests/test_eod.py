@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from eodgdl import clean_trip_chains, flag_repeated_diaries, load_eod
+from eodgdl import clean_trip_chains, flag_repeated_diaries, load_eod, repeated_diary_pairs
 from eodgdl.chains import (
     FIX_CODES,
     ISSUE_CODES,
@@ -802,6 +802,8 @@ def test_a_diary_repeated_in_another_household_with_nudged_times_is_flagged():
     flag = flag_repeated_diaries(trips, hab, viv)
     assert flag.name == "diario_repetido" and flag.dtype == bool
     assert flag[flag].index.tolist() == [(1, 1), (2, 1)]
+    pairs = repeated_diary_pairs(trips, hab, viv)
+    assert pairs.drop(columns="max_offset").to_numpy().tolist() == [[1, 1, 2, 1]] and pairs["max_offset"].tolist() == [8.0]
 
 
 def test_load_eod_flags_repeated_diaries_and_drops_none(stages):
@@ -814,5 +816,11 @@ def test_load_eod_flags_repeated_diaries_and_drops_none(stages):
     assert not hab.loc[(9560, 4), "diario_repetido"] and not hab.loc[(879, 7), "diario_repetido"]
     # the same rule reads the legs table once the traslado columns are gone
     assert flag_repeated_diaries(trips, hab, viv, legs).equals(hab.diario_repetido)
+    # the pairs behind the flag: a person repeated in several households is in several pairs
+    pairs = repeated_diary_pairs(trips, hab, viv, legs)
+    members = {(v, h) for side in ("a", "b") for v, h in zip(pairs[f"folio_vivienda_{side}"], pairs[f"folio_habitante_{side}"])}
+    assert len(pairs) == 1_238 and members == set(hab.index[hab.diario_repetido])
+    assert (pairs["folio_vivienda_a"] < pairs["folio_vivienda_b"]).all() and pairs["max_offset"].le(10).all()
+    assert ((pairs["folio_vivienda_a"] == 879) & (pairs["folio_habitante_a"] == 3) & (pairs["folio_vivienda_b"] == 9530) & (pairs["folio_habitante_b"] == 3)).any()
     # the flag is set on the survey as shipped and survives the chain rules and the hand passes
     assert stages.revised.hab.diario_repetido.sum() == 1_793
