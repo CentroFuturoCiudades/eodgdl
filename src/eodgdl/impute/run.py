@@ -108,7 +108,7 @@ def predict_rows(spec, bundle, rows, auxiliary=True):
 
 def score_task(task, tables=None, bundle=None, path=None, retrained=None, context=None):
     """Load (or take) the task's bundle and score its scoring source's rows. ``tables`` are the survey tables
-    (loaded, and the features cached, when omitted); ``bundle`` a fitted bundle (v2 or a legacy giro dict), else read
+    (loaded, and the features cached, when omitted); ``bundle`` a fitted v2 bundle, else read
     by :func:`~eodgdl.impute.bundle.load_bundle` (``path``, else ``<retrained>/<task>/``, else the data file)."""
     spec = _spec(task)
     context = context or Context(tables=tables)

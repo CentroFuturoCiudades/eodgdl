@@ -395,6 +395,33 @@ def test_bootstrap_bundles_refit_the_selected_configurations(labelled_source, tm
     assert bundles.load_bootstrap(spec, tmp_path / "elsewhere") == [] and bundles.load_bootstrap(spec, None) == []
 
 
+def test_check_bundle_refuses_what_cannot_score(labelled_source, tmp_path):
+    from eodgdl.impute import bundle as bundles, run, sources
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    fitted = run.retrain(spec, context=sources.Context(cache_dir=tmp_path), n_jobs=1, progress=False).bundle
+    task_levels = run.task_levels(spec)
+    assert bundles.check_bundle(fitted, spec, task_levels) is fitted
+    arms, auxiliary, metadata = fitted["arms"], fitted["auxiliary"], fitted["metadata"]
+    cases = {
+        "bundle of task 'other'": {**fitted, "task": "other"},
+        "fitted with scikit-learn 0.1": {**fitted, "metadata": {**metadata, "sklearn_version": "0.1"}},
+        r"category levels differ from the task's for \['a'\]": {**fitted, "category_levels": {**task_levels, "a": ["a0", MISSING]}},
+        "classes .* differ from the task's": {**fitted, "classes": {"X": "x", "Y": "y"}},
+        r"arms \['without_b', 'with_b'\] differ": {**fitted, "arms": dict(reversed(list(arms.items())))},
+        "arm with_b: features differ from the task's": {**fitted, "arms": {**arms, "with_b": {**arms["with_b"], "features": ["a", "c"]}}},
+        "arm with_b: the fitted pipeline selects other features": {**fitted, "arms": {**arms, "with_b": {**arms["with_b"], "model": arms["without_b"]["model"]}}},
+        "arm with_b: auxiliary model for 'b', which the task does not declare": {**fitted, "auxiliary": {**auxiliary, "with_b": {"b": auxiliary["with_b"]["a"]}}},
+        "arm with_b: the auxiliary a model uses other predictors": {**fitted, "auxiliary": {**auxiliary, "with_b": {"a": auxiliary["without_b"]["a"]}}},
+        "scoring_hash differs from the task's": {**fitted, "metadata": {**metadata, "scoring_hash": "x"}},
+        "level_contract_hash differs from the task's": {**fitted, "metadata": {**metadata, "level_contract_hash": "x"}},
+    }
+    for message, broken in cases.items():
+        with pytest.raises(bundles.BundleMismatch, match=message):
+            bundles.check_bundle(broken, spec, task_levels)
+
+
 def test_bootstrap_samples_draw_whole_clusters():
     from eodgdl.impute import run
 
@@ -748,3 +775,58 @@ def test_harmonizations_are_builders_keyed_by_the_harmonization_code():
         builder = features.get_builder(name)
         assert builder.replaces and Path(builder.module_file).name == "harmonize.py"
         assert set(builder.versions(None, {})) == {"harmonization", "common"}
+
+
+def test_amai_points_levels_and_calibration(monkeypatch):
+    """AMAI's points (the tasks' class scores plus the dwelling's own answers), the cut into levels, and the rank
+    calibration: within an AGEB with AMAI's distribution the dwellings ordered by points take the levels of its
+    cumulative distribution at their weighted mid-rank, ties in a random order per completion; elsewhere the level stays."""
+    from eodgdl.impute.derive import amai
+
+    monkeypatch.setattr(amai, "_task_points", lambda values, task: values.astype(float).to_numpy())       # values are points already
+    base = pd.DataFrame({"internet": ["Sí", "No", "Sí", "No", "Sí", "Sí"], "ageb": ["A", "A", "A", "A", "B", "C"], "w": 1.0})
+    completions = pd.DataFrame({"row": [0, 1, 2, 3, 4, 5], "completion": 0, "weight": 1.0, "educacion": [59.0, 11.0, 27.0, 27.0, 85.0, 0.0]})
+    points = amai.amai_points(completions, base, {"tasks": ["educacion"], "observed": {"internet": {"Sí": 32, "No": 0}}})["amai_puntos"]
+    assert points.tolist() == [91.0, 11.0, 59.0, 27.0, 117.0, 32.0]
+    completions["amai_puntos"] = points.to_numpy()
+    levels = amai.nse_level(completions, base, {"from": "amai_puntos", "edges": [-np.inf, 48, 95, 116, np.inf], "labels": ["e", "d", "d_mas", "c_menos"]})["nse"]
+    assert levels.tolist() == ["d", "e", "d", "e", "c_menos", "e"]
+    completions["nse"] = levels.to_numpy()
+    shares = pd.DataFrame({"e": [0.5, 0.0], "d": [0.0, 1.0], "c_mas": [0.5, 0.0]}, index=["A", "B"])        # AGEB C has no AMAI distribution
+    monkeypatch.setattr(amai, "nse_ageb_shares", lambda config: shares)
+    config = {"from": "amai_puntos", "level": "nse", "ageb": "ageb", "weight": "w", "levels": {"nse_calibrado": ["e", "d", "c_mas"]}, "seed": np.random.SeedSequence(1)}
+    calibrated = amai.nse_ageb_calibrated(completions, base, config)["nse_calibrado"].tolist()
+    # AGEB A by points: 11 (row 1), 27 (row 3), 59 (row 2), 91 (row 0): the lower half E, the upper half C+
+    assert calibrated == ["c_mas", "e", "c_mas", "e", "d", "e"]
+    with pytest.raises(ValueError, match="complete datasets"):
+        amai.nse_ageb_calibrated(completions, base, {**config, "propagation": "enumerate"})
+    # equal points share the level split at random, anew in each completion
+    tied = pd.DataFrame({"row": np.tile([0, 1, 2, 3], 200), "completion": np.repeat(np.arange(200), 4), "weight": 1 / 200, "amai_puntos": 50.0, "nse": "d"})
+    tied_base = base.iloc[:4]
+    split = amai.nse_ageb_calibrated(tied, tied_base, {**config, "seed": np.random.SeedSequence(2)})["nse_calibrado"].to_numpy().reshape(200, 4)
+    assert ((split == "e").sum(axis=1) == 2).all()                                       # AMAI's half and half in every completion
+    assert 0.35 < (split[:, 0] == "e").mean() < 0.65                                      # whichever dwelling comes first
+
+
+def test_eod_sources_on_the_survey(stages):
+    """The EOD's sources on the cleaned survey: the workers with their interview month, one dwelling per row with its
+    head and its members aged 14+ who worked."""
+    from eodgdl.impute.sources import Context
+    from eodgdl.impute.sources.eod import dwellings, load_config, workers
+
+    context = Context(tables=stages.revised)
+    config = load_config()
+    frame = workers(context, config["eod.workers"])
+    hab = stages.revised.hab
+    employed = hab["trabajo_semana_pasada"].isin(config["eod.workers"]["employed_categories"])
+    assert len(frame) == int(employed.sum()) == 26_913 and not frame.duplicated(["folio_vivienda", "folio_habitante"]).any()
+    assert set(frame["mes_entrevista"]) == {"1", "2", "3", "4"} and frame["centralidad"].notna().all()
+    homes = dwellings(context, config["eod.dwellings"])
+    assert len(homes) == len(stages.revised.viv) == 17_901 and homes["folio_vivienda"].is_unique
+    assert set(homes["jefe_fuente"]) == {"observado", "mayor_edad"} and homes["trabajadores_14_n"].ge(0).all()
+    reported = homes["jefe_fuente"].eq("observado")                                   # else the oldest member stands in
+    assert int(reported.sum()) == 16_873 and homes["sexo_jefe"].notna().all()
+    assert homes["trabajadores_14_n"].sum() == int((hab["edad"].ge(14) & employed).sum()) == 26_797
+    # a category the survey does not hold (a label split at its comma, as eod.yaml's flow list did) fails loudly
+    with pytest.raises(ValueError, match=r"not levels of trabajo_semana_pasada: \['Tenía trabajo', 'pero no trabajó'\]"):
+        dwellings(context, {**config["eod.dwellings"], "employed_categories": ["Tiempo completo", "Tenía trabajo", "pero no trabajó"]})

@@ -13,6 +13,7 @@ classes when the builder reads them (``reads_classes``) and the keys of everythi
 chain rules, a survey file, DENUE's release or the builder's code moves it, while tasks that share a source and its
 builders (the AMAI tasks on ENIGH) share its cached columns; ``Context(refresh=True)`` rebuilds regardless."""
 
+import functools
 import importlib
 from dataclasses import dataclass
 
@@ -90,6 +91,13 @@ def _key(**parts):
     return stable_hash({**parts, "cache_code": file_digest(__file__)})
 
 
+def _builder_columns(builder, frame, context, config, spec, keys):
+    """The builder's columns for ``frame``'s rows, after the rows' ``keys`` (what the feature cache stores)."""
+    columns = builder.build(frame, context, config, spec)
+    assert len(columns) == len(frame), f"builder {builder.name} returned {len(columns)} rows for {len(frame)}"
+    return pd.concat([frame[keys].reset_index(drop=True), columns.reset_index(drop=True)], axis=1)
+
+
 def builder_config(spec, name, overrides=None):
     return {**get_builder(name).config, **spec.builder_config.get(name, {}), **((overrides or {}).get(name, {}))}
 
@@ -112,14 +120,7 @@ def build_frame(spec, context, overrides=None, role="train"):
         config = builder_config(spec, name, overrides)
         key = _key(builder=name, module=file_digest(builder.module_file), config=config, versions=builder.versions(context, config), input=key,
                    **({"classes": spec.classes} if builder.reads_classes else {}))
-        base = frame
-
-        def build_columns():
-            columns = builder.build(base, context, config, spec)
-            assert len(columns) == len(base), f"builder {name} returned {len(columns)} rows for {len(base)}"
-            return pd.concat([base[keys].reset_index(drop=True), columns.reset_index(drop=True)], axis=1)
-
-        columns = _cached(context, "features", name, key, build_columns)
+        columns = _cached(context, "features", name, key, functools.partial(_builder_columns, builder, frame, context, config, spec, keys))
         assert columns[keys].astype(str).equals(frame[keys].astype(str)), f"cached {name} columns do not line up with the source rows"
         clashes = (set(columns.columns) - set(keys)) & set(frame.columns)
         assert builder.replaces or not clashes, f"builder {name} overwrites {sorted(clashes)}"

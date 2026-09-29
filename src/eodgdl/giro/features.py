@@ -56,7 +56,7 @@ def _denue_aggregates(urban, config, classes):
         grouped = frame.dropna(subset=[key]).groupby(key)
         table = pd.DataFrame({"dest_establecimientos_log": np.log1p(grouped.size()), "dest_share_grandes": grouped["large"].mean()})
         for giro in classes:
-            table[f"dest_share_{giro}"] = grouped["giro"].apply(lambda values: (values == giro).mean())
+            table[f"dest_share_{giro}"] = grouped["giro"].apply(lambda values, giro=giro: (values == giro).mean())
         return table
 
     return aggregate("unit"), aggregate("localidad")

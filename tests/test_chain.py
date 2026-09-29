@@ -328,3 +328,69 @@ def test_numeric_feature_takes_the_class_score_in_enumerate_and_draws(chain_sour
     assert set(run_chain(doubled, context=context, bundles=bundles, specs=SPECS).completions["t1"].unique()) <= {"a", "b", "c"}
     with pytest.raises(ValueError, match="need numbers"):
         chain(["t1", {"t2e": {"uses": {"t1": {"as": "v1", "transform": {"a": "x", "b": "y", "c": "z"}}}}}])
+
+
+@pytest.fixture
+def diagnostics_on_synthetic_tasks(chain_source, monkeypatch):
+    """eodgdl.impute.diagnostics reading the synthetic tasks and bundles instead of the package's."""
+    from eodgdl.impute import chain as chain_module, diagnostics
+
+    context, bundles = chain_source
+    monkeypatch.setattr(diagnostics, "load_task", SPECS.__getitem__)
+    monkeypatch.setattr(chain_module, "load_task", SPECS.__getitem__)
+    monkeypatch.setattr(diagnostics, "_bundles", lambda tasks, retrained: {task: bundles[task] for task in tasks})
+    return context, bundles, diagnostics
+
+
+def test_diagnostics_of_a_task_chain(diagnostics_on_synthetic_tasks, tmp_path):
+    context, bundles, diagnostics = diagnostics_on_synthetic_tasks
+    from eodgdl.impute.features import build_frame
+
+    evaluation = {"task": "t2", "benchmark": {"by": "x2"}, "by_upstream": True, "without_auxiliary": True, "gap_decomposition": ["x1", "c"],
+                  "raking": ["x1", "c"], "multiple_imputation": {"draws": 6, "shares": {"t2": ["x1"], "t1": []}}}
+    spec = chain(["t1", {"t2": {"uses": {"t1": {"as": "u1", "transform": U1}}}}], propagation="enumerate", evaluation=evaluation)
+    tables, summary = diagnostics.evaluate_chain(spec, retrained=None, context=context)
+    assert {"headline", "by_upstream", "benchmark", "gap_decomposition", "gap_diagnostics", "raking", "raking_diagnostics", "multiple_imputation"} <= set(tables)
+    frame = run_chain(spec, context=context, bundles=bundles, specs=SPECS).frame
+    w = build_frame(T2, context, role="score").frame["w"].to_numpy()
+    expected = float(np.average(frame["prob_t2_p"], weights=w))
+    assert summary["positive"] == "p" and summary["expected_rate"] == pytest.approx(expected, abs=1e-12)
+    by = tables["by_upstream"]                                   # Σ_s P(s) P(p | x, s) over the levels is the rate itself
+    assert float((by["weighted_population"] * by["expected_rate"]).sum() / by["weighted_population"].sum()) == pytest.approx(expected, abs=1e-12)
+    known = build_frame(T2, context).frame
+    known = known[~known["t2_desconocido"]]
+    benchmark = float(np.average(known["t2"].eq("p"), weights=known["w"]))
+    assert summary["benchmark_rate"] == pytest.approx(benchmark) and set(tables["benchmark"]["group"]) == {"all", "x2 = b0", "x2 = b1"}
+    gap = tables["gap_decomposition"]
+    assert gap["rate"].iloc[0] == pytest.approx(benchmark) and gap["rate"].iloc[-1] == pytest.approx(expected)
+    assert tables["raking"]["rate"].iloc[0] == pytest.approx(expected) and tables["raking"]["rate"].iloc[-1] == pytest.approx(benchmark)
+    assert len(tables["headline"]) == 2                          # the shipped run and the one without auxiliary models
+    mi = tables["multiple_imputation"]
+    assert set(mi["models"]) == {"single fit"} and set(mi["column"]) == {"t1", "t2"}         # no bootstrap bundles under retrained
+    assert set(mi.loc[mi["column"] == "t2", "by"]) == {"all", "x1"} and set(mi["level"]) == {"a", "b", "c", "p", "q"}
+    overall = mi[(mi["column"] == "t2") & (mi["by"] == "all") & (mi["level"] == "p")].iloc[0]
+    assert abs(overall["estimate"] - expected) < 4 * overall["se_total"] and overall["imputations"] == 6
+    assert ((mi["ci_low"] <= mi["estimate"]) & (mi["estimate"] <= mi["ci_high"])).all()
+    out = diagnostics.write_evaluation(tables, summary, tmp_path / "t")
+    assert (out / "multiple_imputation.parquet").exists() and (out / "summary.json").exists()
+
+
+def test_diagnostics_of_a_distribution_chain(diagnostics_on_synthetic_tasks, monkeypatch):
+    context, bundles, diagnostics = diagnostics_on_synthetic_tasks
+    from eodgdl.impute import derive
+
+    level = lambda completions, base, config: pd.DataFrame({"nivel": pd.Series(np.where(completions["t1"].eq("a") & completions["t2"].eq("p"), "alto", "bajo"), dtype="string")})
+    monkeypatch.setitem(derive._DERIVES, "nivel", level)
+    evaluation = {"distribution": {"columns": {"nivel": ["alto", "bajo"]}}, "variants": {"enumerate": {"propagation": "enumerate"}},
+                  "multiple_imputation": {"draws": 8, "shares": {"nivel": []}}}
+    spec = chain(["t1", "t2", {"derive": "nivel", "levels": {"nivel": ["alto", "bajo"]}}], mode="parallel", propagation="draws", draws=40, seed=4,
+                 evaluation=evaluation)
+    tables, summary = diagnostics.evaluate_chain(spec, retrained=None, context=context)
+    distribution = tables["distribution"].pivot(index="variant", columns="level", values="share")
+    assert list(distribution.index) == ["draws (40)", "enumerate"] and np.allclose(distribution.sum(axis=1), 1.0)
+    mc = tables["monte_carlo"].set_index("level")
+    assert (mc["monte_carlo_se"] > 0).all() and abs(distribution.loc["draws (40)", "alto"] - distribution.loc["enumerate", "alto"]) < 6 * mc.loc["alto", "sd_between_draws"]
+    assert set(tables["agreement"]["variant"]) == {"draws (40)", "enumerate"}
+    mi = tables["multiple_imputation"].set_index("level")
+    assert set(mi["models"]) == {"single fit"} and mi.loc["alto", "estimate"] + mi.loc["bajo", "estimate"] == pytest.approx(1.0)
+    assert (mi["fmi"].between(0, 1)).all() and summary["draws"] == 40

@@ -92,8 +92,10 @@ def _check(condition, message):
         raise ValueError(message)
 
 
-def parse_chain(raw, load=load_task):
-    """A :class:`ChainSpec` from a parsed chain YAML, checked against its tasks' specs (``load(name)``)."""
+def parse_chain(raw, load=None):
+    """A :class:`ChainSpec` from a parsed chain YAML, checked against its tasks' specs (``load(name)``, default
+    :func:`~eodgdl.impute.spec.load_task`)."""
+    load = load or load_task
     name = raw["chain"]
     mode = raw.get("mode", "sequential")
     propagation = raw.get("propagation", "enumerate")

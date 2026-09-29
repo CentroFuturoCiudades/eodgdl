@@ -47,6 +47,15 @@ def schema_levels(column):
     return [str(level) for level in schema.columns[column].dtype.type.categories]
 
 
+def _employed(hab, categories):
+    """Rows of ``hab`` whose ``trabajo_semana_pasada`` is one of ``categories``, each of which must be a level of the
+    survey's schema (a label split or misspelt in the configuration fails here instead of silently matching nothing)."""
+    unknown = set(categories) - set(schema_levels("trabajo_semana_pasada"))
+    if unknown:
+        raise ValueError(f"employed categories that are not levels of trabajo_semana_pasada: {sorted(unknown)}")
+    return hab["trabajo_semana_pasada"].isin(categories)
+
+
 def _as_strings(frame):
     categorical = frame.columns[frame.dtypes.eq("category")]
     frame[categorical] = frame[categorical].astype("string")
@@ -61,7 +70,7 @@ def workers(context, config):
     frame = tables.hab.reset_index()
     dwelling_columns = [column for column in config["dwelling_columns"] if column not in frame.columns]
     frame = frame.merge(tables.viv[dwelling_columns], left_on="folio_vivienda", right_index=True, how="left", validate="many_to_one")
-    frame = frame[frame["trabajo_semana_pasada"].isin(config["employed_categories"])].copy()
+    frame = frame[_employed(frame, config["employed_categories"])].copy()
     frame["mes_entrevista"] = frame["fecha"].dt.month.astype("string")        # the dates are UTC midnights: no shift
 
     return _as_strings(frame).reset_index(drop=True)
@@ -125,7 +134,7 @@ def dwellings(context, config):
     head_columns.update({column: column for column in hab.columns if column.startswith(tuple(config["head_prefixes"]))})
     heads = heads[["folio_vivienda", "jefe_fuente", *head_columns]].rename(columns=head_columns)
     frame = frame.merge(heads, on="folio_vivienda", how="left", validate="one_to_one")
-    working = hab["edad"].ge(config["worker_min_age"]) & hab["trabajo_semana_pasada"].isin(config["employed_categories"])
+    working = hab["edad"].ge(config["worker_min_age"]) & _employed(hab, config["employed_categories"])
     workers = working.groupby(hab["folio_vivienda"]).sum().rename("trabajadores_14_n")
     frame = frame.merge(workers, left_on="folio_vivienda", right_index=True, how="left", validate="one_to_one")
     frame["trabajadores_14_n"] = frame["trabajadores_14_n"].fillna(0).astype("Int64")
