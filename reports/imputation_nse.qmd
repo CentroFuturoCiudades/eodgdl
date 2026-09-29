@@ -259,7 +259,9 @@ ref = C("reference")
 display(Markdown(
     "Within each AGEB and each draw, the dwellings are ranked by their points (weighted mid-rank with the dwelling "
     "weight). Each takes the level of AMAI's cumulative distribution for that AGEB at its rank. The household ordering "
-    "is the model's; the AGEB's mix is AMAI's. On the "
+    "is the model's; the AGEB's mix is AMAI's. Dwellings with equal points are ranked in a random order drawn anew in "
+    "each draw (seeded by the chain), so where a tie straddles two levels, which dwellings take the lower one does not "
+    "depend on the survey's row order. On the "
     f"{fmt(CHAIN_SUMMARY['reference_agebs'])} AGEBs that AMAI's table and the EOD both cover "
     f"({fmt(CHAIN_SUMMARY['reference_dwellings'])} dwellings), the weighted distributions compare as follows."
 ))

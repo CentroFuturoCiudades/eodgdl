@@ -1,13 +1,14 @@
-"""Derive steps: deterministic functions of the imputed values, run per completion of a chain
-(:mod:`eodgdl.impute.chain`), so a derived quantity's distribution is carried (e.g. an AMAI points total and the NSE
-level cut from it, per draw).
+"""Derive steps: functions of the imputed values, run per completion of a chain (:mod:`eodgdl.impute.chain`), so a
+derived quantity's distribution is carried (e.g. an AMAI points total and the NSE level cut from it, per draw).
 
 A derive function is registered with :func:`register_derive` in a module listed in ``DERIVE_MODULES``; it takes
 ``(completions, base, config)`` -- the completions table (``row``, ``weight``, each step's value under its task
 prefix, earlier derived columns), the scoring source's frame (``base.iloc[completions["row"]]`` are a completion's
-covariates) and the step's configuration from the chain YAML (plus ``propagation``, the chain's) -- and returns a frame of new columns aligned to
-``completions``. A categorical column is aggregated into ``prob_<column>_<level>`` (levels from ``config["levels"]``,
-else the values seen), a numeric one into ``<column>_media``."""
+covariates) and the step's configuration from the chain YAML (plus ``propagation``, the chain's, and ``seed``, a
+:class:`numpy.random.SeedSequence` of the step's own for anything it draws, e.g. to break ties:
+``np.random.default_rng(config["seed"])``) -- and returns a frame of new columns aligned to ``completions``. A
+categorical column is aggregated into ``prob_<column>_<level>`` (levels from ``config["levels"]``, else the values
+seen), a numeric one into ``<column>_media``."""
 
 import importlib
 

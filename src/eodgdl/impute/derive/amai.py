@@ -100,7 +100,10 @@ def nse_ageb_calibrated(completions, base, config):
     """``nse_calibrado``: within each completion (a draw, or the plug-in completion) and each AGEB with AMAI's
     distribution, the dwellings ranked by their points (weighted mid-rank with the dwelling weight) take the level of
     AMAI's cumulative distribution at their rank; elsewhere, and where the points are missing, the uncalibrated level.
-    The household ordering by points is kept; the AGEB's mix is AMAI's."""
+    The household ordering by points is kept; the AGEB's mix is AMAI's. Dwellings with equal points are ranked in a
+    random order drawn anew in each completion (``seed``), so where a tie straddles a level, which of them take the
+    lower one does not follow the survey's row order. It did up to 0.3.0: 5.6% of the draws sat in such a tie, and the
+    first of a tie in the survey's order averaged level 2.58 against 3.44 for the others (0 = E ... 6 = A/B)."""
     if config.get("propagation") == "enumerate":
         raise ValueError("the rank calibration needs complete datasets (propagation draws or expected), not scenarios")
     levels = list(config["levels"]["nse_calibrado"])
@@ -112,7 +115,8 @@ def nse_ageb_calibrated(completions, base, config):
                           "points": completions[config["from"]].astype(float).to_numpy(), "weight": rows[config["weight"]].astype(float).to_numpy(),
                           "level": completions[config["level"]].astype("string").to_numpy()})
     calibrated = frame["level"].copy()
-    ranked = frame[frame["ageb"].isin(cumulative.index) & frame["points"].notna()].sort_values(["completion", "ageb", "points"], kind="mergesort")
+    ranked = frame[frame["ageb"].isin(cumulative.index) & frame["points"].notna()]
+    ranked = ranked.assign(tie=np.random.default_rng(config["seed"]).random(len(ranked))).sort_values(["completion", "ageb", "points", "tie"])
     group = [ranked["completion"], ranked["ageb"]]
     cumulative_weight = ranked["weight"].groupby(group).cumsum()
     rank = ((cumulative_weight - ranked["weight"] / 2) / ranked["weight"].groupby(group).transform("sum")).to_numpy()

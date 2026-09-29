@@ -30,7 +30,7 @@ steps:
     edges: [-.inf, 48, 95, 116, 141, 168, 202, .inf]       # AMAI's cut points (left-closed)
     labels: [e, d, d_mas, c_menos, c, c_mas, ab]            # E, D, D+, C-, C, C+, A/B
     levels: {nse: [e, d, d_mas, c_menos, c, c_mas, ab]}
-  - derive: nse_ageb_calibrado
+  - derive: nse_ageb_calibrado                           # equal points ranked at random per draw (the chain's seed)
     from: amai_puntos
     level: nse
     ageb: ageb                                             # the dwelling's 13-character urban AGEB

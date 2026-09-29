@@ -292,13 +292,16 @@ def _advance(completions, spec, conditional, propagation, rng):
     return completions
 
 
-def _derive(step, chain, completions, base, derive_functions):
-    """Run a derive step on every completion (its columns added to ``completions`` in place) and aggregate each new
-    column per row: ``{prob_<column>_<level> or <column>_media: values}``."""
+def _derive(step, index, chain, completions, base, derive_functions):
+    """Run a derive step (``index``: its position in the chain) on every completion (its columns added to
+    ``completions`` in place) and aggregate each new column per row: ``{prob_<column>_<level> or <column>_media:
+    values}``. The step's ``seed`` is a stream of its own, spawned from the chain's seed by its position, apart from
+    the draws'."""
     from .derive import get_derive
 
     function = (derive_functions or {}).get(step.name) or get_derive(step.name)
-    values = function(completions, base, {**step.config, "propagation": chain.propagation})
+    seed = np.random.SeedSequence(chain.seed, spawn_key=(index,))
+    values = function(completions, base, {**step.config, "propagation": chain.propagation, "seed": seed})
     derived = {}
     for column in values.columns:
         completions[column] = values[column].to_numpy()
@@ -343,9 +346,9 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
                                 "weight": np.full(n_rows * per_row, 1.0 / per_row)})
     needed = _needed(chain)
     outputs, derived = {}, {}
-    for step in chain.steps:
+    for index, step in enumerate(chain.steps):
         if isinstance(step, DeriveStep):
-            derived.update(_derive(step, chain, completions, base, derive_functions))
+            derived.update(_derive(step, index, chain, completions, base, derive_functions))
             continue
 
         spec, frame, bundle = specs[step.task], frames[step.task], bundles[step.task]

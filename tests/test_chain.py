@@ -134,6 +134,17 @@ def test_draws_converge_to_enumerate_on_a_three_task_chain(chain_source):
     pd.testing.assert_frame_equal(again.frame, drawn.frame)                                          # seeded
 
 
+def test_derive_steps_draw_from_streams_of_their_own(chain_source):
+    context, bundles = chain_source
+    uniform = lambda column: lambda completions, base, config: pd.DataFrame({column: np.random.default_rng(config["seed"]).random(len(completions))})
+    spec = chain(["t1", {"derive": "a"}, {"derive": "b"}], propagation="draws", draws=2, seed=3)
+    run = lambda: run_chain(spec, context=context, bundles=bundles, specs=SPECS, derive_functions={"a": uniform("a"), "b": uniform("b")}).completions
+    completions = run()
+    pd.testing.assert_frame_equal(run(), completions)                                                # seeded
+    draws = np.random.default_rng(3).random(len(completions))                                         # the chain's own stream
+    assert not np.allclose(completions["a"], completions["b"]) and not np.allclose(completions["a"], draws)
+
+
 def test_parallel_chain_scores_each_task_alone_and_derives_per_completion(chain_source):
     context, bundles = chain_source
     from eodgdl.impute.features import build_frame
