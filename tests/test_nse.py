@@ -51,7 +51,7 @@ def test_dwelling_source_heads_and_workers(stages):
     from eodgdl.impute.sources import Context, get_source
 
     source = get_source("eod.dwellings")
-    frame = source.build(Context(tables=stages.revised), source.config).frame
+    frame = source.build(Context(tables=stages.revised), source.config)
     hab = stages.revised.hab.reset_index()
     assert len(frame) == len(stages.revised.viv) and frame["folio_vivienda"].is_unique
     reported = hab.loc[hab["parentesco"] == "Jefe del hogar", "folio_vivienda"].unique()

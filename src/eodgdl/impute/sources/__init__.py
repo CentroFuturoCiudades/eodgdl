@@ -1,8 +1,9 @@
-"""Sources: registered builders that return a frame with its contract (row keys, weight column, CV group column,
-data versions), and the :class:`Context` a run shares (the survey tables, loaded once, and the cache).
+"""Sources: registered builders that return a task's rows, with their contract (row keys, weight column, CV group
+column) in the source's configuration, and the :class:`Context` a run shares (the survey tables, loaded once, and the
+cache).
 
 A source is registered with :func:`register_source` in a module listed in ``SOURCE_MODULES``; its configuration is
-the entry of the same name in that module's YAML."""
+the entry of the same name in that module's YAML (``keys``, ``weight``, ``group`` and whatever the builder reads)."""
 
 import functools
 import hashlib
@@ -16,29 +17,40 @@ _SOURCES = {}
 
 @dataclass
 class SourceFrame:
-    """A source's rows: ``frame`` plus its row ``keys``, ``weight`` and CV ``group`` columns, its data ``versions``
-    and ``schema_levels(column)``, the declared levels of one of its columns."""
+    """A task's frame (:func:`eodgdl.impute.features.build_frame`): ``frame`` plus its row ``keys``, ``weight`` and CV
+    ``group`` columns and the data ``versions`` it was built from."""
 
     frame: object
     keys: list
     weight: str
     group: str
     versions: dict
-    schema_levels: object = None
 
 
 @dataclass
 class Source:
     name: str
-    build: object                  # build(context, config) -> SourceFrame
+    build: object                  # build(context, config) -> DataFrame
     config: dict
     versions: object               # versions(context, config) -> dict, without building the frame
     schema_levels: object          # schema_levels(column) -> list
     module_file: str
 
+    @property
+    def keys(self):
+        return list(self.config["keys"])
+
+    @property
+    def weight(self):
+        return self.config["weight"]
+
+    @property
+    def group(self):
+        return self.config["group"]
+
 
 def register_source(name, config, versions, schema_levels):
-    """Decorator registering ``build(context, config)`` as source ``name``."""
+    """Decorator registering ``build(context, config) -> DataFrame`` as source ``name``."""
     def decorate(function):
         module = importlib.import_module(function.__module__)
         _SOURCES[name] = Source(name, function, config, versions, schema_levels, module.__file__)
@@ -54,14 +66,18 @@ def get_source(name):
     return _SOURCES[name]
 
 
+def module_config(module_file):
+    """The YAML beside a source module (``<module>.yaml``), parsed."""
+    from ..spec import read_yaml
+
+    return read_yaml(Path(module_file).with_suffix(".yaml"))
+
+
 @functools.cache
 def file_digest(path):
     """sha256 of a file's bytes (cached per path for the process)."""
-    digest = hashlib.sha256()
     with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def files_digest(paths):

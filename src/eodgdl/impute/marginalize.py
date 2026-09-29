@@ -87,6 +87,8 @@ def _averaging_shares(shares, level_subsets):
     ``level_subsets`` requests for a feature (e.g. an unsampled municipality averaged over the sampled ones only)."""
     averaging = dict(shares)
     for feature, levels in (level_subsets or {}).items():
+        if feature not in shares:          # a feature this model does not use (another arm's)
+            continue
         subset = shares[feature].reindex(levels).dropna()
         if subset.sum() <= 0:
             raise ValueError(f"No training support for the requested {feature} levels {list(levels)}")
@@ -117,7 +119,7 @@ def expand_unsupported(X, shares, level_subsets=None, conditional_shares=None, m
     for feature in [column for column in X.columns if column in shares]:
         supported = _supported_levels(shares[feature], missing_label)
         averaging = _supported_levels(averaging_shares[feature], missing_label)
-        current = values.get(feature, X[feature].to_numpy()[row])
+        current = X[feature].to_numpy()[row]
         unsupported = ~pd.Series(current).astype(str).isin(supported.index).to_numpy()
         if not unsupported.any():
             continue

@@ -6,9 +6,15 @@ A bundle (format ``eodgdl.impute.bundle/2``) is a dict: ``task``, ``arms`` ({arm
 hash, scoring hash, level-contract hash, data and feature versions, sklearn and eodgdl versions, the selection and
 test metrics, upstream bundle hashes). :func:`check_bundle` refuses a bundle whose scikit-learn version, level
 contract or scoring definition differs from the running code and task spec. The giro bundle fitted before the
-engine (``model_with_education`` ... keys) is converted on load (:func:`from_legacy_giro`)."""
+engine (``model_with_education`` ... keys) is converted on load (:func:`from_legacy_giro`).
+
+:func:`load_bundle` finds a task's bundle the same way for every mode: an explicit file, else the one a retrain wrote
+under ``<retrained>/<task>/``, else the installed data file."""
 
 import hashlib
+from pathlib import Path
+
+from .arms import Arm
 
 FORMAT = "eodgdl.impute.bundle/2"
 
@@ -104,17 +110,32 @@ def check_bundle(bundle, spec, category_levels):
     return bundle
 
 
-def load_bundle(spec, path=None):
-    """The task's bundle as stored (``path``, else its data file through :func:`eodgdl.data.resolve`)."""
-    import joblib
-
+def bundle_path(spec, path=None, retrained=None):
+    """Where the task's bundle is read from: ``path``; else ``<retrained>/<task>/<bundle file>`` when a retrain wrote
+    it there; else the task's data file (:func:`eodgdl.data.resolve`: ``$EODGDL_DATA_DIR`` or the data mirror)."""
+    if path is not None:
+        return Path(path)
+    if retrained is not None and (Path(retrained) / spec.name / spec.bundle_name).exists():
+        return Path(retrained) / spec.name / spec.bundle_name
+    if spec.bundle_file is None:
+        raise ValueError(f"Task {spec.name!r} names no bundle file")
     from eodgdl.data import resolve
 
-    if path is None:
-        if spec.bundle_file is None:
-            raise ValueError(f"Task {spec.name!r} names no bundle file")
-        path = resolve(spec.bundle_file)
-    return joblib.load(path)
+    return Path(resolve(spec.bundle_file))
+
+
+def load_bundle(spec, path=None, retrained=None):
+    """The task's bundle (:func:`bundle_path`) as a v2 bundle (a legacy giro bundle converted, :func:`as_v2`)."""
+    import joblib
+
+    return as_v2(joblib.load(bundle_path(spec, path, retrained)), spec)
+
+
+def bundle_arms(bundle, auxiliary=True):
+    """The bundle's arms, in dispatch order, with their auxiliary models (none with ``auxiliary=False``: unsupported
+    levels are then averaged over the training shares)."""
+    return [Arm(name, entry["model"], entry["features"], requires=entry["requires"], auxiliary=bundle["auxiliary"].get(name, {}) if auxiliary else {})
+            for name, entry in bundle["arms"].items()]
 
 
 def save_bundle(bundle, path):
@@ -122,15 +143,8 @@ def save_bundle(bundle, path):
     import joblib
 
     joblib.dump(bundle, path)
-    return bundle_digest(path)
-
-
-def bundle_digest(path):
-    digest = hashlib.sha256()
     with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def legacy_view(bundle):

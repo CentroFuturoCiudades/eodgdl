@@ -7,6 +7,9 @@
 - **compare** (:func:`compare`): feature specifications evaluated cheaply: the published winner's family and
   hyperparameters fixed, the same grouped folds on the training rows (the held-out fold never touched), each
   candidate's fold log losses paired against the baseline's.
+
+A mode that needs a fitted bundle takes it from :func:`eodgdl.impute.bundle.load_bundle`: ``retrained=<dir>`` reads
+the one a retrain wrote under ``<dir>/<task>/`` when there is one, else the installed data file.
 """
 
 import copy
@@ -20,14 +23,16 @@ import pandas as pd
 from sklearn.base import clone
 
 from . import evaluate, select
-from .arms import Arm, assign_arms, impute_with_arms
-from .bundle import as_v2, check_bundle, load_bundle, make_bundle, save_bundle
+from .arms import assign_arms, impute_with_arms, predict_arms
+from .bundle import as_v2, bundle_arms, check_bundle, load_bundle, make_bundle, save_bundle
 from .features import build_frame, builder_config
 from .levels import count_levels_without_training_support, normalize_sample_weights, prepare_features
 from .marginalize import attach_training_level_shares
 from .models import build_candidates, fit_level_model
 from .sources import Context, get_source
 from .spec import load_task, parse_task
+
+OUTPUT_SUFFIXES = ("observado", "imputado", "final", "fue_imputado", "model_used", "prediction_confidence", "marginalized_features")
 
 
 def task_levels(spec):
@@ -41,8 +46,25 @@ def expected_score_column(spec):
 
 def output_columns(spec, keys):
     """Row keys plus the task's output columns (and its expected score when the target is ordinal)."""
-    columns = list(keys) + [f"{spec.prefix}_{suffix}" for suffix in ("observado", "imputado", "final", "fue_imputado", "model_used", "prediction_confidence", "marginalized_features")] + spec.probability_columns
+    columns = list(keys) + [f"{spec.prefix}_{suffix}" for suffix in OUTPUT_SUFFIXES] + spec.probability_columns
     return columns + ([expected_score_column(spec)] if spec.scores else [])
+
+
+def output_frame(spec, scored, weight=False):
+    """The keys of the task's scoring source and the task's output columns of ``scored`` (plus the source's weight)."""
+    source = get_source(spec.score_source)
+    return scored[output_columns(spec, source.keys) + ([source.weight] if weight else [])]
+
+
+def select_rows(rows, keep=None, drop=None):
+    """``rows`` whose columns take one of the values listed in ``keep`` and none of those in ``drop`` (each
+    ``{column: [values]}``, compared as text; empty: every row), index reset."""
+    mask = np.ones(len(rows), bool)
+    for column, values in (keep or {}).items():
+        mask &= rows[column].astype(str).isin([str(value) for value in values]).to_numpy()
+    for column, values in (drop or {}).items():
+        mask &= ~rows[column].astype(str).isin([str(value) for value in values]).to_numpy()
+    return rows[mask].reset_index(drop=True)
 
 
 def _spec(task):
@@ -57,8 +79,7 @@ def score_frame(spec, frame, bundle, level_subsets=None):
     ``scoring.level_subsets``."""
     levels = task_levels(spec)
     bundle = check_bundle(as_v2(bundle, spec), spec, levels)
-    arms = [Arm(name, entry["model"], entry["features"], requires=entry["requires"], auxiliary=bundle["auxiliary"].get(name, {}))
-            for name, entry in bundle["arms"].items()]
+    arms = bundle_arms(bundle)
     assigned = assign_arms(frame, arms, spec.is_missing)
     assigned[~frame[spec.unknown_column].astype(bool).to_numpy()] = pd.NA
     scored = impute_with_arms(frame, spec.target, spec.class_slugs, arms, assigned, spec.prefix, spec.numeric, levels,
@@ -70,16 +91,25 @@ def score_frame(spec, frame, bundle, level_subsets=None):
     return scored
 
 
-def score_task(task, tables=None, bundle=None, path=None, context=None):
-    """Load (or take) the task's bundle and score its source's rows. ``tables`` are the survey tables (loaded, and
-    the features cached, when omitted); ``bundle`` a fitted bundle (v2 or a legacy giro dict), else read from
-    ``path`` or the task's data file."""
+def predict_rows(spec, bundle, rows, auxiliary=True):
+    """P(class | x) of every row of ``rows``, whether its target is observed or not, under the bundle's arms (the
+    first whose covariates the row has): one column per class slug. Without ``auxiliary`` an unsupported level is
+    averaged over the training shares instead of P(level | x)."""
+    arms = bundle_arms(bundle, auxiliary=auxiliary)
+    probabilities, _ = predict_arms(rows, arms, assign_arms(rows, arms, spec.is_missing), spec.class_slugs, spec.numeric, task_levels(spec),
+                                    level_subsets=spec.level_subsets or None, missing_label=spec.missing_label)
+    return pd.DataFrame(probabilities, columns=spec.class_slugs, index=rows.index)
+
+
+def score_task(task, tables=None, bundle=None, path=None, retrained=None, context=None):
+    """Load (or take) the task's bundle and score its scoring source's rows. ``tables`` are the survey tables
+    (loaded, and the features cached, when omitted); ``bundle`` a fitted bundle (v2 or a legacy giro dict), else read
+    by :func:`~eodgdl.impute.bundle.load_bundle` (``path``, else ``<retrained>/<task>/``, else the data file)."""
     spec = _spec(task)
     context = context or Context(tables=tables)
-    bundle = bundle if bundle is not None else load_bundle(spec, path)
-    frame = build_frame(spec, context, role="score").frame
+    bundle = bundle if bundle is not None else load_bundle(spec, path, retrained)
 
-    return score_frame(spec, frame, bundle)
+    return score_frame(spec, build_frame(spec, context, role="score").frame, bundle)
 
 
 # Retrain
@@ -101,6 +131,17 @@ def refit(model, spec, rows, features, weight, group):
     return attach_training_level_shares(final, X, sample_weights, spec.numeric)
 
 
+def heldout(model, spec, rows, weight):
+    """``(y, probabilities, classes, weights)`` of ``rows`` under a fitted pipeline (whose first step selects its
+    features), for the evaluators of :mod:`eodgdl.impute.evaluate`."""
+    return rows[spec.target].astype(str), model.predict_proba(rows), list(model.named_steps["classifier"].classes_), rows[weight].astype(float)
+
+
+def _metrics(model, spec, rows, weight, positive, n_bins):
+    """The one-row metrics table of :func:`eodgdl.impute.evaluate.evaluate_classifier` on ``rows``."""
+    return evaluate.evaluate_classifier(*heldout(model, spec, rows, weight), labels=spec.class_slugs, positive=positive, n_bins=n_bins)[0]
+
+
 @dataclass
 class RetrainResult:
     """What :func:`retrain` produced: the ``bundle``, the scored frame, the scenario frames and the evaluation
@@ -112,7 +153,6 @@ class RetrainResult:
     scenarios: dict
     tables: dict = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
-    keys: list = field(default_factory=list)
 
 
 def component_spec(spec, name, config=None):
@@ -128,7 +168,18 @@ def component_spec(spec, name, config=None):
     return dataclasses.replace(spec, target_column=name, classes=classes, prefix=name, scores={})
 
 
-def _within_support(spec, target_rows, source_rows):
+def _add_components(spec, frame):
+    """The task's ``evaluation.components`` as specs, their targets set in ``frame``: unobserved wherever the task's own
+    target is (a component of an unknown label is unknown too) or the component holds the missing label."""
+    components = {name: component_spec(spec, name, config) for name, config in spec.evaluation.get("components", {}).items()}
+    for name, component in components.items():
+        labels = frame[name].astype("string")
+        frame[component.target] = labels.mask(frame[spec.unknown_column].astype(bool) | labels.eq(spec.missing_label).fillna(False))
+        frame[component.unknown_column] = frame[component.target].isna()
+    return components
+
+
+def within_support(spec, target_rows, source_rows):
     """``target_rows`` with the values of the task's ``level_subsets`` features that the source never holds (e.g. a
     municipality the ENOE sample does not cover) set to the missing label, so a density ratio is not fitted on a level
     one side lacks."""
@@ -139,12 +190,29 @@ def _within_support(spec, target_rows, source_rows):
     return target_rows
 
 
-def _filter(rows, conditions):
-    """``rows`` whose columns take the listed values (``{column: [values]}``; empty: every row)."""
-    mask = np.ones(len(rows), bool)
-    for column, values in (conditions or {}).items():
-        mask &= rows[column].astype(str).isin([str(value) for value in values]).to_numpy()
-    return rows[mask]
+def _selected_row(summary):
+    row = summary.loc[summary["selected"]].iloc[0]
+    return {"model": row["model"], "best_params": dict(row["best_params"]), "weighted_log_loss": float(row["weighted_log_loss"]),
+            "fold_log_losses": [float(value) for value in row["fold_log_losses"]]}
+
+
+def _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits):
+    """The held-out evaluation of one arm's selected model: metrics, bootstrap intervals, per-class tables,
+    calibration and the isotonic recalibration (maps from out-of-fold probabilities on the training rows)."""
+    n_bins, positive = ev.get("calibration_bins", 10), ev.get("positive_class")
+    y_test, probabilities, classes, w_test = heldout(model, spec, test, weight)
+    metrics, class_metrics, confusion, distribution = evaluate.evaluate_classifier(y_test, probabilities, classes, w_test, labels=spec.class_slugs, positive=positive, n_bins=n_bins)
+    uncertainty = evaluate.test_metrics_with_uncertainty(y_test, probabilities, classes, w_test, test[group].astype(str), n_bootstrap=ev.get("bootstrap", 500),
+                                                        random_state=seed, positive=positive)
+    in_the_large, reliability = evaluate.calibration_by_class(y_test, probabilities, classes, w_test, n_bins=n_bins)
+    calibrated = evaluate.fit_isotonic(model, X, y, w, select.grouped_splits(X, y, g, cv_splits=n_splits, random_state=seed))
+    isotonic = pd.DataFrame([
+        {"probabilities": "selected", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), probabilities, classes, w_test.to_numpy(), n_bins)},
+        {"probabilities": "isotonic", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), calibrated.predict_proba(test), calibrated.classes_, w_test.to_numpy(), n_bins)},
+    ])
+    return {"test_metrics": metrics, "test_uncertainty": uncertainty.rename_axis("metric").reset_index(), "class_metrics": class_metrics,
+            "confusion": confusion.rename_axis("observed").reset_index(), "test_distribution": distribution, "calibration": in_the_large,
+            "reliability": reliability, "isotonic": isotonic}, uncertainty
 
 
 def _compare_populations(spec, ev, train, test, selected_models, weight, group, positive, n_bins):
@@ -153,24 +221,41 @@ def _compare_populations(spec, ev, train, test, selected_models, weight, group, 
     population predicts best where the model is applied."""
     rows = []
     for test_name, test_filter in ev.get("population_tests", {"held-out": {}}).items():
-        held_out = _filter(test, test_filter)
+        held_out = select_rows(test, keep=test_filter)
         for population, conditions in ev["populations"].items():
-            training = _filter(train, conditions)
+            training = select_rows(train, keep=conditions)
             for arm in spec.arms:
-                features = list(arm.features)
-                X, y, w, _, _ = training_data(spec, training, features, weight, group)
+                X, y, w, _, _ = training_data(spec, training, list(arm.features), weight, group)
                 model = clone(selected_models[arm.name]).fit(X, y, classifier__sample_weight=w)
-                metrics = evaluate.evaluate_classifier(model, held_out, features, spec.target, spec.class_slugs, spec.numeric, weight_column=weight,
-                                                       missing_label=spec.missing_label, positive=positive, n_bins=n_bins)[0].iloc[0]
+                metrics = _metrics(model, spec, held_out, weight, positive, n_bins).iloc[0]
                 rows.append({"test": test_name, "population": population, "arm": arm.name, "training_rows": len(X), "test_rows": len(held_out),
                              "weighted_log_loss": metrics["weighted_log_loss"], "weighted_accuracy": metrics["weighted_accuracy"]})
     return pd.DataFrame(rows)
 
 
-def _selected_row(summary):
-    row = summary.loc[summary["selected"]].iloc[0]
-    return {"model": row["model"], "best_params": dict(row["best_params"]), "weighted_log_loss": float(row["weighted_log_loss"]),
-            "fold_log_losses": [float(value) for value in row["fold_log_losses"]]}
+def _imputation_tables(spec, frame, known, rows, unknown, scored, weight, rows_weight, ev):
+    """What the imputation looks like: the training population (rows with an observed target) against the imputed one,
+    each with its own weight (profiles, missingness), the arms used, their confidence, the marginalized features and
+    each arm's levels without training support."""
+    tables = {}
+    imputed = scored[scored[f"{spec.prefix}_fue_imputado"]]
+    shared = [column for column in dict.fromkeys(ev.get("profiles", []) + spec.features) if column in frame.columns and column in rows.columns]
+    population = pd.concat([frame.loc[known, shared].assign(__weight=frame.loc[known, weight].to_numpy()),
+                            rows.loc[unknown, shared].assign(__weight=rows.loc[unknown, rows_weight].to_numpy())], ignore_index=True)
+    is_imputed = np.r_[np.zeros(int(known.sum()), bool), np.ones(int(unknown.sum()), bool)]
+    tables["profiles"] = evaluate.compare_known_unknown_profiles(population, ev["profiles"], is_imputed, weight_column="__weight") if ev.get("profiles") else pd.DataFrame()
+    if unknown.any():
+        tables["missingness"] = evaluate.calculate_feature_missingness(population, [f for f in spec.features if f in shared], is_imputed, spec.is_missing, weight_column="__weight")
+    usage = imputed.groupby(f"{spec.prefix}_model_used").agg(sample_rows=(rows_weight, "size"), weighted_population=(rows_weight, "sum")).reset_index()
+    usage["weighted_share"] = usage["weighted_population"] / usage["weighted_population"].sum()
+    tables["model_usage"] = usage
+    tables["confidence"] = imputed.groupby(f"{spec.prefix}_model_used")[f"{spec.prefix}_prediction_confidence"].agg(["count", "mean", "std", "min", "median", "max"]).reset_index()
+    tables["marginalized"] = imputed[f"{spec.prefix}_marginalized_features"].value_counts().rename_axis("features").reset_index()
+    for arm in spec.arms:
+        features = list(arm.features)
+        tables[f"unsupported_levels__{arm.name}"] = count_levels_without_training_support(
+            prepare_features(frame[known], features, spec.numeric, spec.missing_label), prepare_features(rows[unknown], features, spec.numeric, spec.missing_label), spec.numeric)
+    return tables
 
 
 def retrain(task, context=None, n_jobs=-1, progress=True):
@@ -179,8 +264,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     are the task's scoring source (the training source unless the task names another, e.g. ENOE -> the EOD)."""
     spec = _spec(task)
     context = context or Context()
-    timings = {}
-    started = time.perf_counter()
+    timings, started = {}, time.perf_counter()
     source = build_frame(spec, context)
     target = source if spec.score_source == spec.source else build_frame(spec, context, role="score")
     frame, weight, group = source.frame, source.weight, source.group
@@ -188,21 +272,16 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     levels = task_levels(spec)
     cv, ev = spec.selection["cv"], spec.evaluation
     seed, n_splits = cv["seed"], cv["splits"]
-    n_bins = ev.get("calibration_bins", 10)
-    positive = ev.get("positive_class")
+    n_bins, positive = ev.get("calibration_bins", 10), ev.get("positive_class")
     ship_isotonic = ev.get("isotonic", {}).get("ship", False)
-    components = {name: component_spec(spec, name, config) for name, config in ev.get("components", {}).items()}
-    for name, component in components.items():
-        frame[component.target] = frame[name].astype("string")
-        frame[component.unknown_column] = frame[component.target].isna()
+    components = _add_components(spec, frame)
     full_frame = frame
     if spec.selection.get("population"):                                  # the training population (e.g. ENIGH's large cities)
-        frame = _filter(full_frame, spec.selection["population"]).reset_index(drop=True)
+        frame = select_rows(full_frame, keep=spec.selection["population"])
     known = ~frame[spec.unknown_column].astype(bool).to_numpy()          # training rows with an observed target
     unknown = rows[spec.unknown_column].astype(bool).to_numpy()          # scored rows to impute
     train, test = select.split_known(frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
-    for column, values in cv.get("test_exclude", {}).items():
-        test = test[~test[column].isin(values)].reset_index(drop=True)
+    test = select_rows(test, drop=cv.get("test_exclude"))
     timings["features"] = time.perf_counter() - started
 
     tables, summary = {}, {"task": spec.name, "source": spec.source, "score_source": spec.score_source, "rows": len(rows),
@@ -215,60 +294,45 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         started = time.perf_counter()
         X, y, w, g, _ = training_data(spec, train, features, weight, group)
         candidates = build_candidates(features, spec.numeric, levels, spec.selection["families"], random_state=seed, missing_label=spec.missing_label)
-        tuning, best = select.tune(candidates, X, y, w, g, cv_splits=n_splits, random_state=seed, n_jobs=n_jobs, progress=progress)
-        family, model = select.get_best_model(tuning, best)
+        tuning, model = select.tune(candidates, X, y, w, g, cv_splits=n_splits, random_state=seed, n_jobs=n_jobs, progress=progress)
         timings[f"tune_{arm.name}"] = time.perf_counter() - started
         selected[arm.name] = _selected_row(tuning)
         selected_models[arm.name] = model
 
         started = time.perf_counter()
-        metrics, class_metrics, confusion, distribution = evaluate.evaluate_classifier(model, test, features, spec.target, spec.class_slugs, spec.numeric, weight_column=weight,
-                                                                                      missing_label=spec.missing_label, positive=positive, n_bins=n_bins)
-        uncertainty = evaluate.test_metrics_with_uncertainty(model, test, features, spec.target, spec.numeric, n_bootstrap=ev.get("bootstrap", 500), random_state=seed,
-                                                            weight_column=weight, group_column=group, missing_label=spec.missing_label, positive=positive)
-        in_the_large, reliability = evaluate.calibration_by_class(model, test, features, spec.target, spec.numeric, n_bins=n_bins, weight_column=weight, missing_label=spec.missing_label)
-        # isotonic: maps from out-of-fold probabilities on the training rows, applied to the selected model on the held-out rows
-        splits = select.grouped_splits(X, y, g, cv_splits=n_splits, random_state=seed)
-        calibrated = evaluate.fit_isotonic(model, candidates[family]["model"].set_params(**selected[arm.name]["best_params"]), X, y, w, splits)
-        X_test = prepare_features(test, features, spec.numeric, spec.missing_label)
-        test_w, test_y = test[weight].astype(float).to_numpy(), test[spec.target].astype(str).to_numpy()
-        isotonic = pd.DataFrame([
-            {"probabilities": "selected", **evaluate.multiclass_calibration_summary(test_y, model.predict_proba(X_test), model.named_steps["classifier"].classes_, test_w, n_bins)},
-            {"probabilities": "isotonic", **evaluate.multiclass_calibration_summary(test_y, calibrated.predict_proba(X_test), calibrated.classes_, test_w, n_bins)},
-        ])
-        test_metrics[arm.name] = metrics.iloc[0].to_dict()
+        arm_tables, uncertainty = _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits)
+        test_metrics[arm.name] = arm_tables["test_metrics"].iloc[0].to_dict()
         timings[f"evaluate_{arm.name}"] = time.perf_counter() - started
-        for name, table in (("selection", tuning), ("grid", tuning.attrs["grid_results"]), ("test_metrics", metrics), ("test_uncertainty", uncertainty.rename_axis("metric").reset_index()),
-                            ("class_metrics", class_metrics), ("confusion", confusion.rename_axis("observed").reset_index()), ("test_distribution", distribution),
-                            ("calibration", in_the_large), ("reliability", reliability), ("isotonic", isotonic),
-                            ("fold_losses", select.fold_table(tuning).rename_axis("model").reset_index())):
-            tables[f"{name}__{arm.name}"] = table
+        arm_tables = {"selection": tuning, "grid": tuning.attrs["grid_results"], **arm_tables, "fold_losses": select.fold_table(tuning).rename_axis("model").reset_index()}
+        tables.update({f"{name}__{arm.name}": table for name, table in arm_tables.items()})
 
         if ev.get("robustness_groups"):
+            # each selected configuration cross-validated with another group (e.g. ENOE's sampling unit)
             alternative = train[~train[spec.unknown_column].astype(bool)][ev["robustness_groups"]].astype("string").reset_index(drop=True)
             robust = [fit for fold in select.grouped_splits(X, y, alternative, cv_splits=n_splits, random_state=seed)
                       for fit in select.fit_fold(model, {}, None, X, y, w, *fold)]
             tables[f"robustness_cv__{arm.name}"] = pd.DataFrame({"fold": range(n_splits), "household_grouped": selected[arm.name]["fold_log_losses"],
                                                                  f"{ev['robustness_groups']}_grouped": [fit["log_loss"] for fit in robust]})
         for name, component in components.items():
+            # each component of the label with the arm's selected configuration, judged on the same held-out rows
             X_component, y_component, w_component, _, _ = training_data(component, train, features, weight, group)
             component_model = clone(model).fit(X_component, y_component, classifier__sample_weight=w_component)
-            component_metrics = evaluate.evaluate_classifier(component_model, test, features, component.target, component.class_slugs, spec.numeric, weight_column=weight,
-                                                             missing_label=spec.missing_label, positive=ev["components"][name]["positive"], n_bins=n_bins)[0]
+            component_metrics = _metrics(component_model, component, test, weight, ev["components"][name]["positive"], n_bins)
             tables.setdefault("components_heldout", []).append(component_metrics.assign(component=name, arm=arm.name))
 
         started = time.perf_counter()
         final = refit(model, spec, frame, features, weight, group)
         if ship_isotonic:
             X_all, y_all, w_all, g_all, _ = training_data(spec, frame, features, weight, group)
-            final = evaluate.fit_isotonic(final, clone(model), X_all, y_all, w_all, select.grouped_splits(X_all, y_all, g_all, cv_splits=n_splits, random_state=seed))
+            final = evaluate.fit_isotonic(final, X_all, y_all, w_all, select.grouped_splits(X_all, y_all, g_all, cv_splits=n_splits, random_state=seed))
         arms[arm.name] = final
+        # the auxiliary models: P(feature | x) fitted on every training row, whatever its target
         auxiliary[arm.name] = {feature: fit_level_model(frame, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels,
                                                         sample_weights=frame[weight], random_state=seed, missing_label=spec.missing_label)
                                for feature in spec.auxiliary}
         timings[f"refit_{arm.name}"] = time.perf_counter() - started
         summary["arms"][arm.name] = {"selected": selected[arm.name], "test_metrics": test_metrics[arm.name],
-                                     "test_uncertainty": uncertainty["estimate"].to_dict(), "isotonic": isotonic.set_index("probabilities").to_dict("index")}
+                                     "test_uncertainty": uncertainty["estimate"].to_dict(), "isotonic": arm_tables["isotonic"].set_index("probabilities").to_dict("index")}
 
     if "components_heldout" in tables:
         tables["components_heldout"] = pd.concat(tables["components_heldout"], ignore_index=True)
@@ -281,17 +345,14 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
             full_frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
         tables["populations"] = _compare_populations(spec, ev, full_train, full_test, selected_models, weight, group, positive, n_bins)
     if ev.get("target_profile"):
+        # the held-out rows reweighted to the profile of the rows an arm scores (e.g. those without education)
         profile = ev["target_profile"]
         target_rows = rows[unknown & spec.is_missing(rows, profile["missing"]).to_numpy()] if profile.get("missing") else rows[unknown]
-        reweighted_test, diagnostics = evaluate.reweight_to_target_profile(test, _within_support(spec, target_rows, frame[known]), profile["features"], weight, rows_weight,
+        reweighted_test, diagnostics = evaluate.reweight_to_target_profile(test, within_support(spec, target_rows, frame[known]), profile["features"], weight, rows_weight,
                                                                            spec.numeric, random_state=seed, missing_label=spec.missing_label)
-        evaluations = []
-        for weighting, data in (("training weights", test), ("reweighted to the scored rows' profile", reweighted_test)):
-            for arm in spec.arms:
-                metrics = evaluate.evaluate_classifier(selected_models[arm.name], data, list(arm.features), spec.target, spec.class_slugs, spec.numeric, weight_column=weight,
-                                                       missing_label=spec.missing_label, positive=positive, n_bins=n_bins)[0]
-                evaluations.append(metrics.assign(weighting=weighting, arm=arm.name))
-        tables["target_profile"] = pd.concat(evaluations, ignore_index=True)
+        tables["target_profile"] = pd.concat([_metrics(selected_models[arm.name], spec, data, weight, positive, n_bins).assign(weighting=weighting, arm=arm.name)
+                                              for weighting, data in (("training weights", test), ("reweighted to the scored rows' profile", reweighted_test))
+                                              for arm in spec.arms], ignore_index=True)
         tables["target_profile_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
 
     metadata = {
@@ -305,54 +366,37 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     started = time.perf_counter()
     scored = score_frame(spec, rows, bundle)
     timings["score"] = time.perf_counter() - started
-    imputed = scored[scored[f"{spec.prefix}_fue_imputado"]]
-    observed = evaluate.weighted_distribution(frame[known], spec.target, weight_column=weight)
-    # the training population (rows with an observed target) against the imputed one, each with its own weight
-    shared = [column for column in dict.fromkeys(ev.get("profiles", []) + spec.features) if column in frame.columns and column in rows.columns]
-    population = pd.concat([frame.loc[known, shared].assign(__weight=frame.loc[known, weight].to_numpy()),
-                            rows.loc[unknown, shared].assign(__weight=rows.loc[unknown, rows_weight].to_numpy())], ignore_index=True)
-    is_imputed = np.r_[np.zeros(int(known.sum()), bool), np.ones(int(unknown.sum()), bool)]
-    tables["profiles"] = evaluate.compare_known_unknown_profiles(population, ev["profiles"], is_imputed, weight_column="__weight") if ev.get("profiles") else pd.DataFrame()
-    if unknown.any():
-        tables["missingness"] = evaluate.calculate_feature_missingness(population, [f for f in spec.features if f in shared], is_imputed, weight_column="__weight", missing_label=spec.missing_label)
-    usage = imputed.groupby(f"{spec.prefix}_model_used").agg(sample_rows=(rows_weight, "size"), weighted_population=(rows_weight, "sum")).reset_index()
-    usage["weighted_share"] = usage["weighted_population"] / usage["weighted_population"].sum()
-    tables["model_usage"] = usage
-    tables["confidence"] = imputed.groupby(f"{spec.prefix}_model_used")[f"{spec.prefix}_prediction_confidence"].agg(["count", "mean", "std", "min", "median", "max"]).reset_index()
-    tables["marginalized"] = imputed[f"{spec.prefix}_marginalized_features"].value_counts().rename_axis("features").reset_index()
-    for arm in spec.arms:
-        features = list(arm.features)
-        tables[f"unsupported_levels__{arm.name}"] = count_levels_without_training_support(
-            prepare_features(frame[known], features, spec.numeric, spec.missing_label), prepare_features(rows[unknown], features, spec.numeric, spec.missing_label), spec.numeric)
+    tables.update(_imputation_tables(spec, frame, known, rows, unknown, scored, weight, rows_weight, ev))
 
     scenarios = {}
+    observed = evaluate.weighted_distribution(frame[known], spec.target, weight_column=weight)
     if "shift" in ev:
+        # the training rows reweighted to the imputed rows' profile, every arm refitted (the auxiliary models kept)
         started = time.perf_counter()
-        reweighted, diagnostics = evaluate.reweight_to_target_profile(frame[known], _within_support(spec, rows[unknown], frame[known]), ev["shift"]["profile"], weight, rows_weight, spec.numeric,
-                                                                      random_state=seed, missing_label=spec.missing_label)
+        reweighted, diagnostics = evaluate.reweight_to_target_profile(frame[known], within_support(spec, rows[unknown], frame[known]), ev["shift"]["profile"], weight, rows_weight,
+                                                                      spec.numeric, random_state=seed, missing_label=spec.missing_label)
         shift_arms = {arm.name: refit(selected_models[arm.name], spec, reweighted, list(arm.features), weight, group) for arm in spec.arms}
-        # the auxiliary models are the final ones: P(feature | x) is fitted on every training row, whatever its target
-        shift_bundle = make_bundle(spec, shift_arms, auxiliary, levels, {"scenario": "shift_weighted"})
-        scenarios["shift_weighted"] = score_frame(spec, rows, shift_bundle)
+        scenarios["shift_weighted"] = score_frame(spec, rows, make_bundle(spec, shift_arms, auxiliary, levels, {"scenario": "shift_weighted"}))
         tables["shift_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
         timings["shift"] = time.perf_counter() - started
     if "delta" in ev:
+        # the imputed share of one class scaled to its observed share
         label = ev["delta"]["class"]
         share = float(observed.set_index("class")["weighted_share"].get(label, 0.0))
-        scenarios["delta_adjusted"], factor = evaluate.adjust_imputed_share(scored, spec.prefix, spec.class_slugs, label, target_share=share, weight_column=rows_weight)
-        summary["delta_factor"] = factor
+        scenarios["delta_adjusted"], summary["delta_factor"] = evaluate.adjust_imputed_share(scored, spec.prefix, spec.class_slugs, label, target_share=share, weight_column=rows_weight)
 
     shares = {"observed_known": observed.set_index("class")["weighted_share"].reindex(spec.class_slugs)}
     for name, scenario in {"imputed": scored, **scenarios}.items():
         chosen = scenario[scenario[f"{spec.prefix}_fue_imputado"]]
         shares[name] = evaluate.probabilistic_distribution(chosen, spec.prefix, spec.class_slugs, weight_column=rows_weight).set_index("class")["weighted_share"]
+    imputed = scored[scored[f"{spec.prefix}_fue_imputado"]]
     shares["imputed_hard"] = evaluate.weighted_distribution(imputed, f"{spec.prefix}_final", weight_column=rows_weight).set_index("class")["weighted_share"].reindex(spec.class_slugs).fillna(0.0)
     shares["final"] = evaluate.probabilistic_distribution(scored, spec.prefix, spec.class_slugs, weight_column=rows_weight).set_index("class")["weighted_share"]
     tables["shares"] = pd.DataFrame(shares).rename_axis("class").reset_index()
     summary["timings_s"] = {name: round(value, 1) for name, value in timings.items()}
     summary["versions"] = {**target.versions, "training": source.versions, "sklearn": bundle["metadata"]["sklearn_version"], "eodgdl": bundle["metadata"]["eodgdl_version"]}
 
-    return RetrainResult(spec, bundle, scored, scenarios, tables, summary, list(target.keys))
+    return RetrainResult(spec, bundle, scored, scenarios, tables, summary)
 
 
 def _serializable(frame):
@@ -368,19 +412,20 @@ def _serializable(frame):
 
 
 def write_retrain(result, out):
-    """Write a retrain: ``<bundle file>`` (the v2 bundle), ``scores.parquet`` (keys and outputs),
-    ``scenarios.parquet`` (the same per scenario), ``evaluation/<table>.parquet`` and ``summary.json``. Returns the
-    bundle's path and sha256."""
+    """Write a retrain to the task's directory ``out`` (``<root>/<task>``, where ``retrained=<root>`` finds it):
+    ``<bundle file>`` (the v2 bundle), ``scores.parquet`` (keys, outputs and weight), ``scenarios.parquet`` (the same
+    per scenario), ``evaluation/<table>.parquet`` and ``summary.json``, after removing the tables and scenarios an
+    earlier retrain left there (read later as this one's). Returns the bundle's path and sha256."""
     spec, out = result.spec, Path(out)
     (out / "evaluation").mkdir(parents=True, exist_ok=True)
-    columns = output_columns(spec, result.keys)
-    weight = get_source(spec.score_source).config["weight"]
-    result.scored[columns + [weight]].to_parquet(out / "scores.parquet", index=False)
+    for stale in [*(out / "evaluation").glob("*.parquet"), out / "scenarios.parquet"]:
+        stale.unlink(missing_ok=True)
+    output_frame(spec, result.scored, weight=True).to_parquet(out / "scores.parquet", index=False)
     if result.scenarios:
-        pd.concat([frame[columns + [weight]].assign(scenario=name) for name, frame in result.scenarios.items()], ignore_index=True).to_parquet(out / "scenarios.parquet", index=False)
+        pd.concat([output_frame(spec, frame, weight=True).assign(scenario=name) for name, frame in result.scenarios.items()], ignore_index=True).to_parquet(out / "scenarios.parquet", index=False)
     for name, table in result.tables.items():
         _serializable(table).to_parquet(out / "evaluation" / f"{name}.parquet", index=False)
-    bundle_path = out / (spec.bundle_file or f"{spec.name}.joblib")
+    bundle_path = out / spec.bundle_name
     digest = save_bundle(result.bundle, bundle_path)
     summary = {**result.summary, "bundle": {"file": bundle_path.name, "sha256": digest}, "spec_hash": spec.hash}
     (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
@@ -401,18 +446,19 @@ def _merge(base, fragment):
     return merged
 
 
-def compare(task, candidates, seeds=(42,), bundle=None, context=None, n_jobs=-1, progress=True):
+def compare(task, candidates, seeds=(42,), bundle=None, retrained=None, context=None, n_jobs=-1, progress=True):
     """Fold log losses of candidate specifications against the task's own, per arm and seed.
 
     ``candidates`` maps a name to a spec fragment merged into the task's YAML (e.g. ``{"arms": {"with_education":
     {"features": [...], "requires": [...]}}}``, new ``features.groups`` or ``builders``; an arm entry replaces the
-    whole arm). Each arm keeps the family and hyperparameters of the published bundle's winner; the folds are the
-    task's grouped folds, reseeded per seed, over the training rows only. Returns ``(folds, paired)``: every fold's
-    loss, and per candidate, arm and seed the mean loss, the mean paired difference to the baseline and its standard
-    error, plus the difference averaged over seeds."""
+    whole arm). Each arm keeps the family and hyperparameters of the bundle's winner (``bundle``, else
+    :func:`~eodgdl.impute.bundle.load_bundle` with ``retrained``); the folds are the task's grouped folds, reseeded
+    per seed, over the training rows only. Returns ``(folds, paired)``: every fold's loss, and per candidate, arm and
+    seed the mean loss, the mean paired difference to the baseline and its standard error, plus the difference
+    averaged over seeds."""
     spec = _spec(task)
     context = context or Context()
-    bundle = as_v2(bundle if bundle is not None else load_bundle(spec), spec)
+    bundle = as_v2(bundle, spec) if bundle is not None else load_bundle(spec, retrained=retrained)
     winners = bundle["metadata"]["selected"]
     cv = spec.selection["cv"]
     specs = {"baseline": spec, **{name: parse_task(_merge(spec.raw, fragment)) for name, fragment in candidates.items()}}
@@ -420,9 +466,8 @@ def compare(task, candidates, seeds=(42,), bundle=None, context=None, n_jobs=-1,
     rows = []
     for name, candidate in specs.items():
         source = build_frame(candidate, context)
-        if candidate.selection.get("population"):
-            source.frame = _filter(source.frame, candidate.selection["population"]).reset_index(drop=True)
-        train, _ = select.split_known(source.frame, candidate.target, source.group, candidate.unknown_column, n_splits=cv["splits"], test_fold=cv["test_fold"], random_state=cv["seed"])
+        frame = select_rows(source.frame, keep=candidate.selection.get("population"))
+        train, _ = select.split_known(frame, candidate.target, source.group, candidate.unknown_column, n_splits=cv["splits"], test_fold=cv["test_fold"], random_state=cv["seed"])
         levels = task_levels(candidate)
         for arm in candidate.arms:
             winner = winners[arm.name]
@@ -432,8 +477,7 @@ def compare(task, candidates, seeds=(42,), bundle=None, context=None, n_jobs=-1,
             X, y, w, g, _ = training_data(candidate, train, list(arm.features), source.weight, source.group)
             for seed in seeds:
                 splits = select.grouped_splits(X, y, g, cv_splits=cv["splits"], random_state=seed)
-                scores = select.cross_validate_grid(models, X, y, w, splits, n_jobs=n_jobs, progress=progress)
-                [(_, by_fold)] = scores.items()
+                [(_, by_fold)] = select.cross_validate_grid(models, X, y, w, splits, n_jobs=n_jobs, progress=progress).items()
                 rows += [{"candidate": name, "arm": arm.name, "seed": seed, "fold": fold, "log_loss": by_fold[fold]["log_loss"], "features": len(arm.features)}
                          for fold in range(len(splits))]
     folds = pd.DataFrame(rows)

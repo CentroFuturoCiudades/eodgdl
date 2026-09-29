@@ -14,8 +14,6 @@ from eodgdl.impute.sources.eod import work_trip_destination
 
 from ._config import DENUE_RELEASE, DENUE_STATE_CODE, GIRO_CLASSES, KEYS, TASK, WORK_TRIP_PURPOSE
 
-DESTINATION_NUMERIC_FEATURES = ["dest_establecimientos_log", "dest_share_grandes"] + [f"dest_share_{giro}" for giro in GIRO_CLASSES]
-
 
 def compute_work_trip_destination(trips):
     """Most frequent destination type, destination code/zone and main mode of each person's work trips (purpose

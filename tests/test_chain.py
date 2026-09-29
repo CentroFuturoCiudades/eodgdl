@@ -59,7 +59,7 @@ def chain_source(tmp_path_factory):
 
 def _chain_source(monkeypatch, tmp_path):
     frame = synthetic_frame()
-    build = lambda context, config: sources.SourceFrame(frame.copy(), ["k"], "w", "k", {"data": "chain"}, lambda column: [])
+    build = lambda context, config: frame.copy()
     monkeypatch.setitem(sources._SOURCES, "test.chain", sources.Source("test.chain", build, {"keys": ["k"], "weight": "w", "group": "k"},
                                                                      lambda context, config: {"data": "chain"}, lambda column: [], __file__))
     from eodgdl.impute.features import build_frame

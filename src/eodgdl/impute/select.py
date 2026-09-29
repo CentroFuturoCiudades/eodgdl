@@ -113,7 +113,9 @@ def cv_tasks(candidates):
     for name, config in candidates.items():
         grid = list(ParameterGrid(config["params"]))
         stages = config["params"].get("classifier__max_iter")
-        if stages is None or not isinstance(config["model"].named_steps["classifier"], HistGradientBoostingClassifier):
+        classifier = config["model"].named_steps["classifier"]
+        # the stages of one chain are the smaller fits only without early stopping (which would also cut the chain short)
+        if stages is None or not isinstance(classifier, HistGradientBoostingClassifier) or classifier.early_stopping is not False:
             for params in grid:
                 yield name, params, [params]
             continue
@@ -147,14 +149,15 @@ def cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=-1, pro
 def tune(candidates, X, y, sample_weights, groups, cv_splits=5, random_state=42, n_jobs=-1, progress=True):
     """Grid search of every family in ``candidates`` (``{family: {"model": pipeline, "params": grid}}``) under a
     household-grouped stratified CV with weighted metrics; within each family and then across families the simplest
-    configuration within one standard error of the best is selected, and each family's selection is refitted on all
-    rows. Returns ``(summary, best_models)``; ``summary.attrs["grid_results"]`` holds every configuration."""
+    configuration within one standard error of the best is selected, and refitted on all rows. Returns ``(summary,
+    model)``: one row per family (its selection, ``selected`` marking the one kept) and the kept configuration fitted;
+    ``summary.attrs["grid_results"]`` holds every configuration."""
     X, y = X.reset_index(drop=True), y.reset_index(drop=True)
     sample_weights, groups = sample_weights.reset_index(drop=True), groups.reset_index(drop=True)
     splits = grouped_splits(X, y, groups, cv_splits=cv_splits, random_state=random_state)
     scores = cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=n_jobs, progress=progress)
 
-    model_results, grid_results, best_models = [], [], {}
+    model_results, grid_results = [], []
     for model_name, model_config in candidates.items():
         family_results = []
         for params in ParameterGrid(model_config["params"]):
@@ -168,24 +171,15 @@ def tune(candidates, X, y, sample_weights, groups, cv_splits=5, random_state=42,
                 "fold_log_losses": [float(value) for value in folds["log_loss"]],
             })
         family_table = select_one_se(pd.DataFrame(family_results))
-        best_result = family_results[int(family_table.index[family_table["selected"]][0])]
-        best_model = clone(model_config["model"]).set_params(**best_result["best_params"])
-        best_model.fit(X, y, classifier__sample_weight=sample_weights)
         grid_results.extend(family_results)
-        model_results.append(best_result)
-        best_models[model_name] = best_model
+        model_results.append(family_results[int(family_table.index[family_table["selected"]][0])])
 
     summary = select_one_se(pd.DataFrame(model_results)).sort_values("weighted_log_loss").reset_index(drop=True)
     summary.attrs["grid_results"] = pd.DataFrame(grid_results)
+    selected = summary.loc[summary["selected"]].iloc[0]
+    model = clone(candidates[selected["model"]]["model"]).set_params(**selected["best_params"])
 
-    return summary, best_models
-
-
-def get_best_model(summary, best_models):
-    """``(family, fitted pipeline)`` of the configuration the summary selected."""
-    name = summary.loc[summary["selected"], "model"].iloc[0]
-
-    return name, best_models[name]
+    return summary, model.fit(X, y, classifier__sample_weight=sample_weights)
 
 
 def split_known(frame, target, group, unknown_column, n_splits=5, test_fold=0, random_state=42):

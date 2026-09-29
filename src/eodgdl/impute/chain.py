@@ -31,13 +31,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yaml
 
+from .arms import set_class_probabilities
 from .bundle import as_v2, load_bundle
 from .features import build_frame
 from .run import expected_score_column, output_columns, score_frame, task_levels
 from .sources import Context, get_source
-from .spec import load_task, stable_hash
+from .spec import load_task, read_yaml, stable_hash
 
 CHAINS_DIR = Path(__file__).parent / "chains"
 MODES = ("parallel", "sequential")
@@ -138,8 +138,12 @@ def load_chain(name):
     path = CHAINS_DIR / f"{name}.yaml"
     if not path.exists():
         raise ValueError(f"No chain {name!r}; known: {sorted(p.stem for p in CHAINS_DIR.glob('*.yaml'))}")
-    with open(path, encoding="utf-8") as handle:
-        return parse_chain(yaml.safe_load(handle))
+    return parse_chain(read_yaml(path))
+
+
+def is_chain(name):
+    """Whether ``name`` is a chain (``impute/chains/<name>.yaml``) rather than a task."""
+    return (CHAINS_DIR / f"{name}.yaml").exists()
 
 
 @dataclass
@@ -185,146 +189,186 @@ def _aggregate(values, weights, rows, n_rows, levels=None):
     return pd.DataFrame(out, columns=levels)
 
 
-def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=None, specs=None, upstream_outputs=None, options=None):
-    """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
-    ``bundles`` ({task: bundle}) overrides the tasks' bundle files, ``derive_functions`` ({name: fn}) the derive
-    registry and ``specs`` ({task: TaskSpec}) the task files. For sensitivity runs, ``upstream_outputs`` ({task: frame
-    with the source's keys and the task's output columns}) replaces a first-level task's scoring (e.g. a retrain
-    scenario), and ``options`` ({task: {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra
-    level subsets, or no auxiliary models (training shares instead). Returns a :class:`ChainResult`."""
-    from .derive import get_derive
-
-    chain = load_chain(chain) if isinstance(chain, str) else chain
-    context = context or Context(tables=tables)
-    bundles = dict(bundles or {})
-    specs = {task: (specs or {}).get(task) or load_task(task) for task in chain.tasks}
-    sources = {spec.score_source for spec in specs.values()}
-    _check(len(sources) == 1, f"{chain.name}: the tasks score different sources {sorted(sources)}")
-    keys = list(get_source(sources.pop()).config["keys"])
-
-    frames, provenance = {}, {"chain_hash": chain.hash, "mode": chain.mode, "propagation": chain.propagation, "draws": chain.draws, "seed": chain.seed, "bundles": {}}
-    for task, spec in specs.items():
-        frames[task] = build_frame(spec, context, role="score").frame
-        _check(frames[task][keys].astype(str).equals(frames[chain.tasks[0]][keys].astype(str)), f"{chain.name}: {task}'s rows differ from {chain.tasks[0]}'s")
-        bundle = as_v2(bundles[task] if task in bundles else load_bundle(spec), spec)
-        bundles[task] = bundle
-        provenance["bundles"][task] = {key: bundle["metadata"].get(key) for key in ("spec_hash", "scoring_hash", "sklearn_version", "eodgdl_version")}
-    for step in chain.steps:
-        if isinstance(step, TaskStep) and chain.propagation != "expected":
-            declared = task_levels(specs[step.task])
-            for use in step.uses:
-                if use.feature in specs[step.task].numeric:
-                    continue
-                values = set(dict(use.transform).values()) if use.transform else set(specs[use.task].class_slugs)
-                _check(values <= set(declared[use.feature]), f"{chain.name}: {use.task} fills {step.task}.{use.feature} with levels it does not declare: {sorted(values - set(declared[use.feature]))}")
-    base = frames[chain.tasks[0]]
-    n_rows = len(base)
-
-    rng = np.random.default_rng(chain.seed)
-    draws = chain.propagation == "draws"
-    per_row = chain.draws if draws else 1
-    completions = pd.DataFrame({"row": np.repeat(np.arange(n_rows), per_row), "completion": np.tile(np.arange(per_row), n_rows),
-                                "weight": np.full(n_rows * per_row, 1.0 / per_row)})
-    needed = set()                                   # tasks whose values later steps read
+def _needed(chain):
+    """The tasks whose values later steps read: the upstream of a ``uses``, and every task before a derive step."""
+    needed = set()
     for index, step in enumerate(chain.steps):
         if isinstance(step, TaskStep):
             needed |= {use.task for use in step.uses}
         elif index > 0:
             needed |= {s.task for s in chain.steps[:index] if isinstance(s, TaskStep)}
+    return needed
 
+
+def _check_uses(chain, specs):
+    """Every level an upstream fills a downstream categorical feature with is one the downstream task declares."""
+    if chain.propagation == "expected":
+        return
+    for step in chain.steps:
+        if not isinstance(step, TaskStep):
+            continue
+        declared = task_levels(specs[step.task])
+        for use in step.uses:
+            if use.feature in specs[step.task].numeric:
+                continue
+            values = set(dict(use.transform).values()) if use.transform else set(specs[use.task].class_slugs)
+            _check(values <= set(declared[use.feature]), f"{chain.name}: {use.task} fills {step.task}.{use.feature} with levels it does not declare: {sorted(values - set(declared[use.feature]))}")
+
+
+def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_subsets):
+    """P(y | x, the upstream values of each completion), one row per completion, each distinct (row, upstream values)
+    scored once: ``(conditional, first, conditionals)``, with the task's outputs on each row's first combination (the
+    columns that do not depend on the upstream) and, for an enumerated step with one upstream, the conditionals of
+    every row at every level of the feature (``{prob_<p>_<class>_given_<feature>_<level>: values}``)."""
+    n_rows = len(frame)
+    filled = pd.DataFrame({"row": completions["row"].to_numpy()})
+    for use in step.uses:
+        upstream = specs[use.task]
+        level_map = _level_map(use, upstream, use.feature in spec.numeric) if chain.propagation != "expected" else None
+        values = completions[upstream.prefix]
+        filled[use.feature] = values.map(level_map).to_numpy() if level_map else values.to_numpy()
+    combos = filled.drop_duplicates().reset_index(drop=True)
+    by_level = chain.propagation == "enumerate" and len(step.uses) == 1
+    if by_level:
+        # every row at every level of the feature, so the conditionals P(y | x, level) are complete
+        use = step.uses[0]
+        level_map = _level_map(use, specs[use.task], use.feature in spec.numeric)
+        levels = sorted(set(level_map.values())) if level_map else list(specs[use.task].class_slugs)
+        grid = pd.DataFrame({"row": np.repeat(np.arange(n_rows), len(levels)), use.feature: np.tile(np.asarray(levels, dtype=object), n_rows)})
+        combos = pd.concat([combos, grid]).drop_duplicates().reset_index(drop=True)
+    expanded = frame.iloc[combos["row"].to_numpy()].reset_index(drop=True)
+    for use in step.uses:
+        expanded[use.feature] = combos[use.feature].to_numpy()
+    scored = score_frame(spec, expanded, bundle, level_subsets=level_subsets)
+    position = filled.merge(combos.reset_index(), on=list(filled.columns), how="left")["index"].to_numpy()
+    firsts = combos.drop_duplicates("row")
+    first = scored.iloc[firsts.index].set_index(firsts["row"].to_numpy()).sort_index()
+    first.index = frame.index
+
+    conditionals = {}
+    if by_level:
+        feature = step.uses[0].feature
+        table = pd.concat([combos, scored[spec.probability_columns]], axis=1)
+        for level, group in table.groupby(feature):
+            for slug, column in zip(spec.class_slugs, spec.probability_columns):
+                values = np.full(n_rows, np.nan)
+                values[group["row"].to_numpy()] = group[column].to_numpy()
+                conditionals[f"prob_{spec.prefix}_{slug}_given_{feature}_{level}"] = values
+    return scored[spec.probability_columns].to_numpy()[position], first, conditionals
+
+
+def _marginal_outputs(chain, step, spec, first, conditional, completions):
+    """The task's output columns with its marginal P(y | x) = Σ weight × P(y | x, completion) over each row's
+    completions (an observed target stays one-hot), the arg-max, confidence and expected score read from it, and
+    ``<prefix>_condicionado_en``."""
+    marginal = np.zeros((len(first), len(spec.class_slugs)))
+    np.add.at(marginal, completions["row"].to_numpy(), completions["weight"].to_numpy()[:, None] * conditional)
+    out = first[output_columns(spec, [])].copy()
+    unknown = out[f"{spec.prefix}_fue_imputado"].to_numpy(bool)
+    marginal[~unknown] = out.loc[~unknown, spec.probability_columns].to_numpy()
+    set_class_probabilities(out, spec.prefix, spec.class_slugs, marginal[unknown], unknown)
+    if spec.scores:
+        out[expected_score_column(spec)] = marginal @ np.array([spec.scores[slug] for slug in spec.class_slugs])
+    out[f"{spec.prefix}_condicionado_en"] = "+".join(f"{use.task}:{chain.propagation}" + (" (plug-in)" if chain.propagation == "expected" else "") for use in step.uses)
+    return out
+
+
+def _advance(completions, spec, conditional, propagation, rng):
+    """The completions carrying the task's value: expanded over its classes (``enumerate``, weights times the
+    conditional, zero weights dropped), one class drawn per completion (``draws``), or the expected score
+    (``expected``)."""
+    classes = spec.class_slugs
+    if propagation == "enumerate":
+        weights = completions["weight"].to_numpy()
+        completions = completions.iloc[np.repeat(np.arange(len(completions)), len(classes))].reset_index(drop=True)
+        completions["weight"] = (weights[:, None] * conditional).ravel()
+        completions[spec.prefix] = np.tile(np.asarray(classes, dtype=object), len(weights))
+        completions = completions[completions["weight"] > 0].reset_index(drop=True)
+        completions["completion"] = completions.groupby("row").cumcount()
+    elif propagation == "draws":
+        completions[spec.prefix] = _sample(conditional, classes, rng)
+    else:
+        completions[spec.prefix] = conditional @ np.array([spec.scores[slug] for slug in classes]) if spec.scores else pd.NA
+    return completions
+
+
+def _derive(step, chain, completions, base, derive_functions):
+    """Run a derive step on every completion (its columns added to ``completions`` in place) and aggregate each new
+    column per row: ``{prob_<column>_<level> or <column>_media: values}``."""
+    from .derive import get_derive
+
+    function = (derive_functions or {}).get(step.name) or get_derive(step.name)
+    values = function(completions, base, {**step.config, "propagation": chain.propagation})
+    derived = {}
+    for column in values.columns:
+        completions[column] = values[column].to_numpy()
+        aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), len(base), step.config.get("levels", {}).get(column))
+        if isinstance(aggregated, pd.DataFrame):
+            for level in aggregated.columns:
+                derived[f"prob_{column}_{level}"] = aggregated[level].to_numpy()
+        else:
+            derived[f"{column}_media"] = aggregated
+    return derived
+
+
+def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, derive_functions=None, specs=None, upstream_outputs=None, options=None):
+    """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
+    ``bundles`` ({task: bundle}) overrides the tasks' bundles, which are otherwise read by
+    :func:`~eodgdl.impute.bundle.load_bundle` (from ``<retrained>/<task>/`` when a retrain wrote one there, else the
+    data file); ``derive_functions`` ({name: fn}) overrides the derive registry and ``specs`` ({task: TaskSpec}) the
+    task files. For sensitivity runs, ``upstream_outputs`` ({task: frame with the source's keys and the task's output
+    columns}) replaces a first-level task's scoring (e.g. a retrain scenario), and ``options`` ({task:
+    {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra level subsets, or no auxiliary
+    models (training shares instead). Returns a :class:`ChainResult`."""
+    chain = load_chain(chain) if isinstance(chain, str) else chain
+    context = context or Context(tables=tables)
+    specs = {task: (specs or {}).get(task) or load_task(task) for task in chain.tasks}
+    sources = {spec.score_source for spec in specs.values()}
+    _check(len(sources) == 1, f"{chain.name}: the tasks score different sources {sorted(sources)}")
+    keys = get_source(sources.pop()).keys
+    bundles = {task: as_v2(bundles[task], spec) if task in (bundles or {}) else load_bundle(spec, retrained=retrained) for task, spec in specs.items()}
+    frames = {task: build_frame(spec, context, role="score").frame for task, spec in specs.items()}
+    for task in chain.tasks:
+        _check(frames[task][keys].astype(str).equals(frames[chain.tasks[0]][keys].astype(str)), f"{chain.name}: {task}'s rows differ from {chain.tasks[0]}'s")
+    _check_uses(chain, specs)
+    provenance = {"chain_hash": chain.hash, "mode": chain.mode, "propagation": chain.propagation, "draws": chain.draws, "seed": chain.seed,
+                  "bundles": {task: {key: bundle["metadata"].get(key) for key in ("spec_hash", "scoring_hash", "sklearn_version", "eodgdl_version")}
+                              for task, bundle in bundles.items()}}
+    base = frames[chain.tasks[0]]
+    n_rows = len(base)
+
+    rng = np.random.default_rng(chain.seed)
+    per_row = chain.draws if chain.propagation == "draws" else 1
+    completions = pd.DataFrame({"row": np.repeat(np.arange(n_rows), per_row), "completion": np.tile(np.arange(per_row), n_rows),
+                                "weight": np.full(n_rows * per_row, 1.0 / per_row)})
+    needed = _needed(chain)
     outputs, derived = {}, {}
     for step in chain.steps:
         if isinstance(step, DeriveStep):
-            function = (derive_functions or {}).get(step.name) or get_derive(step.name)
-            values = function(completions, base, {**step.config, "propagation": chain.propagation})
-            for column in values.columns:
-                completions[column] = values[column].to_numpy()
-                aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), n_rows, step.config.get("levels", {}).get(column))
-                if isinstance(aggregated, pd.DataFrame):
-                    for level in aggregated.columns:
-                        derived[f"prob_{column}_{level}"] = aggregated[level].to_numpy()
-                else:
-                    derived[f"{column}_media"] = aggregated
+            derived.update(_derive(step, chain, completions, base, derive_functions))
             continue
 
         spec, frame, bundle = specs[step.task], frames[step.task], bundles[step.task]
-        classes = spec.class_slugs
         option = (options or {}).get(step.task, {})
         if option.get("auxiliary") is False:
             bundle = {**bundle, "auxiliary": {}}
         subsets = {**spec.level_subsets, **option.get("level_subsets", {})} or None
+        rows = completions["row"].to_numpy()
+        conditionals = {}
         if step.task in (upstream_outputs or {}):
             _check(not step.uses, f"{chain.name}: only a task that uses no other can take given outputs")
-            given = upstream_outputs[step.task]
-            scored = frame[keys].merge(given, on=keys, how="left", validate="one_to_one")
-            _check(scored[spec.probability_columns].notna().all().all(), f"{chain.name}: the given {step.task} outputs miss rows")
-            scored.index = frame.index
-            conditional = scored[spec.probability_columns].to_numpy()[completions["row"].to_numpy()]
-            first = scored
-        elif not step.uses:
-            scored = score_frame(spec, frame, bundle, level_subsets=subsets)
-            conditional = scored[spec.probability_columns].to_numpy()[completions["row"].to_numpy()]
-            first = scored
-        else:
-            filled = pd.DataFrame({"row": completions["row"].to_numpy()})
-            for use in step.uses:
-                upstream = specs[use.task]
-                values = completions[upstream.prefix]
-                level_map = _level_map(use, upstream, use.feature in spec.numeric) if chain.propagation != "expected" else None
-                filled[use.feature] = values.map(level_map).to_numpy() if level_map else values.to_numpy()
-            combos = filled.drop_duplicates().reset_index(drop=True)
-            if chain.propagation == "enumerate" and len(step.uses) == 1:
-                # every row at every level of the feature, so the conditionals P(y | x, level) are complete
-                use = step.uses[0]
-                level_map = _level_map(use, specs[use.task], use.feature in spec.numeric)
-                levels = sorted(set(level_map.values())) if level_map else list(specs[use.task].class_slugs)
-                grid = pd.DataFrame({"row": np.repeat(np.arange(n_rows), len(levels)), use.feature: np.tile(np.asarray(levels, dtype=object), n_rows)})
-                combos = pd.concat([combos, grid]).drop_duplicates().reset_index(drop=True)
-            expanded = frame.iloc[combos["row"].to_numpy()].reset_index(drop=True)
-            for use in step.uses:
-                expanded[use.feature] = combos[use.feature].to_numpy()
-            scored_combos = score_frame(spec, expanded, bundle, level_subsets=subsets)
-            position = filled.merge(combos.reset_index(), on=list(filled.columns), how="left")["index"].to_numpy()
-            conditional = scored_combos[spec.probability_columns].to_numpy()[position]
-            first = scored_combos.iloc[combos.drop_duplicates("row").index].set_index(combos.drop_duplicates("row")["row"].to_numpy()).sort_index()
+            first = frame[keys].merge(upstream_outputs[step.task], on=keys, how="left", validate="one_to_one")
+            _check(first[spec.probability_columns].notna().all().all(), f"{chain.name}: the given {step.task} outputs miss rows")
             first.index = frame.index
-            if chain.propagation == "enumerate" and len(step.uses) == 1:
-                feature = step.uses[0].feature
-                table = pd.concat([combos, scored_combos[spec.probability_columns]], axis=1)
-                for level, group in table.groupby(feature):
-                    for slug, column in zip(classes, spec.probability_columns):
-                        conditional_column = np.full(n_rows, np.nan)
-                        conditional_column[group["row"].to_numpy()] = group[column].to_numpy()
-                        outputs.setdefault(step.task, {})[f"prob_{spec.prefix}_{slug}_given_{feature}_{level}"] = conditional_column
-
-        weights = completions["weight"].to_numpy()
-        marginal = np.zeros((n_rows, len(classes)))
-        np.add.at(marginal, completions["row"].to_numpy(), weights[:, None] * conditional)
-        out = first[output_columns(spec, [])].copy()
-        unknown = out[f"{spec.prefix}_fue_imputado"].to_numpy(bool)
-        marginal[~unknown] = out.loc[~unknown, spec.probability_columns].to_numpy()   # an observed target stays one-hot
-        for i, column in enumerate(spec.probability_columns):
-            out[column] = marginal[:, i]
-        out.loc[unknown, f"{spec.prefix}_imputado"] = np.asarray(classes, dtype=object)[marginal[unknown].argmax(axis=1)]
-        out.loc[unknown, f"{spec.prefix}_final"] = out.loc[unknown, f"{spec.prefix}_imputado"]
-        out.loc[unknown, f"{spec.prefix}_prediction_confidence"] = marginal[unknown].max(axis=1)
-        if spec.scores:
-            out[expected_score_column(spec)] = marginal @ np.array([spec.scores[slug] for slug in classes])
-        out[f"{spec.prefix}_condicionado_en"] = "+".join(f"{use.task}:{chain.propagation}" + (" (plug-in)" if chain.propagation == "expected" else "") for use in step.uses)
-        outputs[step.task] = {**out.to_dict("series"), **outputs.get(step.task, {})}
-
+            conditional = first[spec.probability_columns].to_numpy()[rows]
+        elif not step.uses:
+            first = score_frame(spec, frame, bundle, level_subsets=subsets)
+            conditional = first[spec.probability_columns].to_numpy()[rows]
+        else:
+            conditional, first, conditionals = _conditionals(chain, step, spec, frame, bundle, completions, specs, subsets)
+        outputs[step.task] = {**_marginal_outputs(chain, step, spec, first, conditional, completions).to_dict("series"), **conditionals}
         if step.task in needed:
-            if chain.propagation == "enumerate":
-                expansion = np.repeat(np.arange(len(completions)), len(classes))
-                completions = completions.iloc[expansion].reset_index(drop=True)
-                completions["weight"] = (weights[:, None] * conditional).ravel()
-                completions[spec.prefix] = np.tile(np.asarray(classes, dtype=object), len(weights))
-                completions = completions[completions["weight"] > 0].reset_index(drop=True)
-                completions["completion"] = completions.groupby("row").cumcount()
-            elif chain.propagation == "draws":
-                completions[spec.prefix] = _sample(conditional, classes, rng)
-            else:
-                completions[spec.prefix] = conditional @ np.array([spec.scores[slug] for slug in classes]) if spec.scores else pd.NA
+            completions = _advance(completions, spec, conditional, chain.propagation, rng)
 
     frame = base[keys].copy()
     for task in chain.tasks:
@@ -351,8 +395,8 @@ def write_chain(result, out):
 
 
 def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True):
-    """Retrain every task of ``chain`` in order (:func:`eodgdl.impute.run.retrain`), each written to ``out/<task>``.
-    Returns ``{task: (bundle path, sha256)}``."""
+    """Retrain every task of ``chain`` in order (:func:`eodgdl.impute.run.retrain`), each written to ``out/<task>``
+    (where ``retrained=out`` finds it). Returns ``{task: (bundle path, sha256)}``."""
     from .run import retrain, write_retrain
 
     chain = load_chain(chain) if isinstance(chain, str) else chain

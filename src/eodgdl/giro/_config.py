@@ -19,14 +19,11 @@ GIRO_SLUGS = dict(TASK.classes)  # label -> slug
 GIRO_LABELS = {slug: label for label, slug in GIRO_SLUGS.items()}  # slug -> label
 GIRO_CLASSES = TASK.class_slugs
 NO_ESPECIFICADO = TASK.missing_label
-MISSING_EDUCATION_LEVELS = list(TASK.missing_values.get("escolaridad", []))
 _WORKERS = _source_config()["eod.workers"]
 EMPLOYED_CATEGORIES = list(_WORKERS["employed_categories"])
-DWELLING_COLUMNS = list(_WORKERS["dwelling_columns"])
 KEYS = list(_WORKERS["keys"])
 WORK_TRIP_PURPOSE = _source_config()["eod.work_trip"]["purpose"]
 
-DESTINATION_SHARE_FEATURES = [f"dest_share_{giro}" for giro in GIRO_CLASSES]
 DESTINATION_FEATURES = list(TASK.groups["destination"])
 MOBILITY_FEATURES = list(TASK.groups["mobility"])
 SECTOR_FEATURES = list(TASK.arm("with_education").features)
@@ -38,7 +35,6 @@ _DESTINATION = TASK.builder_config["giro.destination"]
 DENUE_STATE_CODE = _DESTINATION["state_code"]
 DENUE_RELEASE = str(_DESTINATION["denue_release"])
 DESTINATION_AMBITO_LEVELS = list(TASK.declared_levels["destino_ambito"])
-SMALL_ESTABLISHMENT_LEVELS = tuple(_DESTINATION["small_establishment_levels"])
 DENUE_SCIAN2 = {str(code): str(giro) for code, giro in _DESTINATION["denue_scian2"].items()}
 
 

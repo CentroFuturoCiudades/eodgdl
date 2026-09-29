@@ -1,22 +1,19 @@
-"""Sources and feature builders on the EOD survey (``eodgdl.load_eod``): ``eod.workers`` and ``eod.work_trip``.
-Configuration: ``eod.yaml`` beside this module."""
+"""Sources and feature builders on the EOD survey (``eodgdl.load_eod``): the sources ``eod.workers`` and
+``eod.dwellings``, the builder ``eod.work_trip`` and the harmonizations ``harmonize.eod`` and
+``harmonize.eod_viviendas``. Configuration: ``eod.yaml`` beside this module."""
 
 import functools
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from ..features import register_builder
-from . import files_digest, register_source
+from ..harmonize import load_harmonization, register_harmonization
+from . import files_digest, module_config, register_source
 
-CONFIG_PATH = Path(__file__).with_suffix(".yaml")
 
-
-@functools.cache
 def load_config():
-    with open(CONFIG_PATH, encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    return module_config(__file__)
 
 
 def survey_versions():
@@ -37,6 +34,10 @@ def survey_versions():
     }
 
 
+def _survey_versions(context, config):
+    return survey_versions()
+
+
 @functools.cache
 def schema_levels(column):
     """Category labels the eodgdl schemas guarantee for a survey column."""
@@ -46,21 +47,23 @@ def schema_levels(column):
     return [str(level) for level in schema.columns[column].dtype.type.categories]
 
 
-@register_source("eod.workers", config=load_config()["eod.workers"], versions=lambda context, config: survey_versions(), schema_levels=schema_levels)
+def _as_strings(frame):
+    categorical = frame.columns[frame.dtypes.eq("category")]
+    frame[categorical] = frame[categorical].astype("string")
+    return frame
+
+
+@register_source("eod.workers", config=load_config()["eod.workers"], versions=_survey_versions, schema_levels=schema_levels)
 def workers(context, config):
     """Persons who worked last week (``trabajo_semana_pasada`` in the employed categories), with the dwelling's
     columns attached; categoricals as plain strings."""
-    from . import SourceFrame
-
     tables = context.eod()
     frame = tables.hab.reset_index()
     dwelling_columns = [column for column in config["dwelling_columns"] if column not in frame.columns]
     frame = frame.merge(tables.viv[dwelling_columns], left_on="folio_vivienda", right_index=True, how="left", validate="many_to_one")
     frame = frame[frame["trabajo_semana_pasada"].isin(config["employed_categories"])].copy()
-    categorical = frame.columns[frame.dtypes.eq("category")]
-    frame[categorical] = frame[categorical].astype("string")
 
-    return SourceFrame(frame.reset_index(drop=True), list(config["keys"]), config["weight"], config["group"], survey_versions(), schema_levels)
+    return _as_strings(frame).reset_index(drop=True)
 
 
 def work_trip_destination(trips, purpose, keys=("folio_vivienda", "folio_habitante")):
@@ -80,7 +83,7 @@ def work_trip_destination(trips, purpose, keys=("folio_vivienda", "folio_habitan
     return destination.reset_index()
 
 
-@register_builder("eod.work_trip", config=load_config()["eod.work_trip"], versions=lambda context, config: survey_versions())
+@register_builder("eod.work_trip", config=load_config()["eod.work_trip"], versions=_survey_versions)
 def work_trip(frame, context, config, spec):
     """``destino_trabajo``, ``destino_cvegeo``, ``destino_zona`` and ``modo_trabajo`` of each row's work trips (NA
     without a work trip on the survey day)."""
@@ -89,20 +92,10 @@ def work_trip(frame, context, config, spec):
     return frame[keys].merge(destination, on=keys, how="left", validate="one_to_one").drop(columns=keys)
 
 
-def _harmonization_versions(context, config):
-    from ..harmonize import load_harmonization
-
-    return {**survey_versions(), "harmonization": load_harmonization("eod"), "common": load_harmonization("common")}
-
-
-@register_builder("harmonize.eod", versions=_harmonization_versions, replaces=True)
-def harmonize_eod(frame, context, config, spec):
-    """The harmonized variables of ``impute/harmonization/eod.yaml``; they replace the survey's own columns of the same
-    name (``ocupacion``, ``escolaridad``, ``municipio``, ``estado_civil``, ``parentesco``) in the task frame."""
-    from ..harmonize import apply_variables, load_harmonization
-
-    return apply_variables(frame, load_harmonization("eod")["variables"])
-
+# the workers' variables on the common levels (they replace the survey's own ocupacion, escolaridad, municipio,
+# estado_civil, parentesco in the task frame), and the dwellings' NSE variables
+register_harmonization("harmonize.eod", "eod")
+register_harmonization("harmonize.eod_viviendas", "eod_viviendas")
 
 
 def dwelling_levels(column):
@@ -110,20 +103,16 @@ def dwelling_levels(column):
     (common.yaml: the head's renamed or derived columns, the NSE variables)."""
     from eodgdl import schemas
 
-    from ..harmonize import load_harmonization
-
     if any(column in schema.columns for schema in (schemas.hab_schema, schemas.viv_schema, schemas.trips_schema)):
         return schema_levels(column)
     return list(load_harmonization("common")["levels"][column])
 
 
-@register_source("eod.dwellings", config=load_config()["eod.dwellings"], versions=lambda context, config: survey_versions(), schema_levels=dwelling_levels)
+@register_source("eod.dwellings", config=load_config()["eod.dwellings"], versions=_survey_versions, schema_levels=dwelling_levels)
 def dwellings(context, config):
     """One row per dwelling (``viv``) with its head's columns (``head_columns``, ``weekend_*``; ``jefe_fuente`` says
     whether the head was reported or is the oldest member) and ``trabajadores_14_n``, the members aged 14+ who
     worked last week; categoricals as plain strings."""
-    from . import SourceFrame
-
     tables = context.eod()
     hab = tables.hab.reset_index()
     frame = tables.viv.reset_index()
@@ -139,21 +128,5 @@ def dwellings(context, config):
     workers = working.groupby(hab["folio_vivienda"]).sum().rename("trabajadores_14_n")
     frame = frame.merge(workers, left_on="folio_vivienda", right_index=True, how="left", validate="one_to_one")
     frame["trabajadores_14_n"] = frame["trabajadores_14_n"].fillna(0).astype("Int64")
-    categorical = frame.columns[frame.dtypes.eq("category")]
-    frame[categorical] = frame[categorical].astype("string")
 
-    return SourceFrame(frame, list(config["keys"]), config["weight"], config["group"], survey_versions(), dwelling_levels)
-
-
-@register_builder("harmonize.eod_viviendas", versions=lambda context, config: {**survey_versions(), "harmonization": _harmonization("eod_viviendas")})
-def harmonize_eod_viviendas(frame, context, config, spec):
-    """The NSE variables of ``impute/harmonization/eod_viviendas.yaml``."""
-    from ..harmonize import apply_variables
-
-    return apply_variables(frame, _harmonization("eod_viviendas")["variables"])
-
-
-def _harmonization(name):
-    from ..harmonize import load_harmonization
-
-    return {"variables": load_harmonization(name)["variables"], "common": load_harmonization("common")}
+    return _as_strings(frame)

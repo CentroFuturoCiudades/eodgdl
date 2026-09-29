@@ -48,6 +48,41 @@ def score_arm(arm, rows, numeric, category_levels, level_subsets=None, missing_l
     return probabilities, marginalized, arm.model.named_steps["classifier"].classes_
 
 
+def predict_arms(frame, arms, assigned, classes, numeric, category_levels, level_subsets=None, missing_label=MISSING_LABEL):
+    """Every row of ``frame`` with an arm in ``assigned`` scored by that arm (:func:`score_arm`): ``(probabilities,
+    marginalized)``, a rows x ``classes`` matrix in the order of ``classes`` (NaN where no arm is assigned) and the
+    marginalized features per row ("" where none or unassigned)."""
+    probabilities = np.full((len(frame), len(classes)), np.nan)
+    marginalized = np.full(len(frame), "", dtype=object)
+    for arm in arms:
+        assert set(arm.model.named_steps["classifier"].classes_) == set(classes), f"Model classes {list(arm.model.named_steps['classifier'].classes_)} differ from {list(classes)}"
+    for arm in arms:
+        mask = (assigned == arm.name).fillna(False).to_numpy()
+        if not mask.any():
+            continue
+        predicted, names, model_classes = score_arm(arm, frame.loc[mask], numeric, category_levels, level_subsets=level_subsets, missing_label=missing_label)
+        probabilities[mask] = predicted[:, [list(model_classes).index(label) for label in classes]]
+        marginalized[mask] = names.to_numpy()
+
+    return probabilities, marginalized
+
+
+def set_class_probabilities(frame, prefix, classes, probabilities, rows):
+    """Write ``probabilities`` (one row per selected row, columns in the order of ``classes``) to ``prob_<prefix>_<class>``
+    of the ``rows`` (a boolean mask) of ``frame``, in place, with their arg-max as ``<prefix>_imputado`` and
+    ``<prefix>_final`` and their maximum as ``<prefix>_prediction_confidence``."""
+    rows = np.asarray(rows, dtype=bool)
+    probabilities = np.asarray(probabilities, dtype=float)
+    for index, label in enumerate(classes):
+        frame.loc[rows, f"prob_{prefix}_{label}"] = probabilities[:, index]
+    predictions = np.asarray(classes, dtype=object)[probabilities.argmax(axis=1)]
+    frame.loc[rows, f"{prefix}_imputado"] = predictions
+    frame.loc[rows, f"{prefix}_final"] = predictions
+    frame.loc[rows, f"{prefix}_prediction_confidence"] = probabilities.max(axis=1)
+
+    return frame
+
+
 def impute_with_arms(frame, target, classes, arms, assigned, prefix, numeric, category_levels, level_subsets=None, missing_label=MISSING_LABEL):
     """Score every row with an arm in ``assigned`` and write the task's outputs: ``<prefix>_observado``,
     ``<prefix>_imputado``, ``<prefix>_final`` (arg-max, a convenience), ``<prefix>_fue_imputado``,
@@ -55,8 +90,6 @@ def impute_with_arms(frame, target, classes, arms, assigned, prefix, numeric, ca
     ``prob_<prefix>_<class>`` (rows sum to one; observed rows are one-hot). ``target`` holds the observed class, NA
     where unknown; rows to impute are those with an assigned arm."""
     frame = frame.copy()
-    for arm in arms:
-        assert set(arm.model.named_steps["classifier"].classes_) == set(classes), f"Model classes {list(arm.model.named_steps['classifier'].classes_)} differ from {classes}"
     unknown = assigned.notna().to_numpy()
 
     frame[f"{prefix}_observado"] = frame[target].where(~unknown, pd.NA).astype("string")
@@ -69,18 +102,10 @@ def impute_with_arms(frame, target, classes, arms, assigned, prefix, numeric, ca
     for label in classes:
         frame[f"prob_{prefix}_{label}"] = (~unknown & frame[target].eq(label)).astype(float)
 
-    for arm in arms:
-        mask = (assigned == arm.name).fillna(False).to_numpy()
-        if not mask.any():
-            continue
-        probabilities, marginalized, model_classes = score_arm(arm, frame.loc[mask], numeric, category_levels, level_subsets=level_subsets, missing_label=missing_label)
-        predictions = model_classes[probabilities.argmax(axis=1)]
-        frame.loc[mask, f"{prefix}_imputado"] = predictions
-        frame.loc[mask, f"{prefix}_final"] = predictions
-        frame.loc[mask, f"{prefix}_model_used"] = arm.name
-        frame.loc[mask, f"{prefix}_prediction_confidence"] = probabilities.max(axis=1)
-        frame.loc[mask, f"{prefix}_marginalized_features"] = marginalized.to_numpy()
-        for index, label in enumerate(model_classes):
-            frame.loc[mask, f"prob_{prefix}_{label}"] = probabilities[:, index]
+    if unknown.any():
+        probabilities, marginalized = predict_arms(frame, arms, assigned, classes, numeric, category_levels, level_subsets=level_subsets, missing_label=missing_label)
+        set_class_probabilities(frame, prefix, classes, probabilities[unknown], unknown)
+        frame.loc[unknown, f"{prefix}_model_used"] = assigned[unknown].to_numpy()
+        frame.loc[unknown, f"{prefix}_marginalized_features"] = marginalized[unknown]
 
     return frame

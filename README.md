@@ -227,8 +227,10 @@ quarto render reports/imputation_nse.qmd
 
 ### Retraining and shipping a bundle
 
-A retrain writes the bundle, its scores and every evaluation table to `output/impute/<task>/`. `score <chain>
---retrained output/impute` scores a chain with those bundles instead of the shipped ones. `evaluate` reads them by
-default (a task with no retrain there falls back to its shipped bundle), along with the retrain's `scenarios.parquet`
-for an upstream's scenarios. To ship a retrained bundle, copy it to `data/`, update its sha256 in `src/eodgdl/data/registry.txt` and
-tag a release (see Data). Feature frames are cached under the eodgdl cache directory (`--refresh` rebuilds).
+A retrain writes the bundle, its scores and every evaluation table to `<out>/<task>/` (`--out` defaults to
+`output/impute`; `retrain <chain>` does the same for each of its tasks). Every command that needs a bundle finds it
+the same way: with `--retrained <dir>`, the one a retrain wrote under `<dir>/<task>/` when there is one, else the
+shipped one. `score` and `compare` default to the shipped bundles; `evaluate` defaults to `--retrained output/impute`,
+where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `data/`, update
+its sha256 in `src/eodgdl/data/registry.txt` and tag a release (see Data). Feature frames are cached under the eodgdl
+cache directory (`--refresh` rebuilds).

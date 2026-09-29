@@ -1,10 +1,70 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
-## 0. Status at the end of session 3 (2026-09-28): phases 0–7 done, released as v0.3.0
+## 0. Status at the end of session 4 (2026-09-28): released as v0.3.0, then reviewed and simplified
 
-Read this section first; §1–§11 below are the original plan (session 1), kept as the record of the design. Then read
-`CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every module as built) and
-`src/eodgdl/impute/__init__.py`.
+Read this section first, starting with **Pending for session 5**; §1–§11 below are the original plan (session 1), kept
+as the record of the design. Then read `CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every
+module as built) and `src/eodgdl/impute/__init__.py`.
+
+### Pending for session 5 (start here)
+
+Session 4 reviewed the whole engine and refactored it (what changed: "After the release" below). It is **one commit on
+`impute-chains`, after 9950d53, not pushed and not merged into `main`**. Everything it touched was verified to reproduce
+the v0.3.0 outputs exactly, apart from two intended fixes. What is left, in the order to take it up:
+
+1. **Push, merge, release (ask the user).** The commit changes the public API: `eodgdl.giro`'s training and evaluation
+   wrappers are removed (`giro/model.py`: `tune_models`, `evaluate_model`, `impute_under_covariate_shift`, ...), the
+   CLI's `--bundle` is gone, and `retrain --out` names the root (`<out>/<task>/`). `data/` is unchanged, so the mirror
+   and `REF = "v0.3.0"` stay valid and no data tag is needed. Ask: push `impute-chains`; merge it into `main`
+   (`--no-ff`, as a5216c1); release now (a breaking change: 0.4.0 by the CLAUDE.md "Data access" recipe, `REF` set to
+   the new tag) or later.
+
+2. **NSE calibration breaks ties by survey order (the user decides; recommendation below).**
+   `derive/amai.py::nse_ageb_calibrated` sorts each (completion, AGEB) by AMAI points with a stable sort, so dwellings
+   with equal points keep the survey's row order, and their weighted mid-ranks, hence levels, follow it. Measured in
+   session 4 on `output/impute/nse/completions.parquet` joined to the dwellings' `ageb`: 49,980 of 895,050 completions
+   (5.6%) sit in a (draw, AGEB, points) block whose members end at different calibrated levels; there, the dwelling
+   first in survey order averages level 2.58 against 3.44 for the rest (0 = E … 6 = A/B), in every draw alike; 10,848 of
+   the 17,901 dwellings are in such a block in some draw. The AGEB mixes still match AMAI's (what the calibration is
+   for); which dwellings of a tie get the lower level is biased.
+   - Recommended: break ties at random within each completion, seeded (pass the chain's `seed` to derive steps in
+     `chain._derive`'s config, add a random key after `points` in the sort). Alternative: tie-averaged mid-ranks (a tie
+     block shares one level; the AGEB mix then only approximates AMAI's).
+   - No retrain: a derive step only. Rerun `eodgdl impute score nse` and `evaluate nse`, re-render
+     `reports/imputation_nse.qmd`, and add a tie at a level boundary to `tests/test_nse.py::test_points_cut_and_calibration`
+     (its four dwellings have distinct points). Expect `prob_nse_calibrado_*` per dwelling, `completions.parquet` and
+     `evaluation/agreement.parquet` to move, and the AGEB-level `reference` shares to stay within Monte Carlo noise.
+
+3. **Refresh `output/impute/` (local, gitignored; do it with or after item 2).** It still holds the v0.3.0 runs, i.e.
+   the pre-refactor code's giro `evaluation/missingness.parquet` (education 1.84% / 46.48% where the fixed table gives
+   2.50% / 46.54%), giro's `scenarios.parquet` (the delta rows' unadjusted confidence) and a stale
+   `amai_trabajadores/evaluation/missingness.parquet` (a 17:21 leftover; `write_retrain` now clears such files).
+   `for t in giro informality educacion_jefe amai_banos amai_dormitorios amai_trabajadores; do uv run eodgdl impute
+   retrain $t --data data; done` (~25 min), then `score` and `evaluate` both chains with `--retrained output/impute`,
+   and re-render the three reports in place. The new bundles predict exactly as the installed ones, but their bytes
+   differ (eodgdl version, feature-cache keys, the auxiliary pipelines' layout): **do not copy them into `data/`**
+   unless a release is meant to ship them.
+
+4. **informal-jobs-model** (§10.5, open since phase 7): ask the user whether to archive it or reduce it to paper
+   figures that read eodgdl's outputs.
+
+5. **Review notes left as they are** (design points, not bugs; raise them if the user wants to go further):
+   - Held-out metrics and scoring treat a missing feature differently: `run.heldout` and the evaluators use the
+     model's `predict_proba`, where the missing label is a category it was trained with, while scoring
+     (`marginalize`) never counts the missing label as supported and averages over the observed levels. The published
+     metrics describe a slightly different predictor for rows with a missing value (as the retired notebook did).
+   - With `evaluation.isotonic.ship: true`, the shift scenario would refit uncalibrated arms beside a calibrated
+     bundle (latent: shipping is off in every task).
+   - An enumerated chain step's other outputs (`<p>_marginalized_features`, `<p>_model_used`) come from each row's
+     first scenario (`chain._conditionals`); the same in every scenario today.
+   - `expected` propagation leaves NA in the completions for a task without `target.scores` that only a derive step
+     reads (latent).
+   - `chain._aggregate` stops the run on a NA derived level ("derived values outside the declared levels"): an NSE
+     dwelling missing its internet, cars or workers answer would do it (none today).
+   - Feature-cache keys include the task's classes, so `amai_banos`, `amai_dormitorios` and `amai_trabajadores` cache
+     the same ENIGH frame three times (disk only).
+   - `adjust_imputed_share` clips at one (§6.4).
+   - ruff warns that `pyproject.toml`'s top-level `[tool.ruff] ignore` should move to `[tool.ruff.lint]` (not impute).
 
 ### Where things are
 
@@ -19,9 +79,10 @@ Read this section first; §1–§11 below are the original plan (session 1), kep
 | 5b diagnostics (`eodgdl impute evaluate`), `reports/imputation_informality.qmd` | bf112ce | `impute-chains` |
 | 6 NSE: `eod.dwellings`, `enigh.households`, four tasks, chain `nse`, AMAI data file, `reports/imputation_nse.qmd` | 7cfef45 | `impute-chains` |
 | 7 release: six bundles installed in `data/`, giro parity fixture from the v2 bundle, docs, `v0.3.0` | 609938f, 48ae9b3 (tag `v0.3.0`) | `impute-chains`, merged into `main` |
+| review and simplification (session 4), this handoff's pending list | the commit after 9950d53 | `impute-chains` only (not pushed) |
 
 `impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7, with the `v0.3.0` tag on it. It is merged into `main`
-(`--no-ff`, as 00bf5f5). `uv run pytest`: 151 passed, ~105 s.
+(`--no-ff`, as 00bf5f5) up to 9950d53. `uv run pytest`: 157 passed, ~110 s.
 
 Parity reached (details in the commit messages):
 - giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
@@ -108,6 +169,46 @@ memory by `bundle.as_v2`); no other task's bundle is in `data/`, so today `score
 7. **After the release**: ask the user about informal-jobs-model (§10.5: archive, or reduce to paper figures reading
    eodgdl's outputs).
 
+### After the release: review and simplification (session 4, 2026-09-28)
+
+A full review of `eodgdl.impute` and a refactor for one workflow; every shipped output is reproduced (below).
+
+- **Fixed**: `eodgdl impute score <task>` selected the *training* source's keys and crashed for every task scored on
+  another source (informality, the AMAI tasks); `retrain <chain>` wrote `output/impute/<chain>/<task>/`, where
+  `--retrained output/impute` never looked; the feature-cache keys missed the engine's own code (`harmonize.py`,
+  `features.py`), so an edit there served stale frames; a component of the label (`evaluation.components`) was not
+  masked where the task's label is unknown (latent: ENOE has no such rows); the `missingness` table ignored the task's
+  `missing_values` (giro's "No sabe" education counted as observed); a `scoring.level_subsets` feature absent from one
+  arm raised; the delta-adjusted scenario kept the unadjusted `prediction_confidence`; a boosting grid with early
+  stopping on would have been scored as stages of one chain; a spec whose last arm requires something is refused;
+  `write_retrain` / `write_evaluation` left an earlier run's tables and `scenarios.parquet` behind, to be read later as
+  current (`output/impute/amai_trabajadores/evaluation/missingness.parquet` is such a leftover, from 17:21).
+- **One workflow**: `bundle.load_bundle(spec, path=None, retrained=None)` is the only bundle lookup (explicit file,
+  else `<retrained>/<task>/`, else the data file); `score`, `evaluate`, `compare` take `--retrained`, `retrain --out
+  ROOT` writes `ROOT/<task>/` (for a chain too). `--bundle` is gone.
+- **Reused machinery**: one per-arm prediction (`arms.predict_arms`, behind scoring and `run.predict_rows`), one
+  writer of probabilities (`arms.set_class_probabilities`: scoring, chains, delta); evaluators take a probability
+  matrix, predicted once per arm (`run.heldout`); sources return plain frames; the four harmonization builders are one
+  factory (`harmonize.register_harmonization`); one cached YAML reader (`spec.read_yaml`); AMAI's 21 MB file is read
+  once (`derive/amai.read_amai_ageb`); `select.tune` fits only the selected configuration; `run.retrain` and
+  `chain.run_chain` are split into named steps.
+- **`eodgdl.giro`** keeps `impute`, `load_model`, `impute_giro`, the column names, the constants and the feature
+  builders; the notebook-era training / evaluation wrappers (`giro/model.py`) are gone, and `giro/_ml.py` keeps only
+  `prepare_model_features`, which the pre-v0.3.0 pickles reference (227afc71 still loads and scores exactly as before).
+- **Parity** (against a snapshot of `output/impute/` from the v0.3.0 runs; `uv run pytest`: 157 passed): scoring
+  giro, informality and both chains from the installed bundles gives identical scores, completions, provenance and
+  evaluation tables; the six retrains reproduce every selection, CV loss, held-out metric, evaluation table and every
+  fitted model's predictions (arms, auxiliary, components), except the two intended changes (giro's `missingness` row
+  for education, 1.84% / 46.48% → 2.50% / 46.54%, now equal to the arm without education's share; the delta
+  scenario's confidence); both chains scored and evaluated from those retrains (`--retrained`) are identical again,
+  and the three reports render from them. `output/impute/` itself was left as it was (pending item 3).
+- **How the parity was checked** (reuse it after any engine change): copy `output/impute/` aside; `score` each task
+  and chain and `retrain` each task into another root (`--out`, then `score` / `evaluate --retrained` that root);
+  compare every parquet with `pandas.testing.assert_frame_equal(check_exact=True)`, the summaries as dicts (timings,
+  versions and the bundle's sha256 aside), and each fitted model of the two bundles by `predict_proba` on the task's
+  frames. Mind that `output/impute/giro_scores.parquet` of 14:41 was scored with the legacy bundle, not the installed
+  one; the retrain's own `scores.parquet` is the reference.
+
 ### Not done (deliberately deferred; mention to the user if relevant)
 
 - Auxiliary level models are fitted with fixed hyperparameters (§5.7 wanted them tunable).
@@ -129,7 +230,11 @@ memory by `bundle.as_v2`); no other task's bundle is in `data/`, so today `score
 - ENOE and ENIGH come from mxcensus's cache (`~/Library/Caches/mxcensus`); building the ENOE frame takes ~10 s, the
   ENIGH one ~6 s.
 - Run long retrains with `run_in_background`; several retrains at once oversubscribe the cores (each tuner already
-  uses every core).
+  uses every core). Every `eodgdl impute` process imports the working tree when it starts: do not edit or `git stash`
+  sources while a background run of several tasks is going.
+- Render a report in place (`QUARTO_PYTHON=.venv/bin/python quarto render reports/<report>.qmd`); `--output-dir` renders
+  in place and then *moves* the HTML away from `reports/`. Point a report at other outputs with its environment
+  variables (`EODGDL_IMPUTE_GIRO`, `EODGDL_IMPUTE_INFORMALITY`, `EODGDL_IMPUTE_SECTOR_INFORMALITY`, `EODGDL_IMPUTE_DIR`).
 
 
 Written 2026-09-28 on branch `giro-model`, for a new session. Read this file whole, then `CLAUDE.md`, then
