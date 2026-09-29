@@ -1,0 +1,30 @@
+# Informality of the EOD workers conditioned on the giro imputation: P(I | x) = Σ_s P(s | x) · P(I | x, s) over the four
+# harmonized sectors (exact). The giro model's five classes collapse to the sectors by summation; a reported giro is
+# one sector with probability one. Ported from informal-jobs-model's stage 5 scoring.
+
+chain: sector_informality
+mode: sequential
+propagation: enumerate
+steps:
+  - giro
+  - informality:
+      uses:
+        giro:
+          as: sector
+          transform: {comercio: comercio, servicio: servicios_transporte, educacion: servicios_transporte,
+                      industria: manufactura_construccion, gobierno: gobierno_otro_agricultura}
+
+# Diagnostics (eodgdl impute evaluate sector_informality; eodgdl.impute.diagnostics), read by
+# reports/imputation_informality.qmd.
+evaluation:
+  task: informality
+  benchmark: {exclude: {municipio: [otro]}, by: period}   # ENOE's metro workers, the population the EOD covers
+  by_upstream: true                                        # informality within each sector
+  upstream_scenarios: {giro: [shift_weighted, delta_adjusted]}
+  # Workers without a work trip on the survey day: all home-based or mobile (an upper bound; ENOE's otro_o_sin_local
+  # share matches the EOD's workers without a trip), and the training shares instead of P(lugar_trabajo | x).
+  bounds: {lugar_trabajo: [otro_o_sin_local]}
+  without_auxiliary: true
+  components: [informalidad_sector, informalidad_desprotegida]
+  gap_decomposition: [genero, ocupacion, edad_num, escolaridad, municipio, estado_civil, parentesco, tamano_viv_cat, sector]
+  raking: [genero, ocupacion, edad_num, escolaridad, municipio, estado_civil, parentesco, tamano_viv_cat, lugar_trabajo]

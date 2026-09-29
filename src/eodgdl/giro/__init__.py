@@ -14,7 +14,9 @@ Typical use::
     workers[["giro_final"] + giro.PROBABILITY_COLUMNS]
 
 ``impute`` = :func:`build_worker_features` + :func:`load_model` + :func:`impute_giro`. The modelling machinery is
-:mod:`eodgdl.impute`; this package binds giro's features, levels and column names to it.
+:mod:`eodgdl.impute`; this package binds giro's features, levels and column names to it. giro is the engine's task
+``giro`` (``impute/tasks/giro.yaml``) and the first step of the chain ``sector_informality``. The shipped bundle is an
+engine (v2) bundle; :func:`load_model` still returns the old keys, and older legacy pickles still load.
 """
 
 from ._config import (

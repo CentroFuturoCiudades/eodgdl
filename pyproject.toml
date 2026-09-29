@@ -1,6 +1,6 @@
 [project]
 name = "eodgdl"
-version = "0.2.0"
+version = "0.3.0"
 description = "IMEPLAN Guadalajara EOD 2023 origin-destination survey: loader, schemas, and TAZ zone tools"
 readme = "README.md"
 authors = [
@@ -43,6 +43,7 @@ giro = [
     "joblib>=1.5",
     "pyyaml>=6.0",
     "mxcensus>=0.4.0",
+    "openpyxl>=3.1",   # AMAI's NSE by AGEB (xlsx) for the chain `nse`
 ]
 dev = ["pytest>=8.0"]
 

@@ -137,9 +137,26 @@ def bootstrap_by_group(frame, group_column, metric_function, n_bootstrap=500, ra
 
 
 # Held-out evaluation
-def evaluate_classifier(model, test_data, features, target, classes, numeric, weight_column="ponderador", class_column="class", missing_label=MISSING_LABEL):
+def binary_metrics(y_true, probabilities, classes, positive, sample_weights, n_bins=10):
+    """Weighted ROC AUC, Brier score, F1 of the positive class, observed and predicted rates and calibration of a
+    two-class probability matrix (``positive``: the class the rates and the calibration are about)."""
+    from sklearn.metrics import roc_auc_score
+
+    y = (np.asarray(y_true) == positive).astype(int)
+    w = np.asarray(sample_weights, dtype=float)
+    p = np.asarray(probabilities, dtype=float)[:, list(classes).index(positive)]
+    observed, predicted = np.average(y, weights=w), np.average(p, weights=w)
+    metrics = {"weighted_roc_auc": roc_auc_score(y, p, sample_weight=w), "weighted_brier_score": float(np.average((p - y) ** 2, weights=w)),
+               "weighted_f1": f1_score(y, (p >= 0.5).astype(int), sample_weight=w, zero_division=0),
+               "observed_rate": observed, "predicted_rate": predicted, "calibration_gap_pp": (predicted - observed) * 100}
+    metrics.update({key: value for key, value in calibration_metrics(y, p, w, n_bins=n_bins).items() if key != "calibration_gap_pp"})
+    return metrics
+
+
+def evaluate_classifier(model, test_data, features, target, classes, numeric, weight_column="ponderador", class_column="class", missing_label=MISSING_LABEL, positive=None, n_bins=10):
     """Held-out metrics, per-class metrics, weighted confusion matrix and observed vs predicted class shares:
-    ``(metrics, class_metrics, confusion, distribution)``."""
+    ``(metrics, class_metrics, confusion, distribution)``. With ``positive`` (a two-class target) the metrics add
+    :func:`binary_metrics`."""
     X = prepare_features(test_data, features, numeric, missing_label)
     y_true = test_data[target].astype(str)
     weights = test_data[weight_column].astype(float)
@@ -156,6 +173,9 @@ def evaluate_classifier(model, test_data, features, target, classes, numeric, we
         "weighted_f1_macro": [f1_score(y_true, predictions, average="macro", sample_weight=weights, zero_division=0)],
         "weighted_log_loss": [log_loss(y_true, probabilities, labels=model_classes, sample_weight=weights)],
     })
+    if positive is not None:
+        for name, value in binary_metrics(y_true, probabilities, model_classes, positive, weights, n_bins=n_bins).items():
+            metrics[name] = [value]
     precision, recall, f1, support = precision_recall_fscore_support(y_true, predictions, labels=classes, sample_weight=weights, zero_division=0)
     class_metrics = pd.DataFrame({class_column: classes, "precision": precision, "recall": recall, "f1": f1, "weighted_support": support})
     confusion = pd.DataFrame(confusion_matrix(y_true, predictions, labels=classes, sample_weight=weights), index=classes, columns=classes)
@@ -172,7 +192,7 @@ def evaluate_classifier(model, test_data, features, target, classes, numeric, we
     return metrics, class_metrics, confusion, distribution
 
 
-def test_metrics_with_uncertainty(model, test_data, features, target, numeric, n_bootstrap=500, random_state=42, weight_column="ponderador", group_column="folio_vivienda", missing_label=MISSING_LABEL):
+def test_metrics_with_uncertainty(model, test_data, features, target, numeric, n_bootstrap=500, random_state=42, weight_column="ponderador", group_column="folio_vivienda", missing_label=MISSING_LABEL, positive=None):
     """Held-out log loss / accuracy / macro-F1 with group-bootstrap intervals, plus the weighted-marginal baseline and
     the relative improvement over it."""
     X = prepare_features(test_data, features, numeric, missing_label)
@@ -191,6 +211,8 @@ def test_metrics_with_uncertainty(model, test_data, features, target, numeric, n
             "marginal_log_loss": marginal_log_loss(data["y"], data["w"], classes),
             "weighted_accuracy": accuracy_score(data["y"], predicted, sample_weight=data["w"]),
             "weighted_f1_macro": f1_score(data["y"], predicted, average="macro", sample_weight=data["w"], zero_division=0),
+            **({key: value for key, value in binary_metrics(data["y"], p, classes, positive, data["w"]).items() if key in ("weighted_roc_auc", "weighted_brier_score", "calibration_gap_pp")}
+               if positive is not None else {}),
         }
 
     summary = bootstrap_by_group(frame, "household", metrics, n_bootstrap=n_bootstrap, random_state=random_state)

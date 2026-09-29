@@ -1,0 +1,64 @@
+# ENIGH 2022 (INEGI's household income and expenditure survey, raw codes from mxcensus) -> the EOD's labels in
+# common.yaml, for the AMAI components trained on ENIGH. Ported from informal-jobs-model's notebook 07. One row per
+# ENIGH household (dwelling attributes repeated for every household of the dwelling). Same variable kinds as enoe.yaml.
+
+variables:
+  personas_en_vivienda:
+    column: tot_integ              # members of the household (the EOD counts the dwelling; most dwellings hold one household)
+    map: {1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9"}
+    otherwise: {level: "10 y +", domain: [10, 99]}
+  ingreso_mensual:
+    column: ing_cor                # current quarterly household income
+    number: {divide: 3}
+  ingreso_hogar:                   # the EOD's monthly income brackets (right-closed; zero is "Sin ingresos")
+    from: ingreso_mensual
+    bins:
+      edges: [-.inf, 0, 1500, 3000, 7000, 10000, 15000, 25000, .inf]
+      right: true
+      labels: ["Sin ingresos", "Hasta $1,500", "$1,501 y $3,000", "$3,001 y $7,000", "$7,001 y $10,000", "$10,001 y $15,000", "$15,001 y $25,000", "Más de $25,001"]
+  educacion_jefe_puntos:           # AMAI points of the head's education, on ENIGH's finer levels
+    column: educa_jefe
+    number:
+      map: {"01": 0, "02": 0, "03": 6, "04": 11, "05": 12, "06": 18, "07": 23, "08": 27, "09": 36, "10": 59, "11": 85}
+      # 01 sin instrucción, 02 preescolar, 03 primaria incompleta, 04 primaria completa, 05 secundaria incompleta,
+      # 06 secundaria completa, 07 preparatoria incompleta, 08 preparatoria completa, 09 profesional incompleta,
+      # 10 profesional completa, 11 posgrado
+  tiene_internet:
+    column: conex_inte
+    map: {"1": "Sí", "2": "No"}
+  autos_camionetas:                # cars, vans and pickups: the EOD's and AMAI's "autos o camionetas"
+    columns: [num_auto, num_van, num_pickup]
+    number: {}
+  n_autos_camionetas: {from: autos_camionetas, bins: count_0_4}
+  motos: {column: num_moto, number: {}}
+  n_motos: {from: motos, bins: count_0_4}
+  bicicletas: {column: num_bici, number: {}}
+  n_bicicletas: {from: bicicletas, bins: count_0_4}
+  tenencia_vivienda:
+    column: tenencia
+    map: {"1": Rentada, "2": Prestada, "3": Hipotecada, "4": Propia, "5": Otros, "6": Otros}
+  edad_jefe: {column: edad_jefe, number: {}}
+  sexo_jefe:
+    column: sexo_jefe
+    map: {"1": Hombres, "2": Mujeres}
+  trabajadores:                    # members aged 14+ who worked last month (the source counts them)
+    column: trabajadores_14_n
+    number: {}
+  trabajadores_14: {from: trabajadores, bins: count_0_4}
+  n_banos:
+    column: bano_comp              # complete bathrooms of the dwelling (blank: unknown)
+    number: {}
+  banos:
+    from: n_banos
+    bins: {edges: [0, 1, 2, .inf], labels: ["0", "1", "2 o más"]}
+  banos_puntos:                    # their AMAI points: the bedrooms model's input (in the chain, the bathroom imputation's)
+    column: banos
+    number:
+      map: {"0": 0, "1": 24, "2 o más": 47}
+      allowed_unmapped: [no_especificado]
+  n_dormitorios:
+    column: cuart_dorm             # rooms used for sleeping
+    number: {}
+  dormitorios:
+    from: n_dormitorios
+    bins: {edges: [1, 2, 3, 4, .inf], labels: ["1", "2", "3", "4 o más"]}

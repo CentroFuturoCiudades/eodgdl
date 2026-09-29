@@ -1,0 +1,82 @@
+# EOD survey (eodgdl.load_eod labels) -> the common levels of common.yaml. Ported from informal-jobs-model's
+# harmonize_od_* functions. Same variable kinds as enoe.yaml; every label the eodgdl schema allows must be mapped or
+# listed in `allowed_unmapped`. The harmonized columns replace the survey's own columns of the same name in the task
+# frame (`ocupacion`, `escolaridad`, `municipio`, `estado_civil`, `parentesco`).
+
+variables:
+  genero:
+    column: sexo_nacimiento
+    map: {Hombres: H, Mujeres: F}
+  ocupacion:
+    column: ocupacion
+    map:
+      Empleado: trabajador
+      Persona trabajadora del hogar: trabajador
+      Trabajador del campo: trabajador
+      Profesor: trabajador
+      Patrón o empresario: trabajador
+      Trabajador independiente: independiente
+      # Respondents who report working last week but give a non-working status: kept as workers (their ENOE analogues
+      # are mostly informal) with their position in the occupation unknown.
+      Hogar: no_especificado
+      Estudiante: no_especificado
+      Jubilado o pensionado: no_especificado
+      Desempleado: no_especificado
+  edad_num:
+    column: edad
+    number: {}
+  edad_cat:
+    from: edad_num
+    bins: age
+  escolaridad:
+    column: escolaridad
+    map:
+      Ninguno: sin_instruccion
+      Kinder: sin_instruccion
+      Preescolar: sin_instruccion
+      Primaria: primaria_o_secundaria
+      Secundaria: primaria_o_secundaria
+      Normal básica: carrera_tecnica_o_preparatoria
+      Preparatoria o bachillerato: carrera_tecnica_o_preparatoria
+      Carrera técnica con secundaria terminada: carrera_tecnica_o_preparatoria
+      Carrera técnica con preparatoria terminada: carrera_tecnica_o_preparatoria
+      Licenciatura o profesional: licenciatura
+      Maestría o doctorado: postgrado
+      No sabe: no_especificado
+  municipio:
+    column: municipio
+    map: {Guadalajara: guadalajara, Zapopan: zapopan, Tlaquepaque: tlaquepaque, Tlajomulco: tlajomulco, Tonalá: tonala,
+          El Salto: el_salto, Juanacatlán: juanacatlan, Ixtlahuacán de los Membrillos: ixtlahuacan_membrillos,
+          Zapotlanejo: zapotlanejo}
+  estado_civil:
+    column: estado_civil
+    map: {Soltero: soltero, Casado: casado, Unión libre: union_libre, Viudo: viudo, Separado: separado, Divorciado: divorciado}
+    allowed_unmapped: [Otros (especifique)]
+  parentesco:
+    column: parentesco
+    map: {Jefe del hogar: jefe_del_hogar, Cónyuge: conyuge, Compañero: conyuge, Hijo: hijo, Nieto: otro_parentesco,
+          Otro parentesco: otro_parentesco, Sin parentesco: sin_parentesco}
+  tamano_viv_num:
+    column: personas_en_vivienda
+    number: {map: {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10 y +": 10}, cap: 10}
+  tamano_viv_cat:
+    from: tamano_viv_num
+    bins: household_size
+  sector:
+    column: giro_empresa   # reported; the chains fill it from the giro model's probabilities instead
+    map: {Comercio: comercio, Servicio: servicios_transporte, Educación: servicios_transporte, Industria: manufactura_construccion,
+          Gobierno/sector público: gobierno_otro_agricultura}
+  lugar_trabajo:
+    column: destino_trabajo   # destination type of the work trips (eod.work_trip); NA without a work trip
+    map:
+      Fábrica o taller: establecimiento
+      Oficina: establecimiento
+      Hospital, clínica, consultorio, laboratorio clínico: establecimiento
+      Escuela: establecimiento
+      Restaurante, bar, cafetería: establecimiento
+      Centro cultural o área recreativa: establecimiento
+      Deportivo, gimnasio: establecimiento
+      Comercio, mercado, tienda o centro comercial: comercio_o_puesto
+      Otra vivienda: otra_vivienda
+      Su casa: otro_o_sin_local
+      Otros (especifique): otro_o_sin_local

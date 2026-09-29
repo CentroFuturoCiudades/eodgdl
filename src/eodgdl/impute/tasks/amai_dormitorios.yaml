@@ -1,0 +1,78 @@
+# Imputation task: the AMAI component "rooms used for sleeping" for the EOD's dwellings, trained on ENIGH 2022's households
+# (source enigh.households, harmonized onto the EOD's labels: impute/harmonization/enigh.yaml). Ported from
+# informal-jobs-model's notebook 07, with cars + vans + pickups for the vehicles and the engine's selection. The
+# head's education enters as AMAI points: observed in ENIGH; in the chain `nse`, filled from the educacion_jefe task.
+
+task: amai_dormitorios
+source: enigh.households
+score_source: eod.dwellings
+bundle: od_amai_dormitorios_model.joblib
+
+target:
+  column: dormitorios
+  classes: {"1": "1", "2": "2", "3": "3", "4 o más": "4_o_mas"}
+  scores: {"1": 8, "2": 16, "3": 24, "4_o_mas": 32}   # AMAI points
+
+missing_label: no_especificado
+
+features:
+  builders:
+    enigh.households: [harmonize.enigh]
+    eod.dwellings: [harmonize.eod_viviendas]
+  groups:
+    household: [personas_en_vivienda, ingreso_hogar, tiene_internet, n_autos_camionetas, n_motos, n_bicicletas, tenencia_vivienda, trabajadores_14]
+    head: [edad_jefe, sexo_jefe, educacion_jefe_puntos]
+    # the AMAI points of the dwelling's bathrooms (in the chain `nse`, from the amai_banos imputation)
+    dwelling: [banos_puntos]
+  numeric: [edad_jefe, educacion_jefe_puntos, banos_puntos]
+# Levels: the harmonized ones (impute/harmonization/common.yaml).
+
+arms:
+  # The EOD's dwellings without an income answer (58%) are scored by the arm without income.
+  con_ingreso:
+    features: [household, head, dwelling]
+    requires: [ingreso_hogar]
+  sin_ingreso:
+    features: [household, head, dwelling]
+    exclude: [ingreso_hogar]
+
+selection:
+  # Training households: ENIGH's cities of 100,000+ (tam_loc 1), the closest to a metro area of five million. Decided
+  # 2026-09-28 from evaluation.populations: bathrooms' held-out log loss in such cities 0.700 (national 0.710, urban
+  # 0.700, Jalisco only 0.788), in Jalisco's 0.658 (0.701, 0.677, 0.711); bedrooms tied except Jalisco only.
+  population: {tam_loc: ["1"]}
+  cv: {splits: 5, seed: 42, test_fold: 0}
+  rule: one_se
+  families:
+    LogisticRegression: {max_iter: 2000, params: {C: [0.1, 1.0, 10.0]}}
+    RandomForest:
+      n_estimators: 300
+      n_jobs: -1
+      params: {max_leaf_nodes: [25, 50, 100], max_features: [sqrt, 0.7], min_samples_leaf: [1, 5, 10]}
+    GradientBoosting:
+      native_categoricals: true
+      early_stopping: false
+      params: {max_iter: [50, 100, 200, 400], learning_rate: [0.05, 0.1], max_leaf_nodes: [15, 31], l2_regularization: [0.0, 1.0]}
+
+evaluation:
+  bootstrap: 500
+  calibration_bins: 10
+  profiles: [personas_en_vivienda, ingreso_hogar, tiene_internet, n_autos_camionetas, tenencia_vivienda, trabajadores_14, sexo_jefe]
+  isotonic: {ship: false}
+  # Which ENIGH households to train on (the metro area is a city of five million): each arm's selected configuration
+  # refitted on each population's training rows of the whole ENIGH (its own grouped split), all judged on the same
+  # held-out households of large cities. The evidence behind selection.population.
+  populations:
+    national: {}
+    urban: {tam_loc: ["1", "2", "3"]}
+    cities_100k: {tam_loc: ["1"]}
+    jalisco: {entidad: ["14"]}
+  population_tests:
+    cities_100k: {tam_loc: ["1"]}
+    jalisco_cities_100k: {tam_loc: ["1"], entidad: ["14"]}
+  # ENIGH households reweighted to the EOD dwellings' profile (density ratio), models refitted.
+  shift:
+    profile: [personas_en_vivienda, tiene_internet, n_autos_camionetas, n_motos, n_bicicletas, tenencia_vivienda, edad_jefe, sexo_jefe]
+
+outputs:
+  prefix: amai_dormitorios

@@ -1,0 +1,43 @@
+# EOD dwellings (source eod.dwellings: one row per dwelling with its head) -> the NSE variables of common.yaml. The
+# dwelling's own answers (tenencia_vivienda, n_autos_camionetas, n_motos, n_bicicletas, tiene_internet,
+# personas_en_vivienda) are already on the common labels. Ported from informal-jobs-model's notebooks 06-07.
+
+variables:
+  educacion_jefe:                  # the head's education on AMAI's classes (the target of the educacion_jefe task)
+    column: escolaridad_jefe
+    map:
+      Ninguno: no_estudio
+      Preescolar: no_estudio
+      Kinder: no_estudio
+      Primaria: primaria
+      Secundaria: secundaria
+      Preparatoria o bachillerato: preparatoria
+      Carrera técnica con secundaria terminada: carrera_tecnica
+      Carrera técnica con preparatoria terminada: carrera_tecnica
+      Normal básica: carrera_tecnica
+      Licenciatura o profesional: licenciatura
+      Maestría o doctorado: posgrado
+    allowed_unmapped: [No sabe]
+  educacion_jefe_puntos:           # its AMAI points (chains fill it from the education imputation)
+    column: educacion_jefe
+    number:
+      map: {no_estudio: 0, primaria: 11, secundaria: 18, carrera_tecnica: 23, preparatoria: 27, licenciatura: 59, posgrado: 85}
+      allowed_unmapped: [no_especificado]
+  ingreso_hogar:
+    column: ingreso_mensual_hogar
+    map:
+      Sin ingresos: Sin ingresos
+      Hasta $1,500: Hasta $1,500
+      $1,501 y $3,000: $1,501 y $3,000
+      $3,001 y $7,000: $3,001 y $7,000
+      $7,001 y $10,000: $7,001 y $10,000
+      $10,001 y $15,000: $10,001 y $15,000
+      $15,001 y $25,000: $15,001 y $25,000
+      Más de $25,001: Más de $25,001
+    allowed_unmapped: [No sabe, No quiso responder]
+  trabajadores:                    # members aged 14+ who worked last week (the source counts them)
+    column: trabajadores_14_n
+    number: {}
+  trabajadores_14: {from: trabajadores, bins: count_0_4}
+  banos_puntos:                    # not asked in the EOD: the chain `nse` fills it from the amai_banos imputation
+    unobserved: number

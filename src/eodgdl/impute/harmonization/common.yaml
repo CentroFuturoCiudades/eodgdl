@@ -1,0 +1,48 @@
+# Harmonized variables shared by ENOE and the EOD survey (and ENIGH later): the common levels every source is mapped
+# to, and the cut points. Ported from informal-jobs-model's config/harmonization.yaml; the per-source value maps are
+# enoe.yaml and eod.yaml beside this file. Read by eodgdl.impute.harmonize.
+
+missing_label: no_especificado
+
+# Levels of the harmonized categorical variables (a task declares no levels for these: they come from here). The
+# missing label is appended by the task's level contract.
+levels:
+  genero: [H, F]
+  ocupacion: [trabajador, independiente, sin_pago]
+  escolaridad: [sin_instruccion, primaria_o_secundaria, carrera_tecnica_o_preparatoria, licenciatura, postgrado]
+  estado_civil: [union_libre, separado, divorciado, viudo, casado, soltero]
+  parentesco: [jefe_del_hogar, conyuge, hijo, otro_parentesco, sin_parentesco]
+  lugar_trabajo: [establecimiento, comercio_o_puesto, otra_vivienda, otro_o_sin_local]
+  # The nine municipalities of the Guadalajara metropolitan area as the EOD covers them, then the rest of Jalisco.
+  municipio: [guadalajara, zapopan, tlaquepaque, tlajomulco, tonala, el_salto, juanacatlan, ixtlahuacan_membrillos, zapotlanejo, otro]
+  tamano_viv_cat: ["1", "2", "3", "4", "5", "6", "7_y_mas"]
+  edad_cat: ["0_2", "3_4", "5", "6_7", "8_11", "12_14", "15_17", "18_24", "25_49", "50_59", "60_64", "65_y_mas"]
+  sector: [comercio, gobierno_otro_agricultura, manufactura_construccion, servicios_transporte]
+  informalidad: [informal, formal]
+  informalidad_sector: ["si", "no"]
+  informalidad_desprotegida: ["si", "no"]
+  # AMAI's socioeconomic level (NSE) and its components, on the EOD's labels (ENIGH is mapped onto them)
+  educacion_jefe: [no_estudio, primaria, secundaria, carrera_tecnica, preparatoria, licenciatura, posgrado]
+  ingreso_hogar: ["Sin ingresos", "Hasta $1,500", "$1,501 y $3,000", "$3,001 y $7,000", "$7,001 y $10,000", "$10,001 y $15,000", "$15,001 y $25,000", "Más de $25,001"]
+  tenencia_vivienda: [Rentada, Prestada, Propia, Hipotecada, Otros]
+  n_autos_camionetas: ["0", "1", "2", "3", "4 o más"]
+  n_motos: ["0", "1", "2", "3", "4 o más"]
+  n_bicicletas: ["0", "1", "2", "3", "4 o más"]
+  tiene_internet: ["Sí", "No"]
+  personas_en_vivienda: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10 y +"]
+  sexo_jefe: [Hombres, Mujeres]
+  trabajadores_14: ["0", "1", "2", "3", "4 o más"]
+  banos: ["0", "1", "2 o más"]
+  dormitorios: ["1", "2", "3", "4 o más"]
+
+# Cut points: left-closed bins, the last one open.
+age:
+  bins: [0, 3, 5, 6, 8, 12, 15, 18, 25, 50, 60, 65]
+  labels: ["0_2", "3_4", "5", "6_7", "8_11", "12_14", "15_17", "18_24", "25_49", "50_59", "60_64", "65_y_mas"]
+# Counts cut to the AMAI and EOD categories (left-closed edges)
+count_0_4: {edges: [0, 1, 2, 3, 4, .inf], labels: ["0", "1", "2", "3", "4 o más"]}
+household_size:
+  cap: 10                # the count is capped here in both surveys (the EOD answer stops at "10 y +")
+  # Collapsed at 7+: the ENOE roster count and the EOD self-report diverge 5x above 8 persons.
+  bins: [1, 2, 3, 4, 5, 6, 7]
+  labels: ["1", "2", "3", "4", "5", "6", "7_y_mas"]

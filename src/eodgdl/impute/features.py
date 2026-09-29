@@ -18,7 +18,7 @@ import pandas as pd
 
 from .spec import stable_hash
 
-BUILDER_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.giro.features")
+BUILDER_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe", "eodgdl.impute.sources.enigh", "eodgdl.giro.features")
 _BUILDERS = {}
 
 
@@ -29,13 +29,15 @@ class Builder:
     config: dict
     versions: object               # versions(context, config) -> dict
     module_file: str
+    replaces: bool = False         # its columns may replace the frame's columns of the same name
 
 
-def register_builder(name, config=None, versions=None):
-    """Decorator registering ``build(frame, context, config, spec)`` as feature builder ``name``."""
+def register_builder(name, config=None, versions=None, replaces=False):
+    """Decorator registering ``build(frame, context, config, spec)`` as feature builder ``name``; with ``replaces`` its
+    columns replace any of the frame's columns of the same name (a harmonization over a source's raw columns)."""
     def decorate(function):
         module = importlib.import_module(function.__module__)
-        _BUILDERS[name] = Builder(name, function, dict(config or {}), versions or (lambda context, config: {}), module.__file__)
+        _BUILDERS[name] = Builder(name, function, dict(config or {}), versions or (lambda context, config: {}), module.__file__, replaces)
         return function
     return decorate
 
@@ -86,13 +88,15 @@ def builder_config(spec, name, overrides=None):
     return {**get_builder(name).config, **spec.builder_config.get(name, {}), **((overrides or {}).get(name, {}))}
 
 
-def build_frame(spec, context, overrides=None):
+def build_frame(spec, context, overrides=None, role="train"):
     """The task's frame: the source's rows with every builder's columns and the target slug (``spec.target``, NA
-    where unobserved) plus ``<prefix>_desconocido``. ``overrides`` ({builder: {key: value}}) changes a builder's
-    configuration for this call. Returns the :class:`~eodgdl.impute.sources.SourceFrame` with the full frame."""
+    where unobserved) plus ``<prefix>_desconocido``. ``role="score"`` builds the rows the task imputes (its
+    ``score_source``, where the target column may be absent: every row unknown). ``overrides`` ({builder: {key:
+    value}}) changes a builder's configuration for this call. Returns the
+    :class:`~eodgdl.impute.sources.SourceFrame` with the full frame."""
     from .sources import file_digest, get_source
 
-    source = get_source(spec.source)
+    source = get_source(spec.source if role == "train" else spec.score_source)
     key = source_key(source, source.config, context)
     built = {}
 
@@ -101,9 +105,9 @@ def build_frame(spec, context, overrides=None):
         built["source"] = result
         return result.frame
 
-    frame = _cached(context, "sources", spec.source, key, build_source)
+    frame = _cached(context, "sources", source.name, key, build_source)
     keys = list(source.config["keys"])
-    for name in spec.builders:
+    for name in spec.builders_for(source.name):
         builder = get_builder(name)
         config = builder_config(spec, name, overrides)
         key = stable_hash({"builder": name, "module": file_digest(builder.module_file), "config": config, "classes": spec.classes,
@@ -118,10 +122,11 @@ def build_frame(spec, context, overrides=None):
         columns = _cached(context, "features", name, key, build_columns)
         assert columns[keys].astype(str).equals(frame[keys].astype(str)), f"cached {name} columns do not line up with the source rows"
         clashes = (set(columns.columns) - set(keys)) & set(frame.columns)
-        assert not clashes, f"builder {name} overwrites {sorted(clashes)}"
-        frame = pd.concat([frame, columns.drop(columns=keys)], axis=1)
+        assert builder.replaces or not clashes, f"builder {name} overwrites {sorted(clashes)}"
+        frame = pd.concat([frame.drop(columns=sorted(clashes)), columns.drop(columns=keys)], axis=1)
 
-    labels = frame[spec.target_column]
+    labels = frame[spec.target_column] if spec.target_column in frame.columns or role == "train" else pd.Series(pd.NA, index=frame.index, dtype="string")
+    labels = labels.mask(labels.astype("string") == spec.missing_label)      # a harmonized target's missing label is unobserved
     unknown_labels = set(labels.dropna().unique()) - set(spec.classes)
     assert not unknown_labels, f"{spec.target_column} labels missing from the {spec.name} task's classes: {sorted(unknown_labels)}"
     frame[spec.target] = labels.map(spec.classes).astype("string")

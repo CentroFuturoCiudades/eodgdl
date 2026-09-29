@@ -1,0 +1,86 @@
+# Imputation task: informality of the EOD workers' main job, trained on ENOE (INEGI's `emp_ppal`) and scored on the
+# EOD's workers, both harmonized to common levels (impute/harmonization). Ported from informal-jobs-model's
+# informality model (stage 5). In the chain `sector_informality` its `sector` comes from the giro model; scored alone,
+# a worker without a reported giro is marginalized over the ENOE sector shares.
+
+task: informality
+source: enoe.workers              # training rows: every employed ENOE worker of Jalisco, pooled quarters
+score_source: eod.workers         # the rows it imputes
+bundle: od_informality_model.joblib
+
+target:
+  column: informalidad
+  classes: {informal: informal, formal: formal}
+
+missing_label: no_especificado
+
+features:
+  builders:
+    enoe.workers: [harmonize.enoe]
+    eod.workers: [eod.work_trip, harmonize.eod]
+  groups:
+    person: [genero, ocupacion, edad_num, escolaridad, municipio, estado_civil, parentesco, tamano_viv_cat]
+    job: [sector, lugar_trabajo]
+  numeric: [edad_num]
+# Levels: those of the harmonized variables (impute/harmonization/common.yaml), the training source's schema.
+
+arms:
+  with_education:
+    features: [person, job]
+    requires: [escolaridad]
+  without_education:
+    features: [person, job]
+    exclude: [escolaridad]
+
+auxiliary:
+  # P(lugar_trabajo | x, sector) on ENOE for the EOD workers without a work trip on the survey day.
+  lugar_trabajo:
+    exclude: [lugar_trabajo]
+
+scoring:
+  # The metro municipalities the ENOE sample does not cover have no training support: their workers are averaged over
+  # the sampled metro municipalities, never over the rest of Jalisco ("otro").
+  level_subsets:
+    municipio: [guadalajara, zapopan, tlaquepaque, tlajomulco, tonala, el_salto, juanacatlan, ixtlahuacan_membrillos, zapotlanejo]
+
+selection:
+  # Every employed ENOE worker of the state trains; the held-out households are judged where the model is applied,
+  # so the held-out rows outside the metro area are dropped (they stay in the training folds).
+  cv: {splits: 5, seed: 42, test_fold: 0, test_exclude: {municipio: [otro]}}
+  rule: one_se
+  families:
+    LogisticRegression: {max_iter: 2000, params: {C: [0.1, 1.0, 10.0]}}
+    RandomForest:
+      n_estimators: 300
+      n_jobs: -1
+      params: {max_leaf_nodes: [25, 50, 100], max_features: [sqrt, 0.7], min_samples_leaf: [1, 5]}
+    GradientBoosting:
+      native_categoricals: true
+      early_stopping: false
+      params: {max_iter: [50, 100, 200, 400], learning_rate: [0.05, 0.1], max_leaf_nodes: [15, 31], l2_regularization: [0.0, 1.0]}
+
+evaluation:
+  bootstrap: 500
+  calibration_bins: 10
+  positive_class: informal
+  profiles: [genero, ocupacion, escolaridad, municipio, estado_civil, parentesco, tamano_viv_cat, lugar_trabajo]
+  isotonic: {ship: false}
+  # ENOE workers reweighted to the EOD workers' profile (density ratio, education excluded), models refitted.
+  shift:
+    profile: [genero, ocupacion, edad_num, municipio, estado_civil, parentesco, tamano_viv_cat]
+  # Each selected configuration cross-validated with ENOE's sampling unit as the group: households of one unit share
+  # neighbourhood-level drivers, so this is the more demanding generalization estimate.
+  robustness_groups: survey_psu
+  # The held-out ENOE rows reweighted to the profile of the EOD workers without education (the rows the arm without
+  # education scores), each arm evaluated under both weightings.
+  target_profile:
+    features: [genero, ocupacion, edad_num, municipio, estado_civil, parentesco, tamano_viv_cat]
+    missing: escolaridad
+  # The two components of the label (harmonization/enoe.yaml), each refitted with the selected configurations: the
+  # part the shared covariates can identify (informal-sector units) and the part they cannot (no social security).
+  components:
+    informalidad_sector: {positive: "si"}
+    informalidad_desprotegida: {positive: "si"}
+
+outputs:
+  prefix: informalidad

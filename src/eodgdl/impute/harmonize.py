@@ -24,3 +24,116 @@ def harmonize(values, mapping, allowed_unmapped=(), fallback=MISSING_LABEL, name
     mapped[mapped.isna() & values.notna()] = fallback  # after the check, only the allowed codes
 
     return mapped.astype("string")
+
+
+# Variable definitions in YAML (impute/harmonization/<source>.yaml): every source mapped to the levels of common.yaml
+HARMONIZATION_DIR = __import__("pathlib").Path(__file__).parent / "harmonization"
+
+
+def load_harmonization(name):
+    """``impute/harmonization/<name>.yaml`` parsed (``common`` holds the shared levels and cut points)."""
+    import yaml
+
+    with open(HARMONIZATION_DIR / f"{name}.yaml", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def _codes(values):
+    """A column of codes as plain Python values: integers where the column is numeric, else stripped strings."""
+    if pd.api.types.is_numeric_dtype(values):
+        return pd.to_numeric(values, errors="coerce").astype("Int64")
+    return values.astype("string").str.strip()
+
+
+def _map_variable(values, definition, missing_label, name):
+    codes = _codes(values)
+    if "floordiv" in definition:
+        codes = codes // int(definition["floordiv"])
+    mapping = definition["map"]
+    allowed = list(definition.get("allowed_unmapped", []))
+    otherwise = definition.get("otherwise")
+    if otherwise:
+        low, high = otherwise["domain"]
+        allowed += [code for code in codes.dropna().unique() if low <= code <= high and code not in mapping]
+    mapped = harmonize(codes, mapping, allowed_unmapped=allowed, fallback=missing_label, name=name).astype(object)
+    if otherwise:
+        other = codes.notna() & ~codes.isin(list(mapping)) & codes.isin(allowed) & ~codes.isin(definition.get("allowed_unmapped", []))
+        mapped[other.to_numpy()] = otherwise["level"]
+    return pd.Series(mapped, index=values.index).fillna(missing_label).astype("string")
+
+
+def _number_variable(values, definition, name):
+    if isinstance(values, pd.DataFrame):          # several columns summed (e.g. cars + vans + pickups)
+        values = values.apply(lambda column: pd.to_numeric(column.astype("string").str.strip(), errors="coerce")).sum(axis=1, min_count=1)
+    if "map" in definition:
+        codes = values.astype("string").str.strip()
+        assert_mapping_covers(codes, definition["map"], definition.get("allowed_unmapped", []), name=name)
+        numbers = codes.map(definition["map"])
+    else:
+        numbers = values
+    numbers = pd.to_numeric(numbers.astype("string").str.strip() if numbers.dtype == object or pd.api.types.is_string_dtype(numbers) else numbers, errors="coerce")
+    if "divide" in definition:
+        numbers = numbers / definition["divide"]
+    else:
+        numbers = numbers.astype("Int64") if (numbers.dropna() % 1 == 0).all() else numbers
+    for code in definition.get("unspecified", []):
+        numbers = numbers.mask(numbers == code)
+    if "cap" in definition:
+        numbers = numbers.clip(upper=definition["cap"])
+    return numbers
+
+
+def _bins_variable(numbers, cut, missing_label):
+    """Cut a number: common.yaml's left-closed bins (the last open), or inline ``edges`` (``-inf`` / ``inf`` allowed)
+    with ``right: true`` for right-closed intervals."""
+    import numpy as np
+
+    if "edges" in cut:
+        edges = [float(edge) for edge in cut["edges"]]
+        return pd.cut(numbers.astype("Float64"), bins=edges, labels=cut["labels"], right=cut.get("right", False)).astype("string").fillna(missing_label)
+    bins = list(cut["bins"]) + [np.inf]
+    return pd.cut(numbers, bins=bins, labels=cut["labels"], right=False).astype("string").fillna(missing_label)
+
+
+def _rules_variable(frame, definition, missing_label, name):
+    for column, domain in definition.get("domains", {}).items():
+        codes = _codes(frame[column])
+        outside = set(codes.dropna().unique()) - set(domain)
+        if outside:
+            raise ValueError(f"{name}: codes of {column} outside its declared domain: {sorted(map(str, outside))}")
+    level = pd.Series(definition.get("default", missing_label), index=frame.index, dtype=object)
+    for rule in definition["rules"]:
+        match = pd.Series("any" not in rule, index=frame.index)      # no `any`: the `all` conditions alone decide
+        for column, codes in rule.get("any", {}).items():
+            match |= _codes(frame[column]).isin(codes).fillna(False)
+        for column, codes in rule.get("all", {}).items():
+            match &= _codes(frame[column]).isin(codes).fillna(False)
+        level[match.to_numpy()] = rule["level"]
+    return level.astype("string")
+
+
+def apply_variables(frame, variables, common=None, missing_label=None):
+    """The harmonized columns of ``frame`` under ``variables`` (a source's ``variables:`` section), in order; a
+    ``from`` definition reads an earlier output, ``bins`` names a cut of ``common`` (common.yaml)."""
+    common = common or load_harmonization("common")
+    missing_label = missing_label or common["missing_label"]
+    out = pd.DataFrame(index=frame.index)
+    for name, definition in variables.items():
+        if definition.get("unobserved"):                 # not asked in this source: missing (a chain fills it)
+            out[name] = pd.Series(pd.NA, index=frame.index, dtype="Float64" if definition["unobserved"] == "number" else "string")
+        elif "rules" in definition:
+            out[name] = _rules_variable(frame, definition, missing_label, name)
+        elif "bins" in definition:
+            cut = definition["bins"] if isinstance(definition["bins"], dict) else common[definition["bins"]]
+            numbers = out[definition["from"]] if definition.get("from") in out else frame[definition["from"]]
+            out[name] = _bins_variable(numbers, cut, missing_label)
+        elif "number" in definition:
+            source = definition.get("columns", definition.get("column"))
+            if isinstance(source, str):
+                values = out[source] if source in out else frame[source]      # an earlier output, else a source column
+            else:
+                values = frame[list(source)]
+            out[name] = _number_variable(values, definition["number"], name)
+        else:
+            out[name] = _map_variable(frame[definition["column"]], definition, missing_label, name)
+    return out
