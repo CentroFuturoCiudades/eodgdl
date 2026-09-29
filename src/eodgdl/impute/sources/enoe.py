@@ -2,23 +2,14 @@
 its harmonization builder (``harmonize.enoe``). Configuration: ``enoe.yaml`` beside this module; value maps:
 ``impute/harmonization/enoe.yaml``."""
 
-import functools
-from pathlib import Path
-
 import pandas as pd
-import yaml
 
-from ..features import register_builder
-from ..harmonize import apply_variables, load_harmonization
-from . import register_source
-
-CONFIG_PATH = Path(__file__).with_suffix(".yaml")
+from ..harmonize import load_harmonization, register_harmonization
+from . import module_config, register_source
 
 
-@functools.cache
 def load_config():
-    with open(CONFIG_PATH, encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    return module_config(__file__)
 
 
 def harmonized_levels(column):
@@ -71,8 +62,6 @@ def _quarter(period, config):
 def workers(context, config):
     """Employed ENOE workers of the pooled quarters, with ``period``, the weight divided by the number of quarters
     and ``hogar``, the cross-quarter household key."""
-    from . import SourceFrame
-
     periods = list(config["periods"])
     frame = pd.concat([_quarter(period, config).assign(period=period) for period in periods], ignore_index=True)
     frame["survey_weight"] = frame["survey_weight"] / len(periods)
@@ -82,10 +71,7 @@ def workers(context, config):
     group_keys = [key for key in keys["dwelling"] + keys["household"] if key not in keys["panel_visit"]]
     frame["hogar"] = frame[group_keys].astype("string").agg("_".join, axis=1)
 
-    return SourceFrame(frame, list(config["keys"]), config["weight"], config["group"], enoe_versions(context, config), harmonized_levels)
+    return frame
 
 
-@register_builder("harmonize.enoe", versions=lambda context, config: {"harmonization": load_harmonization("enoe"), "common": load_harmonization("common")})
-def harmonize_enoe(frame, context, config, spec):
-    """The harmonized variables of ``impute/harmonization/enoe.yaml``."""
-    return apply_variables(frame, load_harmonization("enoe")["variables"])
+register_harmonization("harmonize.enoe", "enoe")

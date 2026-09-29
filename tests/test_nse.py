@@ -32,13 +32,22 @@ def test_points_cut_and_calibration(monkeypatch):
     shares = pd.DataFrame([[0.5, 0, 0, 0, 0, 0, 0.5]], columns=LEVELS, index=["1403900010001"])
     monkeypatch.setattr(amai, "load_nse_ageb", lambda *args: shares)
     calibration = {"from": "amai_puntos", "level": "nse", "ageb": "ageb", "weight": "ponderador", "file": "x", "state": "Jalisco",
-                   "municipalities": [], "file_columns": [], "counts": {level: level for level in LEVELS}, "levels": {"nse_calibrado": LEVELS}}
+                   "municipalities": [], "file_columns": [], "counts": {level: level for level in LEVELS}, "levels": {"nse_calibrado": LEVELS}, "seed": 1}
     calibrated = amai.nse_ageb_calibrated(completions, base, calibration)["nse_calibrado"]
     assert calibrated.tolist() == ["ab", "e", "ab", "e"]
     elsewhere = amai.nse_ageb_calibrated(completions, base.assign(ageb="1403900019999"), calibration)["nse_calibrado"]
     assert elsewhere.tolist() == completions["nse"].tolist()                      # no AMAI distribution: unchanged
     with pytest.raises(ValueError, match="complete datasets"):
         amai.nse_ageb_calibrated(completions, base, {**calibration, "propagation": "enumerate"})
+
+    # the four dwellings tied at the boundary: every draw gives two e and two ab (AMAI's mix), each dwelling e about
+    # half the time, whatever its place in the survey's order (which gave the first two e in every draw up to 0.3.0)
+    draws = 400
+    tied = pd.DataFrame({"row": np.tile(np.arange(4), draws), "completion": np.repeat(np.arange(draws), 4), "amai_puntos": 100.0, "nse": "d_mas"})
+    levels = amai.nse_ageb_calibrated(tied, base, calibration)["nse_calibrado"]
+    assert (levels.groupby(tied["completion"]).value_counts().unstack()[["e", "ab"]] == 2).all().all()
+    assert levels.eq("e").groupby(tied["row"]).mean().between(0.4, 0.6).all()
+    assert levels.equals(amai.nse_ageb_calibrated(tied, base, calibration)["nse_calibrado"])          # seeded
 
 
 def test_enigh_vehicles_sum_cars_vans_and_pickups():
@@ -51,7 +60,7 @@ def test_dwelling_source_heads_and_workers(stages):
     from eodgdl.impute.sources import Context, get_source
 
     source = get_source("eod.dwellings")
-    frame = source.build(Context(tables=stages.revised), source.config).frame
+    frame = source.build(Context(tables=stages.revised), source.config)
     hab = stages.revised.hab.reset_index()
     assert len(frame) == len(stages.revised.viv) and frame["folio_vivienda"].is_unique
     reported = hab.loc[hab["parentesco"] == "Jefe del hogar", "folio_vivienda"].unique()

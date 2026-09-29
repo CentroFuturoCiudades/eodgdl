@@ -48,25 +48,51 @@ def nse_level(completions, base, config):
 
 
 @functools.cache
-def load_nse_ageb(file, state, municipalities, columns, counts):
-    """AMAI's NSE distribution by AGEB (``file`` in the data catalog) for the ``state``'s ``municipalities``: one row
-    per 13-character AGEB key with the share of dwellings in each level (``counts``: level -> count column), rows with
-    an incomplete distribution dropped."""
+def read_amai_ageb(file, state, municipalities, columns):
+    """AMAI's NSE by AGEB file (``file`` in the data catalog, ``columns`` its column names) for the ``state``'s
+    ``municipalities``, with ``clave_ageb``, the 13-character AGEB key; "N/D" counts are missing. Read once per
+    process (the file is 21 MB)."""
     from eodgdl.data import resolve
 
     table = pd.read_excel(resolve(file))
     table.columns = list(columns)
     table = table.iloc[1:].replace("N/D", pd.NA)                    # the first row is a second header
     table = table[table["nombre_entidad"].eq(state) & table["nombre_municipio"].isin(municipalities)].copy()
-    key = ("14" + pd.to_numeric(table["municipio"]).astype(int).astype(str).str.zfill(3)
-           + pd.to_numeric(table["localidad"]).astype(int).astype(str).str.zfill(4) + table["ageb"].astype(str).str.zfill(4))
-    counts = dict(counts)
-    shares = pd.DataFrame({level: pd.to_numeric(table[column], errors="coerce") for level, column in counts.items()}).div(
+    table["clave_ageb"] = ("14" + pd.to_numeric(table["municipio"]).astype(int).astype(str).str.zfill(3)
+                           + pd.to_numeric(table["localidad"]).astype(int).astype(str).str.zfill(4) + table["ageb"].astype(str).str.zfill(4))
+    return table
+
+
+def _amai_file(config):
+    return read_amai_ageb(config["file"], config["state"], tuple(config["municipalities"]), tuple(config["file_columns"]))
+
+
+@functools.cache
+def load_nse_ageb(file, state, municipalities, columns, counts):
+    """AMAI's NSE distribution by AGEB (:func:`read_amai_ageb`): one row per 13-character AGEB key with the share of
+    dwellings in each level (``counts``: level -> count column), rows with an incomplete distribution dropped."""
+    table = read_amai_ageb(file, state, municipalities, columns)
+    shares = pd.DataFrame({level: pd.to_numeric(table[column], errors="coerce") for level, column in dict(counts).items()}).div(
         pd.to_numeric(table["num_viviendas"], errors="coerce"), axis=0)
-    shares.index = key.to_numpy()
+    shares.index = table["clave_ageb"].to_numpy()
     shares = shares.dropna()
     shares = shares[shares.sum(axis=1) > 0]
     return shares.div(shares.sum(axis=1), axis=0)
+
+
+def nse_ageb_shares(config):
+    """:func:`load_nse_ageb` for a calibration step's configuration (its ``file``, ``state``, ``municipalities``,
+    ``file_columns``, ``counts`` and the ``nse_calibrado`` levels)."""
+    levels = list(config["levels"]["nse_calibrado"])
+    return load_nse_ageb(config["file"], config["state"], tuple(config["municipalities"]), tuple(config["file_columns"]),
+                         tuple((level, config["counts"][level]) for level in levels))
+
+
+def ageb_dwellings(config):
+    """Dwellings per AGEB in AMAI's file (the weight of each AGEB's distribution), for a calibration step's
+    configuration."""
+    table = _amai_file(config)
+    return pd.Series(pd.to_numeric(table["num_viviendas"], errors="coerce").to_numpy(), index=table["clave_ageb"].to_numpy())
 
 
 @register_derive("nse_ageb_calibrado")
@@ -74,12 +100,14 @@ def nse_ageb_calibrated(completions, base, config):
     """``nse_calibrado``: within each completion (a draw, or the plug-in completion) and each AGEB with AMAI's
     distribution, the dwellings ranked by their points (weighted mid-rank with the dwelling weight) take the level of
     AMAI's cumulative distribution at their rank; elsewhere, and where the points are missing, the uncalibrated level.
-    The household ordering by points is kept; the AGEB's mix is AMAI's."""
+    The household ordering by points is kept; the AGEB's mix is AMAI's. Dwellings with equal points are ranked in a
+    random order drawn anew in each completion (``seed``), so where a tie straddles a level, which of them take the
+    lower one does not follow the survey's row order. It did up to 0.3.0: 5.6% of the draws sat in such a tie, and the
+    first of a tie in the survey's order averaged level 2.58 against 3.44 for the others (0 = E ... 6 = A/B)."""
     if config.get("propagation") == "enumerate":
         raise ValueError("the rank calibration needs complete datasets (propagation draws or expected), not scenarios")
     levels = list(config["levels"]["nse_calibrado"])
-    shares = load_nse_ageb(config["file"], config["state"], tuple(config["municipalities"]), tuple(config["file_columns"]),
-                           tuple((level, config["counts"][level]) for level in levels))
+    shares = nse_ageb_shares(config)
     cumulative = shares[levels].cumsum(axis=1)
     cumulative[levels[-1]] = 1.0
     rows = base.iloc[completions["row"].to_numpy()]
@@ -87,7 +115,8 @@ def nse_ageb_calibrated(completions, base, config):
                           "points": completions[config["from"]].astype(float).to_numpy(), "weight": rows[config["weight"]].astype(float).to_numpy(),
                           "level": completions[config["level"]].astype("string").to_numpy()})
     calibrated = frame["level"].copy()
-    ranked = frame[frame["ageb"].isin(cumulative.index) & frame["points"].notna()].sort_values(["completion", "ageb", "points"], kind="mergesort")
+    ranked = frame[frame["ageb"].isin(cumulative.index) & frame["points"].notna()]
+    ranked = ranked.assign(tie=np.random.default_rng(config["seed"]).random(len(ranked))).sort_values(["completion", "ageb", "points", "tie"])
     group = [ranked["completion"], ranked["ageb"]]
     cumulative_weight = ranked["weight"].groupby(group).cumsum()
     rank = ((cumulative_weight - ranked["weight"] / 2) / ranked["weight"].groupby(group).transform("sum")).to_numpy()

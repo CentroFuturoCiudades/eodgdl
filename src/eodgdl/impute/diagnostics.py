@@ -21,22 +21,17 @@ import numpy as np
 import pandas as pd
 
 from . import evaluate
-from .arms import Arm, assign_arms
-from .bundle import as_v2, load_bundle, make_bundle
+from .bundle import load_bundle, make_bundle
 from .chain import TaskStep, load_chain, run_chain
 from .features import build_frame
-from .levels import prepare_features
-from .marginalize import predict_proba_marginalizing
-from .run import _within_support, component_spec, task_levels
+from .run import component_spec, predict_rows, select_rows, task_levels, within_support
 from .sources import Context
 from .spec import load_task
 
 
-def _bundle(task, retrained):
-    """The task's bundle from its retrain directory when there is one, else its data file."""
-    spec = load_task(task)
-    path = Path(retrained) / task / (spec.bundle_file or f"{task}.joblib")
-    return as_v2(load_bundle(spec, path if path.exists() else None), spec)
+def _bundles(tasks, retrained):
+    """Each task's bundle: from ``<retrained>/<task>/`` when a retrain wrote one there, else its data file."""
+    return {task: load_bundle(load_task(task), retrained=retrained) for task in tasks}
 
 
 def _rate(frame, column, weight):
@@ -52,22 +47,6 @@ def _upstream_probabilities(chain, result, step):
     return use.feature, pd.DataFrame({level: sum(result.frame[f"prob_{upstream.prefix}_{slug}"] for slug, target in transform.items() if target == level) for level in levels})
 
 
-def predict_rows(spec, bundle, rows):
-    """P(class | x) of ``rows`` under the bundle's arms (first arm whose covariates are observed), unsupported levels
-    marginalized over the training shares; every row is predicted, whether its target is observed or not."""
-    arms = [Arm(name, entry["model"], entry["features"], requires=entry["requires"]) for name, entry in bundle["arms"].items()]
-    assigned = assign_arms(rows, arms, spec.is_missing)
-    probabilities = np.full((len(rows), len(spec.class_slugs)), np.nan)
-    for arm in arms:
-        mask = (assigned == arm.name).fillna(False).to_numpy()
-        if mask.any():
-            X = prepare_features(rows[mask], arm.features, spec.numeric, spec.missing_label)
-            predicted, _ = predict_proba_marginalizing(arm.model, X, missing_label=spec.missing_label)
-            order = [list(arm.model.named_steps["classifier"].classes_).index(slug) for slug in spec.class_slugs]
-            probabilities[mask] = predicted[:, order]
-    return pd.DataFrame(probabilities, columns=spec.class_slugs, index=rows.index)
-
-
 def evaluate_chain(chain, retrained="output/impute", context=None):
     """Every diagnostic of ``chain``'s ``evaluation:`` section, with the bundles of the retrains under ``retrained``
     (``<retrained>/<task>/``; a task without one uses its data file). Returns ``({name: DataFrame}, summary)``."""
@@ -80,15 +59,12 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
     spec = load_task(task)
     step = next(s for s in chain.steps if isinstance(s, TaskStep) and s.task == task)
     positive = spec.evaluation.get("positive_class", spec.class_slugs[0])
-    bundles = {t: _bundle(t, retrained) for t in chain.tasks}
+    bundles = _bundles(chain.tasks, retrained)
     scored_rows = build_frame(spec, context, role="score")
     weight, keys = scored_rows.weight, list(scored_rows.keys)
     target_frame = scored_rows.frame
     training = build_frame(spec, context)
-    benchmark = training.frame[~training.frame[spec.unknown_column].astype(bool)]
-    for column, values in ev.get("benchmark", {}).get("exclude", {}).items():
-        benchmark = benchmark[~benchmark[column].isin(values)]
-    benchmark = benchmark.reset_index(drop=True)
+    benchmark = select_rows(training.frame[~training.frame[spec.unknown_column].astype(bool)], drop=ev.get("benchmark", {}).get("exclude"))
     train_weight = training.weight
     probability = f"prob_{spec.prefix}_{positive}"
 
@@ -101,7 +77,11 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
     shipped = run()
     variants = {"shipped": shipped}
     for upstream, names in ev.get("upstream_scenarios", {}).items():
-        scenarios = pd.read_parquet(Path(retrained) / upstream / "scenarios.parquet")
+        path = Path(retrained) / upstream / "scenarios.parquet"
+        if not path.exists():
+            raise FileNotFoundError(f"{chain.name}: the evaluation reruns the chain with {upstream}'s retrain scenarios, and {path} is missing: "
+                                    f"run `eodgdl impute retrain {upstream}` first, or point --retrained at a directory holding {upstream}/")
+        scenarios = pd.read_parquet(path)
         for name in names:
             given = scenarios[scenarios["scenario"] == name].drop(columns="scenario")
             variants[f"{upstream}: {name}"] = run(upstream_outputs={upstream: given})
@@ -174,9 +154,9 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
         if len(step.uses) == 1:
             feature, upstream_probabilities = _upstream_probabilities(chain, shipped, step)
             target[feature] = np.asarray(upstream_probabilities.columns, dtype=object)[upstream_probabilities.to_numpy().argmax(axis=1)]
-        target = _within_support(spec, target, benchmark)
+        target = within_support(spec, target, benchmark)
         reweighted, diagnostics = evaluate.reweight_to_target_profile(benchmark, target, profile, train_weight, weight, spec.numeric, missing_label=spec.missing_label)
-        predicted = predict_rows(spec, bundles[task], benchmark)[positive].to_numpy()
+        predicted = predict_rows(spec, bundles[task], benchmark, auxiliary=False)[positive].to_numpy()
         steps = [("training source observed (benchmark)", np.average(observed, weights=benchmark[train_weight]), "—"),
                  ("training source predicted by the model", np.average(predicted, weights=benchmark[train_weight]), "model bias on the training source"),
                  ("observed, reweighted to the scored profile", np.average(observed, weights=reweighted[train_weight]), "composition (observed)"),
@@ -189,7 +169,7 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
 
     # the scored rows raked to the benchmark's profile
     if ev.get("raking"):
-        raked, diagnostics = evaluate.reweight_to_target_profile(_within_support(spec, scored, benchmark), benchmark, list(ev["raking"]), weight, train_weight,
+        raked, diagnostics = evaluate.reweight_to_target_profile(within_support(spec, scored, benchmark), benchmark, list(ev["raking"]), weight, train_weight,
                                                                  spec.numeric, missing_label=spec.missing_label)
         tables["raking"] = pd.DataFrame({"rate": {"scored rows, as surveyed": summary["expected_rate"], "scored rows, raked to the benchmark profile": _rate(raked, probability, weight),
                                                   "benchmark observed": summary["benchmark_rate"]}}).rename_axis("population").reset_index()
@@ -208,8 +188,9 @@ def evaluate_distribution(chain, ev, retrained, context):
     draws' Monte Carlo error, the ``reference`` distribution by area against the chain's on the areas both cover, and
     ``observed_check`` (a task's predictions against the value the scored rows report)."""
     from .chain import DeriveStep, parse_chain
+    from .derive import amai
 
-    bundles = {task: _bundle(task, retrained) for task in chain.tasks}
+    bundles = _bundles(chain.tasks, retrained)
     spec = load_task(chain.tasks[0])
     rows_source = build_frame(spec, context, role="score")
     keys, weight = list(rows_source.keys), ev["distribution"].get("weight", rows_source.weight)
@@ -264,14 +245,9 @@ def evaluate_distribution(chain, ev, retrained, context):
 
     reference = ev.get("reference")
     if reference:
-        step = next(s for s in chain.steps if isinstance(s, DeriveStep) and s.name == reference["derive"])
-        from .derive.amai import load_nse_ageb
-
-        config = step.config
+        config = next(s for s in chain.steps if isinstance(s, DeriveStep) and s.name == reference["derive"]).config
         levels = list(config["levels"]["nse_calibrado"])
-        shares = load_nse_ageb(config["file"], config["state"], tuple(config["municipalities"]), tuple(config["file_columns"]),
-                               tuple((level, config["counts"][level]) for level in levels))
-        dwellings = _amai_dwellings(config)
+        shares, dwellings = amai.nse_ageb_shares(config), amai.ageb_dwellings(config)
         frame = draws.frame.merge(base[keys + [config["ageb"]]].rename(columns={config["ageb"]: "ageb"}), on=keys, how="left", validate="one_to_one")
         common = frame[frame["ageb"].isin(shares.index)]
         rows = [{"distribution": "AMAI by AGEB", "level": level,
@@ -287,7 +263,7 @@ def evaluate_distribution(chain, ev, retrained, context):
     if check:
         checked = load_task(check["task"])
         rows_frame = build_frame(checked, context, role="score").frame
-        predicted = predict_rows(checked, _bundle(check["task"], retrained), rows_frame)
+        predicted = predict_rows(checked, load_bundle(checked, retrained=retrained), rows_frame, auxiliary=False)
         observed = rows_frame[checked.target_column].astype("string").map(checked.classes)
         w = rows_frame[weight].astype(float)
         table = pd.DataFrame({"class": checked.class_slugs,
@@ -299,23 +275,13 @@ def evaluate_distribution(chain, ev, retrained, context):
     return tables, summary
 
 
-def _amai_dwellings(config):
-    """Dwellings per AGEB in AMAI's file (the weight of each AGEB's distribution)."""
-    from eodgdl.data import resolve
-
-    table = pd.read_excel(resolve(config["file"]))
-    table.columns = list(config["file_columns"])
-    table = table.iloc[1:]
-    table = table[table["nombre_entidad"].eq(config["state"]) & table["nombre_municipio"].isin(config["municipalities"])]
-    key = ("14" + pd.to_numeric(table["municipio"]).astype(int).astype(str).str.zfill(3) + pd.to_numeric(table["localidad"]).astype(int).astype(str).str.zfill(4)
-           + table["ageb"].astype(str).str.zfill(4))
-    return pd.Series(pd.to_numeric(table["num_viviendas"], errors="coerce").to_numpy(), index=key.to_numpy())
-
-
 def write_evaluation(tables, summary, out):
-    """``<out>/evaluation/<table>.parquet`` and ``<out>/evaluation/summary.json``."""
+    """``<out>/evaluation/<table>.parquet`` and ``<out>/evaluation/summary.json``, replacing an earlier evaluation's
+    tables."""
     out = Path(out) / "evaluation"
     out.mkdir(parents=True, exist_ok=True)
+    for stale in out.glob("*.parquet"):
+        stale.unlink()
     for name, table in tables.items():
         table.to_parquet(out / f"{name}.parquet", index=False)
     (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")

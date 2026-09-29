@@ -23,6 +23,13 @@ def stable_hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
+@functools.cache
+def read_yaml(path):
+    """A YAML file parsed (once per path and process: callers must not mutate it)."""
+    with open(path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
 @dataclass(frozen=True)
 class ArmSpec:
     name: str
@@ -75,6 +82,11 @@ class TaskSpec:
     @property
     def probability_columns(self):
         return [f"prob_{self.prefix}_{slug}" for slug in self.class_slugs]
+
+    @property
+    def bundle_name(self):
+        """File name of the task's bundle: its data file, else ``<task>.joblib``."""
+        return self.bundle_file or f"{self.name}.joblib"
 
     def builders_for(self, source):
         """The feature builders run on ``source``'s frame."""
@@ -182,6 +194,7 @@ def parse_task(raw):
         _check(set(requires) <= set(arm_features), f"{name}: arm {arm_name} requires features it does not use: {sorted(set(requires) - set(arm_features))}")
         spec.arms.append(ArmSpec(arm_name, arm_features, requires))
     _check(spec.arms, f"{name}: no arms")
+    _check(not spec.arms[-1].requires, f"{name}: the last arm must require nothing, so every row to impute has an arm")
     _check(set(spec.numeric) <= set(spec.features), f"{name}: numeric features no arm uses: {sorted(set(spec.numeric) - set(spec.features))}")
     for feature in spec.auxiliary:
         _check(feature in spec.features and feature not in spec.numeric, f"{name}: auxiliary model for {feature!r}, not a categorical feature of the task")
@@ -203,5 +216,4 @@ def load_task(name):
     path = TASKS_DIR / f"{name}.yaml"
     if not path.exists():
         raise ValueError(f"No task {name!r}; known: {sorted(p.stem for p in TASKS_DIR.glob('*.yaml'))}")
-    with open(path, encoding="utf-8") as handle:
-        return parse_task(yaml.safe_load(handle))
+    return parse_task(read_yaml(path))

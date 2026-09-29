@@ -1,5 +1,7 @@
 """Tests for the imputation engine on synthetic data: batched marginalization against the recursive reference, level
 subsets, staged vs unstaged tuning, serial vs parallel tuning, the one-SE rule, harmonization and arm dispatch."""
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -218,7 +220,7 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     def build_source(context, config):
         calls["source"] += 1
         frame = synthetic(n=30)[["a", "b", "c", "y"]].assign(k=range(30), label=lambda f: f["y"].str.upper())
-        return sources.SourceFrame(frame, ["k"], "c", "k", {"data": "v1"}, lambda column: LEVELS[column][:-1])
+        return frame
 
     def build_columns(frame, context, config, spec):
         calls["builder"] += 1
@@ -248,13 +250,15 @@ def test_spec_validation():
     from eodgdl.impute.spec import parse_task
 
     base = {"task": "t", "source": "s", "target": {"column": "y", "classes": {"A": "a", "B": "b"}},
-            "features": {"groups": {"g": ["u", "v"]}, "numeric": ["v"]}, "arms": {"one": {"features": ["g"], "requires": ["u"]}}}
+            "features": {"groups": {"g": ["u", "v"]}, "numeric": ["v"]}, "arms": {"one": {"features": ["g"], "requires": ["u"]}, "rest": {"features": ["v"]}}}
     spec = parse_task(base)
     assert spec.features == ["u", "v"] and spec.arm("one").requires == ("u",)
     with pytest.raises(ValueError, match="requires features it does not use"):
-        parse_task({**base, "arms": {"one": {"features": ["g"], "exclude": ["u"], "requires": ["u"]}}})
+        parse_task({**base, "arms": {"one": {"features": ["g"], "exclude": ["u"], "requires": ["u"]}, "rest": {"features": ["v"]}}})
+    with pytest.raises(ValueError, match="last arm must require nothing"):
+        parse_task({**base, "arms": {"one": {"features": ["g"], "requires": ["u"]}}})
     with pytest.raises(ValueError, match="numeric features no arm uses"):
-        parse_task({**base, "features": {"groups": {"g": ["u"]}, "numeric": ["v"]}})
+        parse_task({**base, "features": {"groups": {"g": ["u", "v"]}, "numeric": ["w"]}})
     with pytest.raises(ValueError, match="class slugs repeat"):
         parse_task({**base, "target": {"column": "y", "classes": {"A": "a", "B": "a"}}})
     assert parse_task(base).scoring_hash() == spec.scoring_hash()
@@ -284,14 +288,10 @@ def labelled_source(monkeypatch):
         frame["label"] = frame["y"].str.upper().where(np.arange(len(frame)) % 5 != 0)   # every fifth row unknown
         frame.loc[frame.index % 7 == 0, "b"] = "?"                                       # unobserved b: the second arm
         frame.loc[frame.index % 11 == 0, "a"] = MISSING                                  # unobserved a: marginalized with P(a | x)
-        return sources.SourceFrame(frame, ["g", "k"], "w", "g", {"data": "v1"}, None)
+        frame["k"] = np.arange(len(frame))
+        return frame
 
-    def build_with_key(context, config):
-        result = build(context, config)
-        result.frame["k"] = np.arange(len(result.frame))
-        return result
-
-    monkeypatch.setitem(sources._SOURCES, "test.labelled", sources.Source("test.labelled", build_with_key, {"keys": ["g", "k"], "weight": "w", "group": "g"},
+    monkeypatch.setitem(sources._SOURCES, "test.labelled", sources.Source("test.labelled", build, {"keys": ["g", "k"], "weight": "w", "group": "g"},
                                                                         lambda context, config: {"data": "v1"}, lambda column: [], __file__))
 
 
@@ -310,10 +310,25 @@ def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path)
     assert set(result.scenarios) == {"shift_weighted", "delta_adjusted"}
     assert {"selection__with_b", "isotonic__without_b", "shares", "profiles", "unsupported_levels__with_b"} <= set(result.tables)
 
-    path, digest = run.write_retrain(result, tmp_path / "out")
-    assert (tmp_path / "out" / "scores.parquet").exists() and (tmp_path / "out" / "evaluation" / "reliability__with_b.parquet").exists()
+    # the task's own definition of unobserved: b's "?" answers count as missing, as they do for the arms
+    frame = result.scored
+    rows = frame[frame["synthetic_fue_imputado"]]
+    expected = rows.loc[spec.is_missing(rows, "b"), "w"].sum() / rows["w"].sum()
+    assert result.tables["missingness"].set_index("variable").loc["b", "unknown_missing_share"] == pytest.approx(expected)
+    assert (rows["b"] == "?").any() and expected > rows.loc[rows["b"] == MISSING, "w"].sum() / rows["w"].sum()
+    # the delta-adjusted scenario keeps its outputs coherent: confidence and arg-max read from the adjusted probabilities
+    delta = result.scenarios["delta_adjusted"]
+    adjusted = delta.loc[delta["synthetic_fue_imputado"], spec.probability_columns]
+    np.testing.assert_array_equal(delta.loc[delta["synthetic_fue_imputado"], "synthetic_prediction_confidence"], adjusted.max(axis=1))
+    assert (delta.loc[delta["synthetic_fue_imputado"], "synthetic_final"].to_numpy() == adjusted.idxmax(axis=1).str.removeprefix("prob_synthetic_").to_numpy()).all()
+
+    path, digest = run.write_retrain(result, tmp_path / "out" / spec.name)
+    assert (tmp_path / "out" / spec.name / "scores.parquet").exists() and (tmp_path / "out" / spec.name / "evaluation" / "reliability__with_b.parquet").exists()
     reloaded = run.score_frame(spec, result.scored.drop(columns=run.output_columns(spec, [])), bundles.load_bundle(spec, path))
     pd.testing.assert_frame_equal(reloaded, scored)
+    # a retrain written under <root>/<task>/ is what retrained=<root> reads
+    assert bundles.bundle_path(spec, retrained=tmp_path / "out") == path
+    assert bundles.load_bundle(spec, retrained=tmp_path / "out")["metadata"]["spec_hash"] == result.bundle["metadata"]["spec_hash"]
 
     shipped = run.retrain(parse_task({**SYNTHETIC_TASK, "evaluation": {**SYNTHETIC_TASK["evaluation"], "isotonic": {"ship": True}}}), context=context, n_jobs=1, progress=False)
     assert type(shipped.bundle["arms"]["with_b"]["model"]).__name__ == "IsotonicCalibrated"
@@ -405,12 +420,14 @@ def test_enoe_source_on_a_stand_in(monkeypatch):
     monkeypatch.setattr(mxcensus, "load_enoe_persons", persons)
     monkeypatch.setattr(mxcensus, "load_enoe", sdem)
     config = {**enoe.load_config()["enoe.workers"], "periods": ["2023t1", "2023t2"]}
-    frame = enoe.workers(Context(cache=False), config).frame
+    frame = enoe.workers(Context(cache=False), config)
     assert len(frame) == 4 and frame["period"].tolist() == ["2023t1", "2023t1", "2023t2", "2023t2"]
     assert frame["survey_weight"].tolist() == [150.0] * 4
     assert frame["dwelling_size"].tolist() == [3, 1, 3, 1]
     assert frame["hogar"].tolist()[:2] == ["14_14_100_1_1_0", "14_14_100_2_1_0"]          # no panel-visit fields
-    harmonized = enoe.harmonize_enoe(frame, None, {}, None)
+    from eodgdl.impute.features import get_builder
+
+    harmonized = get_builder("harmonize.enoe").build(frame, None, {}, None)
     assert harmonized["edad_num"].isna().tolist() == [False, True, False, True]
     assert harmonized[["lugar_trabajo", "sector", "informalidad"]].iloc[0].tolist() == ["comercio_o_puesto", "comercio", "informal"]
 
@@ -441,15 +458,19 @@ def test_retrain_diagnostics_robustness_profile_and_components(labelled_source, 
     assert set(profile["weighting"]) == {"training weights", "reweighted to the scored rows' profile"} and "weighted_roc_auc" in profile
     assert set(result.tables["components_heldout"]["component"]) == {"part"}
     assert set(result.bundle["components"]["part"]["arms"]) == {"with_b", "without_b"}
-    assert set(result.bundle["components"]["part"]["arms"]["with_b"].named_steps["classifier"].classes_) == {"hi", "lo"}
+    component = result.bundle["components"]["part"]["arms"]["with_b"]
+    assert set(component.named_steps["classifier"].classes_) == {"hi", "lo"}
+    # the component is observed only where the label is (the source gives it on every row): trained on the same rows
+    main = result.bundle["arms"]["with_b"]["model"]
+    for feature, shares in main.training_level_shares_.items():
+        pd.testing.assert_series_equal(component.training_level_shares_[feature], shares)
 
 
 def _with_parts(original, context, config):
-    result = original.build(context, config)
-    frame = result.frame
+    frame = original.build(context, config)
     frame["psu"] = (np.arange(len(frame)) // 9).astype(str)
-    frame["part"] = pd.Series(np.where(frame["c"] > 0, "hi", "lo"), index=frame.index).where(frame["label"].notna())
-    return result
+    frame["part"] = np.where(frame["c"] > 0, "hi", "lo")     # also where the label is unknown: the component must not train there
+    return frame
 
 
 def test_training_population_filters_the_training_rows(labelled_source, tmp_path):
@@ -463,3 +484,80 @@ def test_training_population_filters_the_training_rows(labelled_source, tmp_path
     assert result.summary["train_rows"] + result.summary["test_rows"] == result.summary["known"]
     populations = result.tables["populations"]
     assert set(populations["population"]) == {"all", "a0"} and (populations.groupby("population")["training_rows"].first()["all"] > populations.groupby("population")["training_rows"].first()["a0"])
+
+
+def test_cross_source_task_scores_with_its_scoring_source_keys(labelled_source, monkeypatch, tmp_path):
+    # A task trained on one source and scored on another (as informality: ENOE -> the EOD) writes the scoring source's
+    # keys: `eodgdl impute score <task>` selects its outputs this way (it read the training source's keys before).
+    from eodgdl.impute import run, sources
+    from eodgdl.impute.spec import parse_task
+
+    def scored_rows(context, config):
+        frame = synthetic(n=60, seed=9)[["a", "b", "c", "w"]]
+        frame["s"] = [f"row{i}" for i in range(len(frame))]
+        return frame
+
+    monkeypatch.setitem(sources._SOURCES, "test.scored", sources.Source("test.scored", scored_rows, {"keys": ["s"], "weight": "w", "group": "s"},
+                                                                     lambda context, config: {"data": "v2"}, lambda column: [], __file__))
+    spec = parse_task({**SYNTHETIC_TASK, "score_source": "test.scored", "evaluation": {"bootstrap": 5, "calibration_bins": 5}})
+    context = sources.Context(cache_dir=tmp_path)
+    result = run.retrain(spec, context=context, n_jobs=1, progress=False)
+    scored = run.score_task(spec, bundle=result.bundle, context=context)
+    outputs = run.output_frame(spec, scored, weight=True)
+    assert list(outputs.columns[:1]) == ["s"] and outputs.columns[-1] == "w" and outputs["synthetic_fue_imputado"].all()
+    # an earlier retrain's scenarios and tables are not left behind to be read as this one's (it has neither)
+    (tmp_path / "out" / "evaluation").mkdir(parents=True)
+    pd.DataFrame({"x": [1]}).to_parquet(tmp_path / "out" / "scenarios.parquet")
+    pd.DataFrame({"x": [1]}).to_parquet(tmp_path / "out" / "evaluation" / "stale_table.parquet")
+    run.write_retrain(result, tmp_path / "out")
+    assert list(pd.read_parquet(tmp_path / "out" / "scores.parquet").columns[:1]) == ["s"]
+    assert not (tmp_path / "out" / "scenarios.parquet").exists() and not (tmp_path / "out" / "evaluation" / "stale_table.parquet").exists()
+    assert (tmp_path / "out" / "evaluation" / "selection__with_b.parquet").exists()
+
+
+def test_bundle_path_prefers_the_explicit_file_then_the_retrain(tmp_path):
+    from eodgdl.impute import bundle as bundles
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task({**SYNTHETIC_TASK, "bundle": "od_synthetic_model.joblib"})
+    (tmp_path / "synthetic").mkdir()
+    (tmp_path / "synthetic" / "od_synthetic_model.joblib").write_bytes(b"")
+    assert bundles.bundle_path(spec, path="elsewhere.joblib", retrained=tmp_path) == Path("elsewhere.joblib")
+    assert bundles.bundle_path(spec, retrained=tmp_path) == tmp_path / "synthetic" / "od_synthetic_model.joblib"
+    with pytest.raises(ValueError, match="names no bundle file"):
+        bundles.bundle_path(parse_task(SYNTHETIC_TASK), retrained=tmp_path / "nothing")
+
+
+def test_components_are_unobserved_where_the_label_is():
+    from eodgdl.impute import run
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task({**SYNTHETIC_TASK, "evaluation": {"components": {"part": {"positive": "hi", "classes": ["hi", "lo"]}}}})
+    frame = pd.DataFrame({"part": ["hi", "lo", "hi", MISSING], "synthetic_desconocido": [False, True, False, False]})
+    [component] = run._add_components(spec, frame).values()
+    assert frame[component.unknown_column].tolist() == [False, True, False, True]
+    assert frame["part"].tolist()[:1] == ["hi"] and frame["part"].isna().tolist() == [False, True, False, True]
+
+
+def test_level_subsets_of_features_a_model_does_not_use(fitted):
+    X = scored_rows()
+    plain, _ = marginalize.predict_proba_marginalizing(fitted, X)
+    other, _ = marginalize.predict_proba_marginalizing(fitted, X, level_subsets={"municipio": ["x"]})   # another arm's feature
+    np.testing.assert_array_equal(plain, other)
+
+
+def test_boosting_stages_only_without_early_stopping():
+    families = {"GradientBoosting": {"native_categoricals": True, "params": {"max_iter": [3, 8]}}}   # early_stopping left to sklearn ("auto")
+    candidates = models.build_candidates(FEATURES, NUMERIC, LEVELS, families=families)
+    assert [len(scored) for _, _, scored in select.cv_tasks(candidates)] == [1, 1]
+    candidates = models.build_candidates(FEATURES, NUMERIC, LEVELS, families={"GradientBoosting": {**families["GradientBoosting"], "early_stopping": False}})
+    assert [len(scored) for _, _, scored in select.cv_tasks(candidates)] == [2]
+
+
+def test_harmonizations_are_builders_keyed_by_the_harmonization_code():
+    from eodgdl.impute import features
+
+    for name in ("harmonize.eod", "harmonize.eod_viviendas", "harmonize.enoe", "harmonize.enigh"):
+        builder = features.get_builder(name)
+        assert builder.replaces and Path(builder.module_file).name == "harmonize.py"
+        assert set(builder.versions(None, {})) == {"harmonization", "common"}

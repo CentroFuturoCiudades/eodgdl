@@ -1,12 +1,16 @@
 """Evaluation of a fitted classifier and of an imputation: held-out metrics with household-bootstrap intervals, the
 weighted-marginal baseline, one-vs-rest reliability, known vs unknown profiles, density-ratio reweighting for
-covariate-shift sensitivity, and the delta adjustment of an imputed share."""
+covariate-shift sensitivity, and the delta adjustment of an imputed share.
+
+The held-out evaluators take the observed labels, a probability matrix (columns ``classes``, the model's order, as
+``model.predict_proba(rows)`` gives them) and the weights, so a caller predicts once and evaluates many ways."""
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score, log_loss, precision_recall_fscore_support
 
-from .levels import MISSING_LABEL, identify_missing, normalize_predicted_probabilities, prepare_features, split_feature_types
+from .arms import set_class_probabilities
+from .levels import MISSING_LABEL, normalize_predicted_probabilities, prepare_features, split_feature_types
 
 
 # Calibration
@@ -49,15 +53,13 @@ def calibration_metrics(y_true, probabilities, sample_weights, n_bins=10):
     }
 
 
-def calibration_by_class(model, test_data, features, target, numeric, n_bins=10, weight_column="ponderador", class_column="class", missing_label=MISSING_LABEL):
+def calibration_by_class(y_true, probabilities, classes, sample_weights, n_bins=10, class_column="class"):
     """One-vs-rest calibration of every class on held-out data: ``(in_the_large, reliability)``."""
-    X = prepare_features(test_data, features, numeric, missing_label)
-    probabilities = normalize_predicted_probabilities(model.predict_proba(X))
-    classes = list(model.named_steps["classifier"].classes_)
-    weights = test_data[weight_column].astype(float).to_numpy()
+    probabilities = normalize_predicted_probabilities(probabilities)
+    weights = np.asarray(sample_weights, dtype=float)
     rows, tables = [], []
     for index, label in enumerate(classes):
-        outcome = (test_data[target].astype(str).to_numpy() == label).astype(float)
+        outcome = (np.asarray(y_true) == label).astype(float)
         metrics = calibration_metrics(outcome, probabilities[:, index], weights, n_bins=n_bins)
         rows.append({class_column: label, "observed_share": np.average(outcome, weights=weights), "predicted_share": np.average(probabilities[:, index], weights=weights), "gap_pp": metrics["calibration_gap_pp"], "ece": metrics["ece"], "calibration_slope": metrics["calibration_slope"]})
         tables.append(calculate_calibration_table(outcome, probabilities[:, index], weights, n_bins=n_bins).assign(**{class_column: label}))
@@ -153,16 +155,16 @@ def binary_metrics(y_true, probabilities, classes, positive, sample_weights, n_b
     return metrics
 
 
-def evaluate_classifier(model, test_data, features, target, classes, numeric, weight_column="ponderador", class_column="class", missing_label=MISSING_LABEL, positive=None, n_bins=10):
-    """Held-out metrics, per-class metrics, weighted confusion matrix and observed vs predicted class shares:
-    ``(metrics, class_metrics, confusion, distribution)``. With ``positive`` (a two-class target) the metrics add
-    :func:`binary_metrics`."""
-    X = prepare_features(test_data, features, numeric, missing_label)
-    y_true = test_data[target].astype(str)
-    weights = test_data[weight_column].astype(float)
-    predictions = model.predict(X)
-    probabilities = normalize_predicted_probabilities(model.predict_proba(X))
-    model_classes = list(model.named_steps["classifier"].classes_)
+def evaluate_classifier(y_true, probabilities, classes, sample_weights, labels=None, positive=None, n_bins=10, class_column="class"):
+    """Held-out metrics, per-class metrics, weighted confusion matrix and observed vs predicted class shares of the
+    probabilities (columns ``classes``; the prediction is their arg-max): ``(metrics, class_metrics, confusion,
+    distribution)``, the per-class tables in the order of ``labels`` (default ``classes``). With ``positive`` (a
+    two-class target) the metrics add :func:`binary_metrics`."""
+    model_classes = list(classes)
+    classes = list(labels) if labels is not None else model_classes
+    weights = pd.Series(np.asarray(sample_weights, dtype=float))
+    predictions = np.asarray(model_classes, dtype=object)[np.asarray(probabilities).argmax(axis=1)]
+    probabilities = normalize_predicted_probabilities(probabilities)
 
     metrics = pd.DataFrame({
         "accuracy": [accuracy_score(y_true, predictions)],
@@ -180,7 +182,7 @@ def evaluate_classifier(model, test_data, features, target, classes, numeric, we
     class_metrics = pd.DataFrame({class_column: classes, "precision": precision, "recall": recall, "f1": f1, "weighted_support": support})
     confusion = pd.DataFrame(confusion_matrix(y_true, predictions, labels=classes, sample_weight=weights), index=classes, columns=classes)
 
-    observed = pd.Series(weights.to_numpy(), index=y_true.to_numpy()).groupby(level=0).sum()
+    observed = pd.Series(weights.to_numpy(), index=np.asarray(y_true)).groupby(level=0).sum()
     hard = pd.Series(weights.to_numpy(), index=predictions).groupby(level=0).sum()
     probabilistic = pd.Series((weights.to_numpy()[:, None] * probabilities).sum(axis=0), index=model_classes)
     distribution = pd.DataFrame({class_column: classes})
@@ -192,17 +194,16 @@ def evaluate_classifier(model, test_data, features, target, classes, numeric, we
     return metrics, class_metrics, confusion, distribution
 
 
-def test_metrics_with_uncertainty(model, test_data, features, target, numeric, n_bootstrap=500, random_state=42, weight_column="ponderador", group_column="folio_vivienda", missing_label=MISSING_LABEL, positive=None):
-    """Held-out log loss / accuracy / macro-F1 with group-bootstrap intervals, plus the weighted-marginal baseline and
-    the relative improvement over it."""
-    X = prepare_features(test_data, features, numeric, missing_label)
-    probabilities = normalize_predicted_probabilities(model.predict_proba(X))
-    classes = list(model.named_steps["classifier"].classes_)
+def test_metrics_with_uncertainty(y_true, probabilities, classes, sample_weights, groups, n_bootstrap=500, random_state=42, positive=None):
+    """Held-out log loss / accuracy / macro-F1 with group-bootstrap intervals (``groups``: the households), plus the
+    weighted-marginal baseline and the relative improvement over it."""
+    probabilities = normalize_predicted_probabilities(probabilities)
+    classes = list(classes)
     columns = [f"p_{c}" for c in classes]
     frame = pd.DataFrame(probabilities, columns=columns)
-    frame["y"] = test_data[target].astype(str).to_numpy()
-    frame["w"] = test_data[weight_column].astype(float).to_numpy()
-    frame["household"] = test_data[group_column].astype(str).to_numpy()
+    frame["y"] = np.asarray(y_true)
+    frame["w"] = np.asarray(sample_weights, dtype=float)
+    frame["household"] = np.asarray(groups)
 
     def metrics(data):
         p = data[columns].to_numpy(); predicted = np.array(classes)[p.argmax(axis=1)]
@@ -242,16 +243,17 @@ def compare_known_unknown_profiles(frame, columns, unknown, weight_column="ponde
     return pd.concat(comparisons, ignore_index=True)
 
 
-def calculate_feature_missingness(frame, features, unknown, weight_column="ponderador", missing_label=MISSING_LABEL):
-    """Weighted share of rows with each feature missing, among known- and unknown-target rows."""
+def calculate_feature_missingness(frame, features, unknown, is_missing, weight_column="ponderador"):
+    """Weighted share of rows with each feature unobserved (``is_missing(frame, feature)``: the task's definition),
+    among known- and unknown-target rows."""
     unknown = np.asarray(unknown, dtype=bool)
     known_rows, unknown_rows = frame[~unknown], frame[unknown]
     rows = []
     for column in features:
         rows.append({
             "variable": column,
-            "known_missing_share": known_rows.loc[identify_missing(known_rows[column], missing_label), weight_column].sum() / known_rows[weight_column].sum(),
-            "unknown_missing_share": unknown_rows.loc[identify_missing(unknown_rows[column], missing_label), weight_column].sum() / unknown_rows[weight_column].sum(),
+            "known_missing_share": known_rows.loc[is_missing(known_rows, column), weight_column].sum() / known_rows[weight_column].sum(),
+            "unknown_missing_share": unknown_rows.loc[is_missing(unknown_rows, column), weight_column].sum() / unknown_rows[weight_column].sum(),
         })
 
     return pd.DataFrame(rows)
@@ -270,8 +272,8 @@ def validate_probability_rows(frame, columns, tolerance=1e-8):
 def adjust_imputed_share(imputed, prefix, classes, label, target_share=None, weight_column="ponderador"):
     """Delta adjustment: scale the imputed probability of ``label`` so the weighted imputed share equals
     ``target_share`` (default: its observed share among the rows with an observed target), renormalizing the other
-    classes. Returns ``(adjusted, factor)``. The scaled probability is clipped at one, so the target is not reached
-    where the clip binds."""
+    classes; the arg-max and confidence follow. Returns ``(adjusted, factor)``. The scaled probability is clipped at
+    one, so the target is not reached where the clip binds."""
     imputed = imputed.copy()
     columns = [f"prob_{prefix}_{c}" for c in classes]
     rows = imputed[f"{prefix}_fue_imputado"].to_numpy()
@@ -281,15 +283,14 @@ def adjust_imputed_share(imputed, prefix, classes, label, target_share=None, wei
         target_share = (weights[~rows] * (imputed.loc[~rows, f"{prefix}_final"] == label).to_numpy(dtype=float)).sum() / weights[~rows].sum()
     current_share = (weights[rows] * imputed.loc[rows, column]).sum() / weights[rows].sum()
     factor = target_share / current_share
-    other_columns = [c for c in columns if c != column]
-    adjusted = (imputed.loc[rows, column] * factor).clip(upper=1.0)
-    remaining = 1.0 - adjusted
-    other_total = imputed.loc[rows, other_columns].sum(axis=1).replace(0, np.nan)
-    for other in other_columns:
-        imputed.loc[rows, other] = (imputed.loc[rows, other] / other_total * remaining).fillna(0.0)
-    imputed.loc[rows, column] = adjusted
-    imputed.loc[rows, f"{prefix}_final"] = np.array(classes)[imputed.loc[rows, columns].to_numpy().argmax(axis=1)]
-    imputed.loc[rows, f"{prefix}_imputado"] = imputed.loc[rows, f"{prefix}_final"]
+    adjusted = imputed.loc[rows, columns].copy()
+    others = [c for c in columns if c != column]
+    scaled = (adjusted[column] * factor).clip(upper=1.0)
+    other_total = adjusted[others].sum(axis=1).replace(0, np.nan)
+    for other in others:
+        adjusted[other] = (adjusted[other] / other_total * (1.0 - scaled)).fillna(0.0)
+    adjusted[column] = scaled
+    set_class_probabilities(imputed, prefix, classes, adjusted.to_numpy(), rows)
     validate_probability_rows(imputed, columns)
 
     return imputed, float(factor)
@@ -362,12 +363,13 @@ def out_of_fold_probabilities(model, X, y, sample_weights, splits):
     return probabilities, classes
 
 
-def fit_isotonic(fitted, unfitted, X, y, sample_weights, splits):
-    """:class:`IsotonicCalibrated` around ``fitted``, its maps learned from the out-of-fold probabilities of
-    ``unfitted`` (the same configuration) on ``X`` under ``splits``, so the maps are not optimistic."""
+def fit_isotonic(fitted, X, y, sample_weights, splits):
+    """:class:`IsotonicCalibrated` around ``fitted``, its maps learned from the out-of-fold probabilities of the same
+    configuration on ``X`` under ``splits``, so the maps are not optimistic."""
+    from sklearn.base import clone
     from sklearn.isotonic import IsotonicRegression
 
-    probabilities, classes = out_of_fold_probabilities(unfitted, X, y, sample_weights, splits)
+    probabilities, classes = out_of_fold_probabilities(clone(fitted), X, y, sample_weights, splits)
     y = np.asarray(y); w = np.asarray(sample_weights, dtype=float)
     calibrators = {label: IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip").fit(probabilities[:, index], (y == label).astype(float), sample_weight=w)
                    for index, label in enumerate(classes)}

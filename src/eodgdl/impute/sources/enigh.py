@@ -2,24 +2,15 @@
 (``harmonize.enigh``). Configuration: ``enigh.yaml`` beside this module; value maps:
 ``impute/harmonization/enigh.yaml``."""
 
-import functools
-from pathlib import Path
-
 import pandas as pd
-import yaml
 
-from ..features import register_builder
-from ..harmonize import apply_variables, load_harmonization
-from . import register_source
+from ..harmonize import register_harmonization
+from . import module_config, register_source
 from .enoe import harmonized_levels
 
-CONFIG_PATH = Path(__file__).with_suffix(".yaml")
 
-
-@functools.cache
 def load_config():
-    with open(CONFIG_PATH, encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    return module_config(__file__)
 
 
 def enigh_versions(context, config):
@@ -33,8 +24,6 @@ def households(context, config):
     """ENIGH households with their dwelling and questionnaire columns, ``trabajadores_14_n``, ``entidad`` (from
     ``ubica_geo``) and the weight ``factor`` as a number."""
     import mxcensus
-
-    from . import SourceFrame
 
     period, keys = str(config["period"]), list(config["keys"])
     frame = mxcensus.load_enigh_hogares(period=period, labels=False).reset_index()[keys + list(config["household_columns"])]
@@ -51,10 +40,8 @@ def households(context, config):
     frame["entidad"] = frame["ubica_geo"].astype(str).str[:2]
     assert not frame.duplicated(keys).any(), "ENIGH households must be unique"
 
-    return SourceFrame(frame, keys, config["weight"], config["group"], enigh_versions(context, config), harmonized_levels)
+    return frame
 
 
-@register_builder("harmonize.enigh", versions=lambda context, config: {"harmonization": load_harmonization("enigh"), "common": load_harmonization("common")}, replaces=True)
-def harmonize_enigh(frame, context, config, spec):
-    """The variables of ``impute/harmonization/enigh.yaml`` (ENIGH codes on the EOD's labels)."""
-    return apply_variables(frame, load_harmonization("enigh")["variables"])
+# ENIGH's codes on the EOD's labels
+register_harmonization("harmonize.enigh", "enigh")

@@ -96,32 +96,30 @@ def main() -> None:
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
 
-    imp_p = sub.add_parser("impute", help="Imputation tasks (eodgdl.impute): score, retrain, compare feature specifications")
+    imp_p = sub.add_parser("impute", help="Imputation tasks and chains (eodgdl.impute): score, retrain, evaluate, compare")
     imp_sub = imp_p.add_subparsers(dest="impute_cmd", required=True)
-    for name, help_text in (("score", "Score a task's rows with its fitted bundle"),
-                            ("retrain", "Select, evaluate, refit and score a task; write the bundle and evaluation tables"),
-                            ("compare", "Fold log losses of candidate specifications against the task's, at the published winner's hyperparameters")):
+    for name, help_text in (("score", "Score a task's or a chain's rows with the fitted bundles"),
+                            ("retrain", "Select, evaluate, refit and score a task (or every task of a chain); write the bundles and evaluation tables"),
+                            ("evaluate", "Diagnostics of a chain (its evaluation: section)"),
+                            ("compare", "Fold log losses of candidate specifications against the task's, at its bundle's winning hyperparameters")):
         cmd_p = imp_sub.add_parser(name, help=help_text)
-        cmd_p.add_argument("task", help="Task (src/eodgdl/impute/tasks/<task>.yaml) or, for score and retrain, chain (impute/chains/<chain>.yaml)")
+        cmd_p.add_argument("task", metavar="chain" if name == "evaluate" else "task",
+                           help="Chain (src/eodgdl/impute/chains/<chain>.yaml)" if name == "evaluate" else
+                           "Task (src/eodgdl/impute/tasks/<task>.yaml)" + (" or chain (impute/chains/<chain>.yaml)" if name != "compare" else ""))
         cmd_p.add_argument("--data", default=None, help="Local data directory (else $EODGDL_DATA_DIR or fetch)")
         cmd_p.add_argument("--refresh", action="store_true", help="Rebuild the cached feature frames")
-        if name != "score":
+        if name in ("retrain", "compare"):
             cmd_p.add_argument("--jobs", type=int, default=-1, help="Parallel workers for the CV fits (default: all cores; 1 = in process)")
-    imp_score = imp_sub.choices["score"]
-    imp_score.add_argument("--bundle", default=None, help="Bundle file (default: the task's data file)")
-    imp_score.add_argument("--out", default=None, help="Parquet file for the keys and output columns (default: output/impute/<task>_scores.parquet); for a chain, a directory")
-    imp_score.add_argument("--retrained", default=None, help="For a chain: take each task's bundle from <dir>/<task>/ when a retrain wrote one there")
-    imp_sub.choices["retrain"].add_argument("--out", default=None, help="Directory (default: output/impute/<task>/)")
-    imp_eval = imp_sub.add_parser("evaluate", help="Diagnostics of a chain (its evaluation: section) with the bundles of the retrains under --retrained")
-    imp_eval.add_argument("chain", help="Chain (src/eodgdl/impute/chains/<chain>.yaml)")
-    imp_eval.add_argument("--data", default=None, help="Local data directory (else $EODGDL_DATA_DIR or fetch)")
-    imp_eval.add_argument("--refresh", action="store_true", help="Rebuild the cached feature frames")
-    imp_eval.add_argument("--retrained", default="output/impute", help="Directory of the retrains (<dir>/<task>/; default output/impute)")
-    imp_eval.add_argument("--out", default=None, help="Directory (default: output/impute/<chain>/); tables go to <out>/evaluation/")
+        if name != "retrain":
+            default = "output/impute" if name == "evaluate" else None
+            cmd_p.add_argument("--retrained", default=default, help="Take each task's bundle from <dir>/<task>/ when a retrain wrote one there, else the installed one"
+                                                                     + (" (default output/impute; also where the upstream scenarios are read)" if default else ""))
+    imp_sub.choices["score"].add_argument("--out", default=None, help="For a task, the parquet of keys and outputs (default: output/impute/<task>_scores.parquet); for a chain, a directory (default: output/impute/<chain>/)")
+    imp_sub.choices["retrain"].add_argument("--out", default="output/impute", help="Each task is written to <out>/<task>/, where --retrained <out> finds it (default: output/impute)")
+    imp_sub.choices["evaluate"].add_argument("--out", default=None, help="Directory (default: <retrained>/<chain>/); tables go to <out>/evaluation/")
     imp_cmp = imp_sub.choices["compare"]
     imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
     imp_cmp.add_argument("--seeds", type=int, nargs="+", default=[42], help="CV seeds (repeated CV; default 42)")
-    imp_cmp.add_argument("--bundle", default=None, help="Bundle whose winners fix the hyperparameters (default: the task's)")
     imp_cmp.add_argument("--out", default=None, help="CSV prefix for <out>_folds.csv and <out>_paired.csv")
 
     args = parser.parse_args()
@@ -368,51 +366,44 @@ def _impute(args) -> int:
     if args.data:
         os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
     from eodgdl.impute import run
-    from eodgdl.impute.sources import Context, get_source
+    from eodgdl.impute.chain import is_chain, load_chain, retrain_chain, run_chain, write_chain
+    from eodgdl.impute.sources import Context
     from eodgdl.impute.spec import load_task
 
     context = Context(refresh=args.refresh)
-    from eodgdl.impute.chain import CHAINS_DIR, load_chain, retrain_chain, run_chain, write_chain
-
     if args.impute_cmd == "evaluate":
         from eodgdl.impute.diagnostics import evaluate_chain, write_evaluation
 
-        tables, summary = evaluate_chain(args.chain, retrained=args.retrained, context=context)
-        out = write_evaluation(tables, summary, args.out or f"{args.retrained}/{args.chain}")
+        tables, summary = evaluate_chain(args.task, retrained=args.retrained, context=context)
+        out = write_evaluation(tables, summary, args.out or f"{args.retrained}/{args.task}")
         shown = tables["headline"] if "headline" in tables else tables["distribution"].pivot_table(index=["variant", "column"], columns="level", values="share")
         print(shown.round(4).to_string())
         print(f"wrote {len(tables)} tables to {out}")
         return 0
 
-    if (CHAINS_DIR / f"{args.task}.yaml").exists() and args.impute_cmd in ("score", "retrain"):
+    if is_chain(args.task) and args.impute_cmd in ("score", "retrain"):
         chain = load_chain(args.task)
-        out = Path(args.out or f"output/impute/{chain.name}")
         if args.impute_cmd == "score":
-            bundles = None
-            if args.retrained:
-                from eodgdl.impute.diagnostics import _bundle
-
-                bundles = {task: _bundle(task, args.retrained) for task in chain.tasks}
-            result = run_chain(chain, context=context, bundles=bundles)
+            out = Path(args.out or f"output/impute/{chain.name}")
+            result = run_chain(chain, context=context, retrained=args.retrained)
             write_chain(result, out)
             print(f"{chain.name} ({chain.mode}, {chain.propagation}): {len(result.frame):,} rows, {len(result.completions):,} completions; wrote {out}")
         else:
-            for task, (path, digest) in retrain_chain(chain, out, context=context, n_jobs=args.jobs).items():
+            for task, (path, digest) in retrain_chain(chain, args.out, context=context, n_jobs=args.jobs).items():
                 print(f"{task}: wrote {path} (sha256 {digest})")
         return 0
     spec = load_task(args.task)
     if args.impute_cmd == "score":
-        scored = run.score_task(spec, context=context, path=args.bundle)
+        scored = run.score_task(spec, retrained=args.retrained, context=context)
         out = Path(args.out or f"output/impute/{spec.name}_scores.parquet")
         out.parent.mkdir(parents=True, exist_ok=True)
-        keys = get_source(spec.source).config["keys"]
-        scored[run.output_columns(spec, keys)].to_parquet(out, index=False)
+        run.output_frame(spec, scored).to_parquet(out, index=False)
         imputed = scored[f"{spec.prefix}_fue_imputado"]
         print(f"scored {len(scored):,} rows, {int(imputed.sum()):,} imputed; wrote {out}")
         return 0
     if args.impute_cmd == "retrain":
         result = run.retrain(spec, context=context, n_jobs=args.jobs)
-        path, digest = run.write_retrain(result, args.out or f"output/impute/{spec.name}")
+        path, digest = run.write_retrain(result, Path(args.out) / spec.name)
         for arm, entry in result.summary["arms"].items():
             chosen = entry["selected"]
             print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "
@@ -423,12 +414,7 @@ def _impute(args) -> int:
 
     with open(args.spec, encoding="utf-8") as handle:
         candidates = yaml.safe_load(handle)
-    bundle = None
-    if args.bundle:
-        from eodgdl.impute.bundle import load_bundle
-
-        bundle = load_bundle(spec, args.bundle)
-    folds, paired = run.compare(spec, candidates, seeds=tuple(args.seeds), bundle=bundle, context=context, n_jobs=args.jobs)
+    folds, paired = run.compare(spec, candidates, seeds=tuple(args.seeds), retrained=args.retrained, context=context, n_jobs=args.jobs)
     print(paired.round(5).to_string(index=False))
     if args.out:
         folds.to_csv(f"{args.out}_folds.csv", index=False)

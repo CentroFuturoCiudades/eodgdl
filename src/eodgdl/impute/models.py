@@ -75,10 +75,7 @@ def fit_level_model(frame, target, features, numeric, category_levels, sample_we
     data = frame[observed]
     weights = None if sample_weights is None else normalize_sample_weights(pd.Series(np.asarray(sample_weights))[observed.to_numpy()])
     numerical, categorical = split_feature_types(features, numeric)
-    preprocessor = ColumnTransformer([
-        ("numerical", SimpleImputer(strategy="median"), numerical),
-        ("categorical", OneHotEncoder(categories=[category_levels[column] for column in categorical], handle_unknown="error", sparse_output=False), categorical),
-    ])
+    preprocessor, _ = make_tree_preprocessor(numerical, categorical, [category_levels[column] for column in categorical], missing_label=missing_label)
     model = Pipeline([
         ("prepare", prepare_step(features, numeric, missing_label=missing_label)),
         ("preprocessor", preprocessor),

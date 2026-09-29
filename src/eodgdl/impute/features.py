@@ -3,13 +3,14 @@
 A builder adds columns to a source's frame: ``build(frame, context, config, spec)`` returns a frame of new columns
 aligned to ``frame``'s rows. It is registered with :func:`register_builder` in a module listed in
 ``BUILDER_MODULES``; its configuration is its registered default updated by the task's ``builders:`` entry.
+Harmonizations (:func:`eodgdl.impute.harmonize.register_harmonization`) are builders too.
 
 :func:`build_frame` assembles a task's frame: the source, then each builder in the task's order, then the target
 slug. With a :class:`~eodgdl.impute.sources.Context` that uses the cache, the source frame and each builder's columns
 are read from parquet under the cache directory when a file with the same key exists, else built and written. A key
-covers the builder's module source, its configuration, the task's classes, the data versions it declares and the
-keys of everything it was built on, so an edit to the chain rules, a survey file, DENUE's release or the builder's
-code moves it; ``Context(refresh=True)`` rebuilds regardless."""
+covers the builder's module source, this module's, its configuration, the task's classes, the data versions it
+declares and the keys of everything it was built on, so an edit to the chain rules, a survey file, DENUE's release or
+the builder's code moves it; ``Context(refresh=True)`` rebuilds regardless."""
 
 import importlib
 from dataclasses import dataclass
@@ -78,10 +79,11 @@ def _cached(context, kind, name, key, build):
     return pd.read_parquet(path)   # the cached form, so a first run returns what later runs will
 
 
-def source_key(source, config, context):
+def _key(**parts):
+    """A cache key: ``parts`` plus the code of this module (how every cached frame is normalized and assembled)."""
     from .sources import file_digest
 
-    return stable_hash({"source": source.name, "module": file_digest(source.module_file), "config": config, "versions": source.versions(context, config)})
+    return stable_hash({**parts, "cache_code": file_digest(__file__)})
 
 
 def builder_config(spec, name, overrides=None):
@@ -92,26 +94,20 @@ def build_frame(spec, context, overrides=None, role="train"):
     """The task's frame: the source's rows with every builder's columns and the target slug (``spec.target``, NA
     where unobserved) plus ``<prefix>_desconocido``. ``role="score"`` builds the rows the task imputes (its
     ``score_source``, where the target column may be absent: every row unknown). ``overrides`` ({builder: {key:
-    value}}) changes a builder's configuration for this call. Returns the
-    :class:`~eodgdl.impute.sources.SourceFrame` with the full frame."""
-    from .sources import file_digest, get_source
+    value}}) changes a builder's configuration for this call. Returns a
+    :class:`~eodgdl.impute.sources.SourceFrame`."""
+    from .sources import SourceFrame, file_digest, get_source
 
     source = get_source(spec.source if role == "train" else spec.score_source)
-    key = source_key(source, source.config, context)
-    built = {}
-
-    def build_source():
-        result = source.build(context, source.config)
-        built["source"] = result
-        return result.frame
-
-    frame = _cached(context, "sources", source.name, key, build_source)
-    keys = list(source.config["keys"])
+    versions = source.versions(context, source.config)
+    key = _key(source=source.name, module=file_digest(source.module_file), config=source.config, versions=versions)
+    frame = _cached(context, "sources", source.name, key, lambda: source.build(context, source.config))
+    keys = source.keys
     for name in spec.builders_for(source.name):
         builder = get_builder(name)
         config = builder_config(spec, name, overrides)
-        key = stable_hash({"builder": name, "module": file_digest(builder.module_file), "config": config, "classes": spec.classes,
-                           "versions": builder.versions(context, config), "input": key})
+        key = _key(builder=name, module=file_digest(builder.module_file), config=config, classes=spec.classes,
+                   versions=builder.versions(context, config), input=key)
         base = frame
 
         def build_columns():
@@ -134,11 +130,4 @@ def build_frame(spec, context, overrides=None, role="train"):
     missing = [feature for feature in spec.features if feature not in frame.columns]
     assert not missing, f"{spec.name}: features no source column or builder provides: {missing}"
 
-    result = built.get("source")
-    if result is None:
-        from .sources import SourceFrame
-
-        result = SourceFrame(None, keys, source.config["weight"], source.config["group"], source.versions(context, source.config), source.schema_levels)
-    result.frame = frame
-    result.versions = {**result.versions, "features": key}
-    return result
+    return SourceFrame(frame, keys, source.weight, source.group, {**versions, "features": key})

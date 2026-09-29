@@ -59,7 +59,7 @@ def chain_source(tmp_path_factory):
 
 def _chain_source(monkeypatch, tmp_path):
     frame = synthetic_frame()
-    build = lambda context, config: sources.SourceFrame(frame.copy(), ["k"], "w", "k", {"data": "chain"}, lambda column: [])
+    build = lambda context, config: frame.copy()
     monkeypatch.setitem(sources._SOURCES, "test.chain", sources.Source("test.chain", build, {"keys": ["k"], "weight": "w", "group": "k"},
                                                                      lambda context, config: {"data": "chain"}, lambda column: [], __file__))
     from eodgdl.impute.features import build_frame
@@ -132,6 +132,17 @@ def test_draws_converge_to_enumerate_on_a_three_task_chain(chain_source):
     assert len(drawn.completions) == 400 * len(exact) and {"t1", "t2", "weight", "completion"} <= set(drawn.completions.columns)
     again = run_chain(chain(steps, propagation="draws", draws=400, seed=3), context=context, bundles=bundles, specs=SPECS)
     pd.testing.assert_frame_equal(again.frame, drawn.frame)                                          # seeded
+
+
+def test_derive_steps_draw_from_streams_of_their_own(chain_source):
+    context, bundles = chain_source
+    uniform = lambda column: lambda completions, base, config: pd.DataFrame({column: np.random.default_rng(config["seed"]).random(len(completions))})
+    spec = chain(["t1", {"derive": "a"}, {"derive": "b"}], propagation="draws", draws=2, seed=3)
+    run = lambda: run_chain(spec, context=context, bundles=bundles, specs=SPECS, derive_functions={"a": uniform("a"), "b": uniform("b")}).completions
+    completions = run()
+    pd.testing.assert_frame_equal(run(), completions)                                                # seeded
+    draws = np.random.default_rng(3).random(len(completions))                                         # the chain's own stream
+    assert not np.allclose(completions["a"], completions["b"]) and not np.allclose(completions["a"], draws)
 
 
 def test_parallel_chain_scores_each_task_alone_and_derives_per_completion(chain_source):

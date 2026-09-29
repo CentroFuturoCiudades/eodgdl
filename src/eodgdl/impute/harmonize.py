@@ -2,9 +2,12 @@
 listed in ``allowed_unmapped``: a new or renamed source category (a new ENOE quarter, an eodgdl revision) must fail
 loudly instead of degrading the data into the fallback level."""
 
+from pathlib import Path
+
 import pandas as pd
 
 from .levels import MISSING_LABEL
+from .spec import read_yaml
 
 
 def assert_mapping_covers(values, mapping, allowed_unmapped=(), name=None):
@@ -27,15 +30,27 @@ def harmonize(values, mapping, allowed_unmapped=(), fallback=MISSING_LABEL, name
 
 
 # Variable definitions in YAML (impute/harmonization/<source>.yaml): every source mapped to the levels of common.yaml
-HARMONIZATION_DIR = __import__("pathlib").Path(__file__).parent / "harmonization"
+HARMONIZATION_DIR = Path(__file__).parent / "harmonization"
 
 
 def load_harmonization(name):
     """``impute/harmonization/<name>.yaml`` parsed (``common`` holds the shared levels and cut points)."""
-    import yaml
+    return read_yaml(HARMONIZATION_DIR / f"{name}.yaml")
 
-    with open(HARMONIZATION_DIR / f"{name}.yaml", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+
+def register_harmonization(name, table):
+    """Register the feature builder ``name``: the variables of ``impute/harmonization/<table>.yaml``
+    (:func:`apply_variables`), which replace the frame's columns of the same name (e.g. the survey's own
+    ``escolaridad``). Its cache key covers both YAMLs and this module's code."""
+    from .features import register_builder
+
+    def build(frame, context, config, spec):
+        return apply_variables(frame, load_harmonization(table)["variables"])
+
+    def versions(context, config):
+        return {"harmonization": load_harmonization(table), "common": load_harmonization("common")}
+
+    register_builder(name, versions=versions, replaces=True)(build)
 
 
 def _codes(values):
