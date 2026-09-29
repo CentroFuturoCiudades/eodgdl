@@ -347,7 +347,7 @@ def test_diagnostics_of_a_task_chain(diagnostics_on_synthetic_tasks, tmp_path):
     from eodgdl.impute.features import build_frame
 
     evaluation = {"task": "t2", "benchmark": {"by": "x2"}, "by_upstream": True, "without_auxiliary": True, "gap_decomposition": ["x1", "c"],
-                  "raking": ["x1", "c"], "multiple_imputation": {"draws": 6, "shares": {"t2": ["x1"], "t1": []}}}
+                  "raking": ["x1", "c"], "multiple_imputation": {"draws": 6, "shares": {"t2": ["x1", "t1"], "t1": []}}}
     spec = chain(["t1", {"t2": {"uses": {"t1": {"as": "u1", "transform": U1}}}}], propagation="enumerate", evaluation=evaluation)
     tables, summary = diagnostics.evaluate_chain(spec, retrained=None, context=context)
     assert {"headline", "by_upstream", "benchmark", "gap_decomposition", "gap_diagnostics", "raking", "raking_diagnostics", "multiple_imputation"} <= set(tables)
@@ -367,7 +367,9 @@ def test_diagnostics_of_a_task_chain(diagnostics_on_synthetic_tasks, tmp_path):
     assert len(tables["headline"]) == 2                          # the shipped run and the one without auxiliary models
     mi = tables["multiple_imputation"]
     assert set(mi["models"]) == {"single fit"} and set(mi["column"]) == {"t1", "t2"}         # no bootstrap bundles under retrained
-    assert set(mi.loc[mi["column"] == "t2", "by"]) == {"all", "x1"} and set(mi["level"]) == {"a", "b", "c", "p", "q"}
+    # by a scoring-source column (x1) and by a completed value that is also a source column (t1, drawn in each dataset)
+    assert set(mi.loc[mi["column"] == "t2", "by"]) == {"all", "x1", "t1"} and set(mi["level"]) == {"a", "b", "c", "p", "q"}
+    assert set(mi.loc[mi["by"] == "t1", "group"]) == {"a", "b", "c"}
     overall = mi[(mi["column"] == "t2") & (mi["by"] == "all") & (mi["level"] == "p")].iloc[0]
     assert abs(overall["estimate"] - expected) < 4 * overall["se_total"] and overall["imputations"] == 6
     assert ((mi["ci_low"] <= mi["estimate"]) & (mi["estimate"] <= mi["ci_high"])).all()

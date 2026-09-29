@@ -209,12 +209,14 @@ def multiple_imputation(chain, config, retrained, context, bundles=None):
         variants["bootstrap models"] = parse_chain({**raw, "propagation": "draws", "draws": draws, "uncertainty": "bootstrap"})
     first = load_task(chain.tasks[0])
     source = build_frame(first, context, role="score")
-    keys, weight, cluster = list(source.keys), source.weight, source.group
-    by_frame = [by for bys in config["shares"].values() for by in bys if by in source.frame.columns and by not in keys]
+    keys, weight, cluster = list(source.keys), "__weight", "__cluster"
+    frame = source.frame[keys].assign(__weight=source.frame[source.weight].to_numpy(), __cluster=source.frame[source.group].to_numpy())
     rows = []
     for name, variant in variants.items():
         completions = run_chain(variant, context=context, bundles=bundles, retrained=retrained).completions
-        completions = completions.merge(source.frame[keys + sorted({weight, cluster, *by_frame} - set(keys))], on=keys, how="left", validate="many_to_one")
+        # a "by" column is a completed value where the draws hold one (the drawn giro), else the scoring source's
+        from_source = sorted({by for bys in config["shares"].values() for by in bys} - set(completions.columns) - set(keys))
+        completions = completions.merge(frame.join(source.frame[from_source]), on=keys, how="left", validate="many_to_one")
         for column, bys in config["shares"].items():
             values = completions[column].astype("string")
             for level in _levels(chain, column):

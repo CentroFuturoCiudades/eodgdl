@@ -409,12 +409,33 @@ worst = mc.loc[mc["monte_carlo_se"].idxmax()]
 display(Markdown(
     f"Across the {CHAIN.draws} draws each level's weighted share varies with a standard deviation of up to "
     f"{100 * mc['sd_between_draws'].max():.2f} pp. The draw-to-draw spread is the imputation's predictive uncertainty, "
-    "which a hard level would hide. It leaves out the models' own estimation uncertainty: each task has one fitted "
-    "model, so draws from it are narrower than proper multiple imputations. The Monte Carlo error of the mean share is "
+    "which a hard level would hide. The chain's draws come from each task's one fitted model, so they leave out the "
+    "models' own estimation uncertainty; the table after this one adds it. The Monte Carlo error of the mean share is "
     f"at most {100 * worst['monte_carlo_se']:.3f} pp "
     f"({LEVEL_LABEL[worst['level']]}, `{worst['column']}`)."
 ))
 display(mc.assign(**{c: (mc[c] * 100).round(3) for c in ("mean_over_draws", "sd_between_draws", "monte_carlo_se")}))
+```
+
+```{python}
+#| label: multiple-imputation
+mi = C("multiple_imputation")
+models = list(dict.fromkeys(mi["models"]))
+table = mi[mi["by"] == "all"].pivot_table(index=["column", "level"], columns="models", values=["estimate", "se_total", "fmi"])
+table = table.reindex([(column, level) for column in ("nse", "nse_calibrado") for level in LEVELS])
+text = (f"Rubin's rules over {int(mi['imputations'].iloc[0])} completed datasets give each level's share an interval: the "
+        "survey's sampling (dwellings as clusters, no strata) plus the imputation's spread.")
+if {"single fit", "bootstrap models"} <= set(models):
+    before = table.loc["nse"]
+    ratio = (before[("se_total", "bootstrap models")] / before[("se_total", "single fit")])
+    after = table.loc["nse_calibrado", ("fmi", "bootstrap models")]
+    text += (f" With a bootstrap refit of the three models per draw (proper multiple imputation) the standard errors before "
+             f"the calibration are {ratio.min():.2f}–{ratio.max():.2f} times the single fit's, and the imputation's share of the "
+             f"variance is {before[('fmi', 'bootstrap models')].min():.2f}–{before[('fmi', 'bootstrap models')].max():.2f}; after "
+             f"the calibration it is {after.min():.2f}–{after.max():.2f}: the calibration pins each AGEB's mix to AMAI's, and the "
+             "sampling of the dwellings is nearly all that is left.")
+display(Markdown(text))
+display((table * pd.Series({"estimate": 100, "se_total": 100, "fmi": 1}).reindex(table.columns.get_level_values(0)).to_numpy()).round(3))
 ```
 
 # Calibration against AMAI's NSE by AGEB {#sec-calibration}
