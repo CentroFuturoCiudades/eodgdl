@@ -1,11 +1,118 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
+## 0. Status at the end of session 2 (2026-09-28): phases 0–6 done, phase 7 (release) next
+
+Read this section first; §1–§11 below are the original plan (session 1), kept as the record of the design. Then read
+`CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every module as built) and
+`src/eodgdl/impute/__init__.py`.
+
+### Where things are
+
+| phase | commit | branch |
+|---|---|---|
+| 0 mxcensus v0.4.0 | 80e4936 | merged into `main` at 00bf5f5 (pushed) |
+| 1 engine core, batched marginalization | 98cf6aa | merged |
+| 2 specs, sources, feature cache, bundles v2 | e766c54 | merged |
+| 3 score / retrain / compare, CLI, `reports/imputation_giro.qmd`, notebook deleted, §6.1 fixed | 310d953 | merged |
+| 4 chains (parallel / sequential; enumerate / draws / expected; derive steps) | 845a97d | `impute-chains` (pushed) |
+| 5 ENOE source, YAML harmonization, `informality`, chain `sector_informality` | 82d86f5 | `impute-chains` |
+| 5b diagnostics (`eodgdl impute evaluate`), `reports/imputation_informality.qmd` | bf112ce | `impute-chains` |
+| 6 NSE: `eod.dwellings`, `enigh.households`, four tasks, chain `nse`, AMAI data file, `reports/imputation_nse.qmd` | 7cfef45 | `impute-chains` |
+
+`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–6; nothing on `main` since. `uv run pytest`: 151
+passed, ~105 s.
+
+Parity reached (details in the commit messages):
+- giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
+  artifact of the old recursion, 3e-16); `retrain giro` reproduces its selections, CV losses and held-out metrics
+  exactly.
+- informality: the ENOE frame equals informal-jobs-model's `enoe_harmonized.parquet` (51,707 rows); the retrain
+  its bundle's selections and all held-out metrics bit for bit; P(informal | x, sector) its EOD scores exactly
+  where the harmonized features agree; its notebook-05 diagnostics exactly or within 0.001 (stale EOD inputs).
+- NSE: not a parity target (deliberate changes, `reports/imputation_nse.qmd` #sec-differences); the calibrated
+  distribution matches AMAI's by AGEB within 0.4 pp except E, as informal-jobs-model found.
+
+### Decisions (user, 2026-09-28): every §10 question is answered
+
+- §10.1 sector → informality: `enumerate`; NSE: `draws`, 50 (50, 200 and enumerate agree within 0.05 pp; the plug-in
+  compresses the tails). AMAI order: workers → bathrooms → bedrooms; workers are now *counted from the EOD* (not
+  imputed), bathrooms condition on the head's education, bedrooms on both (bathrooms' AMAI points).
+- §10.2 ENIGH population: households in cities of 100k+ (`selection.population: {tam_loc: ["1"]}`; evidence in each
+  retrain's `evaluation/populations.parquet`).
+- §10.3 isotonic: diagnostic always, shipped only with `evaluation.isotonic.ship: true` (off everywhere).
+- §10.4 one-SE only; ROPE later if wanted (the rule is a spec field, `selection.rule`).
+- §10.5 informal-jobs-model's fate: decide **after phase 7**.
+- §10.6 mxcensus: public loaders suffice (keys are ordinary columns); no mxcensus change.
+- §10.7 phases 0–3 merged to `main`; phases 4–7 on `impute-chains`.
+- Also: ENIGH vehicles = cars + vans + pickups; `data/NSE_por_AGEB_AMAI.xlsx` (21 MB, AMAI's NSE by AGEB) may be
+  redistributed through the data mirror (it is in `_catalog.py` and `registry.txt`, not yet on a tag).
+
+### Phase 7: the release (ask the user before every commit, push, tag and merge)
+
+The committed `data/od_giro_hybrid_model.joblib` is still the notebook's legacy bundle (sha 227afc71…, converted in
+memory by `bundle.as_v2`); no other task's bundle is in `data/`, so today `score` of `informality` / the chains needs
+`--retrained output/impute`. The user decided (2026-09-28) that the retrained bundles are installed at this release.
+
+1. **Retrain every task on the final code** (the bundles under `output/impute/` were written during phases 3–6, the
+   giro one before later changes to `run.retrain`; regenerate all for consistency):
+   `for t in giro informality educacion_jefe amai_banos amai_dormitorios amai_trabajadores; do uv run eodgdl impute
+   retrain $t --data data; done` (~25 min in all; giro ~7, informality ~3, each ENIGH task ~4–8). Check each
+   selection against the previous run (the commit messages and `output/impute/<task>/summary.json`).
+2. **Install the bundles**: copy each `output/impute/<task>/<spec bundle file>` to `data/` (`od_giro_hybrid_model.joblib`,
+   `od_informality_model.joblib`, `od_educacion_jefe_model.joblib`, `od_amai_banos_model.joblib`,
+   `od_amai_dormitorios_model.joblib`; ask whether to ship the diagnostic `od_amai_trabajadores_model.joblib`, which
+   only `evaluate nse` reads); add the new names to `src/eodgdl/data/_catalog.py` (`MODEL_FILES`) and their sha256 to
+   `registry.txt`. Sizes: 36 KB – 6.3 MB each.
+3. **The giro parity fixture**: installing the v2 giro bundle moves 31 workers (its auxiliary destination models now
+   carry training shares, phase 1). Regenerate `tests/data/giro_parity.parquet`'s `expected__*` columns from the new
+   bundle and drop the one-row layout special case in `tests/test_giro.py::test_scoring_reproduces_the_reference`
+   (the test then pins the installed bundle exactly). `giro.load_model()` returns the old keys for a v2 file
+   (`legacy_view`); `test_bundle_checks_and_v2_round_trip` covers it.
+4. **Chains and reports from the installed bundles**: `eodgdl impute score sector_informality` and `score nse` without
+   `--retrained`; `evaluate` both; re-render the three reports (`QUARTO_PYTHON=.venv/bin/python quarto render
+   reports/imputation_{giro,informality,nse}.qmd`) and look at the figures.
+5. **Docs**: README (the impute sections exist; add a short overview of `eodgdl.impute`, the three chains and the
+   outputs' columns), `src/eodgdl/giro/__init__.py` docstring, this handoff (mark phase 7 done), local `CLAUDE.md`
+   (release notes). The giro config's old rationale ("nothing refers to ENOE, which is why it lives in the survey
+   package") is gone with `giro/config.yaml`; check nothing else repeats it.
+6. **Release** (CLAUDE.md "Data access"): one commit that bumps `pyproject.toml` to `0.3.0`, sets
+   `src/eodgdl/data/_registry.py` `REF = "v0.3.0"`, `uv lock`; tag `v0.3.0` (lightweight, as `v0.1.0` / `v0.2.0`) on
+   it; push branch and tag; merge `impute-chains` into `main` (`--no-ff`, as 00bf5f5) and push. Then check the mirror
+   with no `EODGDL_DATA_DIR`: `uv run python -c "from eodgdl import giro; print(sorted(giro.load_model()))"` and a
+   `score` of each chain fetch their bundles from the tag (`resolve` / Pooch, checksums from `registry.txt`).
+7. **After the release**: ask the user about informal-jobs-model (§10.5: archive, or reduce to paper figures reading
+   eodgdl's outputs).
+
+### Not done (deliberately deferred; mention to the user if relevant)
+
+- Auxiliary level models are fitted with fixed hyperparameters (§5.7 wanted them tunable).
+- ROPE / baycomp selection, SHAP: not implemented (§10.4).
+- `compare` holds hyperparameters at the published winner and does not vary a training population.
+- The head-of-household education model uses `centralidad` for place: the AGEB's ~1,700 levels exceed
+  HistGradientBoosting's 255-category limit; census AGEB covariates (e.g. mean schooling, via mxcensus) are an
+  untried alternative (`compare` can test them once a builder exists).
+- Where a dwelling holds several reported heads, `eod.dwellings` takes the first in the survey's order
+  (informal-jobs-model took the first non-null value per column).
+
+### Practical notes (additions to §11)
+
+- Retrain outputs: `output/impute/<task>/` (bundle, `scores.parquet`, `scenarios.parquet`, `evaluation/*.parquet`,
+  `summary.json`); chain runs: `output/impute/<chain>/` (`scores.parquet`, `completions.parquet`, `provenance.json`,
+  `evaluation/`). All gitignored.
+- The feature cache lives under the eodgdl cache dir (`<EODGDL_CACHE_DIR>/impute/`); keys cover code, config and data
+  versions; `--refresh` rebuilds.
+- ENOE and ENIGH come from mxcensus's cache (`~/Library/Caches/mxcensus`); building the ENOE frame takes ~10 s, the
+  ENIGH one ~6 s.
+- Run long retrains with `run_in_background`; several retrains at once oversubscribe the cores (each tuner already
+  uses every core).
+
+
 Written 2026-09-28 on branch `giro-model`, for a new session. Read this file whole, then `CLAUDE.md`, then
 `src/eodgdl/giro/` (≈1,000 lines) before changing anything. Every claim about `../informal-jobs-model` comes from
 a read-only analysis made that day; re-check the ones you rely on (file:line references below are into that
 repository unless stated).
 
-## 1. Goal
+## 1. Goal (original plan, session 1)
 
 Build a **categorical imputation engine inside eodgdl** and bring into this repository **every** imputation model
 that today lives in `notebooks/giro_model.ipynb` and in `../informal-jobs-model` (ijm): giro, informality, place of
