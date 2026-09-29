@@ -10,6 +10,8 @@ eod.workers:
     - Medio tiempo
     - Tenía trabajo, pero no trabajó
   dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]   # of `viv`, those not in `hab`
+  # The source adds `mes_entrevista`, the interview's month: the capture changed through the fieldwork (from April a
+  # work trip's destination is an office half as often, reports/loading.qmd #sec-april) and so did the answers.
 
 eod.work_trip:
   # Most frequent destination type, destination code / zone and main mode of each person's work trips.

@@ -56,12 +56,13 @@ def _as_strings(frame):
 @register_source("eod.workers", config=load_config()["eod.workers"], versions=_survey_versions, schema_levels=schema_levels)
 def workers(context, config):
     """Persons who worked last week (``trabajo_semana_pasada`` in the employed categories), with the dwelling's
-    columns attached; categoricals as plain strings."""
+    columns attached and ``mes_entrevista``, the month of the interview ("1" to "4"); categoricals as plain strings."""
     tables = context.eod()
     frame = tables.hab.reset_index()
     dwelling_columns = [column for column in config["dwelling_columns"] if column not in frame.columns]
     frame = frame.merge(tables.viv[dwelling_columns], left_on="folio_vivienda", right_index=True, how="left", validate="many_to_one")
     frame = frame[frame["trabajo_semana_pasada"].isin(config["employed_categories"])].copy()
+    frame["mes_entrevista"] = frame["fecha"].dt.month.astype("string")        # the dates are UTC midnights: no shift
 
     return _as_strings(frame).reset_index(drop=True)
 

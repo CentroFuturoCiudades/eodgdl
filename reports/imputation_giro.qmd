@@ -163,8 +163,45 @@ display(Markdown(
     "have. Education counts as unobserved when it is missing or answered " + ", ".join(f"'{v}'" for v in SPEC.missing_values["escolaridad"]) + ".\n\n" + "\n".join(lines)
     + "\n\nBesides person and dwelling attributes, the arms use the work trip: destination type, mode, weekend work "
     "travel and household vehicles. They also use the destination's ámbito and its DENUE establishment mix, taken from "
-    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder)."
+    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder), and the month of "
+    "the interview (@sec-month)."
 ))
+```
+
+## The interview month {#sec-month}
+
+```{python}
+#| label: month
+from eodgdl.impute.features import build_frame as _build_frame
+from eodgdl.impute.sources import Context as _Context
+
+by_month = _build_frame(SPEC, _Context()).frame
+with_trip = by_month[by_month["destino_trabajo"].notna()]
+month = pd.DataFrame({
+    "workers": by_month.groupby("mes_entrevista").size(),
+    "giro not reported (%)": by_month.groupby("mes_entrevista")["giro_desconocido"].mean() * 100,
+    "work trip to an office (%)": with_trip.groupby("mes_entrevista")["destino_trabajo"].apply(lambda d: (d == "Oficina").mean() * 100),
+}).rename(index={"1": "January", "2": "February", "3": "March", "4": "April"})
+assert list(month.index) == ["January", "February", "March", "April"]
+assert month["giro not reported (%)"].iloc[0] < 10 < 30 < month["giro not reported (%)"].iloc[2:].min()
+assert month.loc["April", "work trip to an office (%)"] < 0.6 * month.loc[["January", "February", "March"], "work trip to an office (%)"].min()
+# the same comparison within the zones surveyed both before April and in it (30+ workers with a work trip on each side),
+# weighted by the workers before April: the drop is not the fieldwork's move to other zones
+zones = with_trip.assign(april=with_trip["mes_entrevista"].eq("4"), office=with_trip["destino_trabajo"].eq("Oficina")).groupby(["centralidad", "april"])["office"].agg(["mean", "size"]).unstack("april")
+zones = zones[(zones[("size", False)] >= 30) & (zones[("size", True)] >= 30)]
+within = {period: float(np.average(zones[("mean", period)], weights=zones[("size", False)])) for period in (False, True)}
+assert len(zones) >= 10 and within[True] < 0.6 * within[False]
+display(Markdown(
+    "The fieldwork ran from January to April 2023, and the answers changed with it. The giro goes unreported by "
+    f"{month['giro not reported (%)'].iloc[0]:.0f}% of January's workers and {month['giro not reported (%)'].iloc[2]:.0f}–"
+    f"{month['giro not reported (%)'].iloc[3]:.0f}% of March's and April's, so the imputed workers are mostly those of the last "
+    "months, and from April a work trip's destination is an office half as often, in the zones surveyed before April as "
+    f"well ({len(zones)} zones: {100 * within[False]:.1f}% before April, {100 * within[True]:.1f}% in it; the capture of the "
+    "place types changed, `reports/loading.qmd` #sec-april). The month is a feature of both arms "
+    "(since 2026-09-29: paired over three seeds of the CV, it lowered the log loss by 0.0013 with education and 0.0020 "
+    "without), so each month's workers are imputed with the relationship its own reported workers show."
+))
+month.round(1)
 ```
 
 ```{python}
@@ -287,6 +324,8 @@ rare = cm["recall"].idxmin()
 dist = T("test_distribution", ARMS[0]).set_index("class")
 hard_gap = (dist["hard_predicted_share"] - dist["observed_share"]).abs().max() * 100
 prob_gap = (dist["probabilistic_predicted_share"] - dist["observed_share"]).abs().max() * 100
+assert prob_gap < hard_gap and cm["recall"].min() < 0.5 * cm["recall"].median()   # one class far behind the others
+assert a["relative_improvement_over_marginal"] > 0 and b["relative_improvement_over_marginal"] > 0   # "below the baseline"
 display(Markdown(
     f"With education, the weighted log loss is {a['weighted_log_loss']:.4f}, {pct(a['relative_improvement_over_marginal'])} below "
     f"the marginal baseline ({a['marginal_log_loss']:.4f}), at a weighted accuracy of {pct(a['weighted_accuracy'])}. Without "
@@ -353,6 +392,8 @@ for arm in ARMS:
         rows.append({"arm": ARM_LABEL[arm], "probabilities": r["probabilities"], "log loss": round(r["weighted_log_loss"], 4),
                      "mean ECE": round(r["mean_ece"], 4), "share-weighted ECE": round(r["share_weighted_ece"], 4)})
 iso = pd.DataFrame(rows)
+trades = iso.pivot(index="arm", columns="probabilities")
+assert (trades[("log loss", "isotonic")] >= trades[("log loss", "selected")]).all() and (trades[("mean ECE", "isotonic")] < trades[("mean ECE", "selected")]).all()
 display(Markdown(
     "One isotonic map per class is learned from out-of-fold probabilities on the training households and applied to the "
     "held-out ones. It is always evaluated and shipped only when the task says so "

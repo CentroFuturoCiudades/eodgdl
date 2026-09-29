@@ -62,7 +62,8 @@ BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
 @pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
 def test_scoring_reproduces_the_reference():
     # 384 workers of outputs/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
-    # installed v2 bundle's scores (v0.3.0, the engine's score_frame): giro's legacy entry points give the same outputs.
+    # installed v2 bundle's scores (the engine's score_frame; regenerated 2026-09-29 for the bundle that reads the
+    # interview month, which the fixture gained): giro's legacy entry points give the same outputs.
     fixture = pd.read_parquet(FIXTURE)
     expected = fixture.filter(like="expected__").rename(columns=lambda column: column.removeprefix("expected__"))
     bundle = giro.load_model(BUNDLE)

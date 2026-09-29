@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Rerun every eodgdl.impute output into ROOT, the layout of output/impute/, for scripts/impute/parity.py: retrain the
-# tasks (each to ROOT/<task>/), score giro from its installed bundle (ROOT/giro_scores.parquet, as `eodgdl impute
-# score giro` writes output/impute/giro_scores.parquet), then score and evaluate both chains with --retrained ROOT.
+# tasks (each to ROOT/<task>/), score giro (ROOT/giro_scores.parquet, as `eodgdl impute score giro` writes
+# output/impute/giro_scores.parquet) and both chains, and evaluate the chains, all with --retrained ROOT (a task without
+# a retrain in ROOT scores from its installed bundle, which a change to its spec leaves unusable until reinstalled).
 #
 #   scripts/impute/rerun.sh ROOT [TASK ...]      (from the repository root; ~25 minutes for the six tasks)
 #
@@ -33,8 +34,8 @@ for task in "${tasks[@]}"; do
     fi
 done
 
-echo "== score giro (installed bundle)"
-uv run eodgdl impute score giro --data "$data" --out "$root/giro_scores.parquet"
+echo "== score giro"
+uv run eodgdl impute score giro --data "$data" --retrained "$root" --out "$root/giro_scores.parquet"
 for chain in sector_informality nse; do
     echo "== score $chain"
     uv run eodgdl impute score "$chain" --data "$data" --retrained "$root" --out "$root/$chain"

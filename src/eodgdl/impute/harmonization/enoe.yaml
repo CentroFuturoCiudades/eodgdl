@@ -60,8 +60,12 @@ variables:
     bins: household_size
   sector:
     column: scian           # INEGI's precoded SCIAN sector (1-21)
+    # Agriculture goes with manufacturing (the primary and secondary sectors): the EOD's giro has no agricultural answer,
+    # and its "Gobierno/sector público" meets ENOE's government alone. Until 2026-09-29 agriculture shared the government
+    # sector, 23% of it in the metro area (informal 64% against government's 6%), which set the EOD's government workers'
+    # expected informality at 13% (10% since); the overall rate did not move.
     map:
-      1: gobierno_otro_agricultura   # Agricultura, ganadería, aprovechamiento forestal, pesca y caza
+      1: manufactura_construccion    # Agricultura, ganadería, aprovechamiento forestal, pesca y caza
       2: manufactura_construccion    # Minería
       3: manufactura_construccion    # Electricidad, agua y suministro de gas
       4: manufactura_construccion    # Construcción
@@ -80,7 +84,7 @@ variables:
       17: servicios_transporte       # Servicios de esparcimiento culturales y deportivos
       18: servicios_transporte       # Servicios de alojamiento temporal y de preparación de alimentos
       19: servicios_transporte       # Otros servicios excepto actividades gubernamentales
-      20: gobierno_otro_agricultura  # Actividades gubernamentales y de organismos internacionales
+      20: gobierno                   # Actividades gubernamentales y de organismos internacionales
       21: no_especificado            # No especificado
   lugar_trabajo:
     # Place of work from COE1 section IV, on the levels the EOD's work-trip destination type shares: establecimiento

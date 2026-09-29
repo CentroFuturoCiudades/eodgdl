@@ -120,10 +120,10 @@ TICKS = {
     "estado_civil": {"union_libre": "unión\nlibre"},
     "parentesco": {"jefe_del_hogar": "jefe\nhogar", "conyuge": "cónyuge", "otro_parentesco": "otro", "sin_parentesco": "sin\nparentesco"},
     "tamano_viv_cat": {"7_y_mas": "7+"},
-    "sector": {"gobierno_otro_agricultura": "gob., agr.\nu otro", "manufactura_construccion": "manuf. y\nconstr.", "servicios_transporte": "serv. y\ntransp."},
+    "sector": {"gobierno": "gobierno", "manufactura_construccion": "agro., manuf.\ny constr.", "servicios_transporte": "serv. y\ntransp."},
 }
-SECTOR = {"comercio": "Comercio", "gobierno_otro_agricultura": "Gobierno,\nagricultura u otro",
-          "manufactura_construccion": "Manufactura y\nconstrucción", "servicios_transporte": "Servicios y\ntransporte"}
+SECTOR = {"comercio": "Comercio", "gobierno": "Gobierno",
+          "manufactura_construccion": "Agropecuario, manufactura\ny construcción", "servicios_transporte": "Servicios y\ntransporte"}
 SECTORS = list(SECTOR)
 
 INFORMALITY = load_task("informality")
@@ -406,6 +406,7 @@ each held-out row predicted by the arm that would score it (*Híbrido*, `reliabi
 #| label: fig-comparison-presentation
 #| fig-cap: "The presentation version: *OD duro* (the most probable class at the most probable sector) instead of the draw, and the calibration curves with their R² and the arms combined (`informality_model_enoe_od_comparison_presentation`)."
 hybrid_rows = T("test_metrics__hybrid").iloc[0]
+assert hybrid_rows["rows_without_education"] < 0.05 * (hybrid_rows["rows_with_education"] + hybrid_rows["rows_without_education"])
 with_r2 = lambda label: (lambda curve, arm: f"{label}: R² = {r2(curve):.3f}")
 comparison_figure("informal_duro", [("reliability", "hybrid", with_r2("Híbrido"), {"color": "#c3c2b7", "lw": 5, "solid_capstyle": "round"})]
                   + [("reliability", arm, with_r2(ARM_ES[arm]), STYLE[arm]) for arm in ARM_ES], "informality_model_enoe_od_comparison_presentation")

@@ -61,8 +61,8 @@ SUMMARY = json.loads((TASK_OUT / "summary.json").read_text(encoding="utf-8"))
 CHAIN_SUMMARY = json.loads((CHAIN_OUT / "evaluation" / "summary.json").read_text(encoding="utf-8"))
 ARMS = [arm.name for arm in SPEC.arms]
 ARM_LABEL = {"with_education": "With education", "without_education": "Without education"}
-SECTOR_LABEL = {"comercio": "Commerce", "gobierno_otro_agricultura": "Government, agriculture, other",
-                "manufactura_construccion": "Manufacturing and construction", "servicios_transporte": "Services and transport"}
+SECTOR_LABEL = {"comercio": "Commerce", "gobierno": "Government",
+                "manufactura_construccion": "Agriculture, manufacturing and construction", "servicios_transporte": "Services and transport"}
 
 
 def T(name, arm=None):
@@ -110,7 +110,11 @@ common levels (`src/eodgdl/impute/harmonization/`). The model's sector input is 
 
 $$P(I \mid x) = \sum_s P(s \mid x)\, P(I \mid x, s)$$
 
-over the four harmonized sectors, with the giro model's probabilities summed into sectors.
+over the four harmonized sectors, with the giro model's probabilities summed into sectors: commerce; services and
+transport (education among them); agriculture, manufacturing and construction (mining and utilities too); and
+government. The EOD's giro has no agricultural answer, so ENOE's agriculture is grouped with manufacturing and the
+EOD's *Gobierno/sector público* meets ENOE's government alone (since 2026-09-29; before, agriculture shared the
+government sector and set its expected informality 3 pp higher, the overall rate unchanged).
 
 This report reads what the last retrain and chain evaluation wrote. It trains nothing. The definitions are in
 `src/eodgdl/impute/tasks/informality.yaml` and `src/eodgdl/impute/chains/sector_informality.yaml`.
@@ -349,6 +353,7 @@ display(C("components").round(4))
 #| label: gap
 gap = C("gap_decomposition")
 gap_diag = C("gap_diagnostics").set_index("metric")["value"]
+assert EXPECTED < bench.loc["all", "observed_rate"]                  # the section's title: the EOD estimate is below ENOE's
 display(Markdown(
     "Direct standardization splits the gap between ENOE's metro benchmark and the EOD estimate into three parts: the "
     "model's own bias on ENOE; the composition effect (the same model on ENOE workers reweighted to the EOD profile, with "

@@ -206,6 +206,67 @@ models predicting identically and their scores and `sector_informality` unchange
 `output/impute/` holds the new run; the one before is `output/impute_7f783b3/` (with `output/figures_7f783b3/` and the
 four reports' HTML in `output/reports_7f783b3/`). The four impute reports were re-rendered.
 
+**Focus 3: the labels and features the EOD tasks learn from.**
+
+- *The income refusers' education* (decided: keep, option A). Training the education task without the refusers'
+  answers (34% of the known heads' weight) lowers the held-out loss on the reporters (1.4744 → 1.4645, half weight
+  1.4659) and the imputed licenciatura (19.9% → 14.1%); the NSE moves by at most 0.26 pp before calibration and 0.03 pp
+  after. Imputing the refusers' own education too takes the survey's licenciatura from 27.8% to 18.0% and its posgrado
+  from 4.1% to 6.6%; the calibrated NSE by at most 0.5 pp. ENIGH 2022's heads in the nine municipalities (1,342
+  households) hold a licenciatura in 22.1% (19.9–24.4%), between the EOD's reporters (15.4%) and refusers (56.7%), a
+  posgrado in 2.5% (the reporters 5.6%, the refusers 2.1%) and a primaria in 24.1% (the EOD's known heads 13.4%): the EOD
+  departs from ENIGH at both ends, so refusing likely goes with more schooling as well as with inflated answers, and the
+  benchmark supports neither correction. `reports/imputation_nse.qmd` #sec-education-benchmark computes it at render
+  time.
+- *The harmonization maps against the questionnaires* (checked; a cleanup). Every ENOE code the maps read (sex,
+  position, schooling, marital status, relationship `par_c` by hundreds, SCIAN sector, the place-of-work questions
+  p4–p4h, `emp_ppal`, `tue2`) and every ENIGH code (`educa_jefe`, `sexo_jefe`, `tam_loc`, `conex_inte`, `tenencia`,
+  `trabajo_mp`) matches mxcensus's labels, and every AMAI point and cut matches AMAI's 2022 rule (its questionnaire:
+  education 0/6/11/12/18/23/27/36/59/85, bathrooms 0/24/47, cars 0/22/43, internet 32, workers 0/15/31/46/61, bedrooms
+  0/8/16/24/32; levels at 48/95/116/141/168/202). mxcensus's labels of `par_c` 406–411 look shifted (1,052
+  "great-great-grandparents"): its catalog's problem, not the map's (the map reads the hundreds).
+- *Level, not completion* (decided: document). The EOD records the level of schooling; AMAI's points assume it
+  completed. With ENIGH's incomplete shares among Jalisco's city heads (primaria 34.5%, secundaria 11.9%, preparatoria
+  20.3%, licenciatura 18.3%) the uncalibrated NSE moves by up to 1.8 pp (C +1.76, C+ −1.69, A/B −0.92), the calibrated by
+  0.28 pp. `reports/imputation_nse.qmd` #sec-completion computes the bound on the metro heads at render time.
+- *The sector map mixed agriculture into government* (a defect in the by-sector outputs; decided: fixed). In the metro
+  area ENOE's `gobierno_otro_agricultura` was 77% government (5.7% informal) and 23% agriculture (63.5%); the EOD's
+  *Gobierno/sector público* workers took 13.1% expected informality. With agriculture (SCIAN 1) grouped with
+  manufacturing and the level renamed `gobierno`: 9.8%, the overall rate 35.92% → 35.93%, ENOE's held-out +0.002.
+- *The April capture change reaches giro's features* (decided: the interview month as a feature). From April a work
+  trip's destination is an office half as often at every trip position (15.8% in March, 6.3% in April; within the 14
+  zones surveyed on both sides 16.2% → 8.4%), and the giro goes unreported by 6.4% of January's workers, 28.8%
+  of February's, 42.6% of March's and 40.8% of April's (fieldwork moved from Guadalajara in January to Zapopan in March
+  and the outer municipalities in April). `mes_entrevista` (the `eod.workers` source) in both arms: `run.compare`, paired
+  over seeds 42, 7 and 11, −0.0013 (with education) and −0.0020 (without), every seed. `reports/imputation_giro.qmd`
+  #sec-month.
+
+Both spec changes (giro's features, informality's sector levels) left the installed bundles unusable (`check_bundle`
+refused them). Retrained (`scripts/impute/rerun.sh`, giro and informality into a copy of the outputs): giro keeps
+GradientBoosting in both arms, CV 0.9113 → 0.9101 and 0.9276 → 0.9251, held-out 0.8934 → 0.8963 and 0.9161 → 0.9146
+(paired on the same held-out rows, the combined arms +0.0026, 95% household bootstrap −0.0020 to +0.0078: noise, the CV
+the larger sample), imputed shares within 0.14 pp; informality keeps its selections, held-out 0.4161 → 0.4179 and 0.4368
+→ 0.4385, the government sector's expected informality 13.1% → 9.8%, the overall rate unchanged; parity: nothing else
+moved (the nse chain, educacion_jefe and the ENIGH tasks identical). **Installed locally** (user, 2026-09-29): the
+retrained giro, informality and educacion_jefe bundles in `data/` with their `registry.txt` sha256 (giro 0bd57e15…,
+informality 5ba4ea56…, educacion_jefe b39d55ab…), and `tests/data/giro_parity.parquet` regenerated (its 384 workers
+gained `mes_entrevista`; expected probabilities up to 0.11 from v0.4.0's bundle); scoring giro and both chains from
+`data/` equals the retrains exactly. The mirror still serves v0.4.0 until a release (version, `REF`, tag and push are
+the user's); the three ENIGH bundles in `data/` are v0.3.0's (the same predictions, their metadata's held-out metrics
+older than be127dc). `output/impute/` holds this run; `output/impute_41cd5a7/` the one after focus 2 alone.
+
+**Focus 5: bootstrap bundles, measured** (scratch scripts; not in the engine). 20 refits per task of each arm's
+selected configuration and its auxiliary models on a cluster bootstrap of the training rows (the source's group,
+weights kept): giro 100 s, informality 36 s, the ENIGH tasks and the education seconds. Completed datasets draw each
+model before drawing its predictions (giro and informality: 20; NSE: 20 × 3 draws); within variance by dwelling-cluster
+linearization (no strata), Rubin's rules. Point estimates move by at most 0.4 pp. Total standard errors, single fit
+(today's draws) → bootstrap models: giro's shares 0.45 → 0.47–0.53 pp (fraction of missing information 0.20–0.37);
+the informality rate 0.51 → 0.77 pp (×1.5, FMI 0.73: the ENOE model's uncertainty dominates; the chain enumerates and
+publishes no interval at all); informality by sector ×1.24–1.55 (FMI 0.52–0.75); the NSE before calibration ×0.99–1.10
+(FMI ~0.4); after calibration ×1.00 (FMI 0.02–0.05: the calibration pins each AGEB's mix). Design for the engine as
+the brief has it (bootstrap bundles a retrain product under `<root>/<task>/bootstrap/`, a chain option `uncertainty:
+bootstrap` off by default, Rubin's rules in the diagnostics); pending the user's decision.
+
 ### Session 6 (2026-09-28): session 5's pending list
 
 The user asked for the numbers and the options of items 1 and 2 and the fixes of items 3–8; later that night they

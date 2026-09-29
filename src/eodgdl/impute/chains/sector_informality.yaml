@@ -12,7 +12,7 @@ steps:
         giro:
           as: sector
           transform: {comercio: comercio, servicio: servicios_transporte, educacion: servicios_transporte,
-                      industria: manufactura_construccion, gobierno: gobierno_otro_agricultura}
+                      industria: manufactura_construccion, gobierno: gobierno}
 
 # Diagnostics (eodgdl impute evaluate sector_informality; eodgdl.impute.diagnostics), read by
 # reports/imputation_informality.qmd.

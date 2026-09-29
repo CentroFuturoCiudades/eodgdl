@@ -131,6 +131,7 @@ sel = s["arms"]["all"]["selected"]
 params = ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in sel["best_params"].items())
 m = s["arms"]["all"]["test_metrics"]
 u = s["arms"]["all"]["test_uncertainty"]
+assert u["relative_improvement_over_marginal"] > 0                  # "below the weighted-marginal baseline"
 display(Markdown(
     f"The head of each of the {fmt(s['rows'])} dwellings is the reported *Jefe del hogar*, else the oldest member. "
     f"{fmt(s['known'])} heads report an education that maps to AMAI's classes; {fmt(s['unknown'])} do not "
@@ -207,6 +208,103 @@ for kind in ("licenciatura", "posgrado"):
         out[f"{kind}, {answer} (%)"] = (table[(kind, answer)] * 100).round(1)
 out.index.name = "AGEB level"
 out
+```
+
+## Against ENIGH's heads {#sec-education-benchmark}
+
+```{python}
+#| label: education-benchmark
+import mxcensus
+
+from eodgdl.impute.harmonize import load_harmonization
+
+METRO = {f"14{int(code):03d}" for code in load_harmonization("enoe")["variables"]["municipio"]["map"]}   # the nine municipalities
+ENIGH_CLASS = {"01": "no_estudio", "02": "no_estudio", "03": "primaria", "04": "primaria", "05": "secundaria", "06": "secundaria",
+               "07": "preparatoria", "08": "preparatoria", "09": "licenciatura", "10": "licenciatura", "11": "posgrado"}
+EDUCATION = ["no_estudio", "primaria", "secundaria", "carrera_tecnica", "preparatoria", "licenciatura", "posgrado"]
+enigh = mxcensus.load_enigh_hogares(period="2022", labels=False).reset_index()
+enigh = enigh[enigh["ubica_geo"].astype(str).str[:5].isin(METRO)]
+enigh_weight = pd.to_numeric(enigh["factor"]).to_numpy()
+enigh_class = enigh["educa_jefe"].astype(str).map(ENIGH_CLASS).to_numpy()
+assert not pd.isna(enigh_class).any()
+share = lambda weights, classes, level: weights[classes == level].sum() / weights.sum()
+rng = np.random.default_rng(0)
+draws = [rng.integers(0, len(enigh), len(enigh)) for _ in range(500)]            # households resampled
+interval = {level: np.percentile([share(enigh_weight[d], enigh_class[d], level) for d in draws], [2.5, 97.5]) for level in ("primaria", "licenciatura", "posgrado")}
+groups = {"all known heads": heads[~heads["educacion_jefe_desconocido"]], "reported": known[known["answer"].eq("reported")], "refused": known[known["answer"].eq("refused")]}
+eod_shares = pd.DataFrame({group: rows.groupby("educacion_jefe")["ponderador"].sum() / rows["ponderador"].sum() for group, rows in groups.items()})
+comparison = pd.DataFrame({"ENIGH 2022, the nine municipalities": pd.Series({level: share(enigh_weight, enigh_class, level) for level in EDUCATION}),
+                           **{f"EOD, {group}": eod_shares[group] for group in ("all known heads", "reported", "refused")}}).reindex(EDUCATION)
+low, high = interval["licenciatura"]
+assert comparison.loc["licenciatura", "EOD, reported"] < low and comparison.loc["licenciatura", "EOD, refused"] > high   # the benchmark lies between the two
+assert comparison.loc["primaria", "EOD, all known heads"] < interval["primaria"][0]                                    # the EOD departs at the low end too
+display(Markdown(
+    f"ENIGH 2022's heads in the nine municipalities ({fmt(len(enigh))} households, weighted) hold a licenciatura in "
+    f"{pct(comparison.loc['licenciatura', 'ENIGH 2022, the nine municipalities'])} of the households (95% interval, households "
+    f"resampled: {pct(low)} – {pct(high)}): between the EOD's heads that report an income "
+    f"({pct(comparison.loc['licenciatura', 'EOD, reported'])}) and those that refused it ({pct(comparison.loc['licenciatura', 'EOD, refused'])}). "
+    f"The EOD departs from ENIGH at the low end as well (primaria {pct(comparison.loc['primaria', 'EOD, all known heads'])} of its known heads against "
+    f"{pct(comparison.loc['primaria', 'ENIGH 2022, the nine municipalities'])}; ENIGH has no *carrera técnica*: its technical careers sit in "
+    "secundaria and preparatoria), so the refusers' answers are not the survey's only departure, and refusing may go with "
+    "more schooling as well as with an inflated answer. The known heads' answers are used as reported and train the "
+    "education model (decided 2026-09-29: training without the refusers' answers would impute less licenciatura, 14% "
+    "against 20% of the imputed heads, and imputing theirs as well would take the EOD below ENIGH's interval); the AGEB "
+    "calibration (@sec-calibration) sets the levels' mix either way."
+))
+comparison.mul(100).round(1)
+```
+
+## Level of schooling, not completion {#sec-completion}
+
+```{python}
+#| label: completion
+from eodgdl.impute.derive import get_derive
+
+# AMAI's points for an incomplete and a complete level (the AMAI 2022 rule's questionnaire), and ENIGH's codes
+PAIRS = {"primaria": ("03", "04", 6), "secundaria": ("05", "06", 12), "preparatoria": ("07", "08", 23), "licenciatura": ("09", "10", 36)}
+education_scores = dict(load_task("educacion_jefe").scores)
+codes = enigh["educa_jefe"].astype(str).to_numpy()
+incomplete = {level: enigh_weight[codes == low_code].sum() / enigh_weight[np.isin(codes, [low_code, high_code])].sum() for level, (low_code, high_code, _) in PAIRS.items()}
+expected_points = {**education_scores, **{level: incomplete[level] * points + (1 - incomplete[level]) * education_scores[level] for level, (_, _, points) in PAIRS.items()}}
+completions = pd.read_parquet(OUT / "nse" / "completions.parquet")
+dwellings = build_frame(load_task("educacion_jefe"), Context(), role="score").frame
+assert completions["folio_vivienda"].astype(str).equals(pd.Series(np.repeat(dwellings["folio_vivienda"].astype(str).to_numpy(), CHAIN.draws)))
+completions["row"] = np.repeat(np.arange(len(dwellings)), CHAIN.draws)
+
+
+def rederived(points):
+    """The chain's derive steps rerun on its draws with ``points`` for the head's education."""
+    from eodgdl.impute.derive import amai
+
+    frame = completions.copy()
+    original = amai._task_points
+    amai._task_points = lambda values, task: values.astype(str).map(points).astype(float).to_numpy() if task == "educacion_jefe" else original(values, task)
+    try:
+        for index, step in enumerate(CHAIN.steps):
+            if hasattr(step, "name"):
+                values = get_derive(step.name)(frame, dwellings, {**step.config, "propagation": CHAIN.propagation, "seed": np.random.SeedSequence(CHAIN.seed, spawn_key=(index,))})
+                frame[values.columns] = values.to_numpy()
+    finally:
+        amai._task_points = original
+    weights = dwellings["ponderador"].to_numpy()[frame["row"].to_numpy()] * frame["weight"].to_numpy()
+    return {column: pd.Series(weights, index=frame[column].astype(str)).groupby(level=0).sum().reindex(LEVELS) / weights.sum() for column in ("nse", "nse_calibrado")}
+
+
+as_run, lowered = rederived(education_scores), rederived(expected_points)
+chain_shares = distribution[distribution["variant"] == shipped_variant].pivot(index="level", columns="column", values="share").reindex(LEVELS)
+for column in ("nse", "nse_calibrado"):
+    assert np.allclose(as_run[column], chain_shares[column], atol=1e-9)                   # the rerun reproduces the chain
+moved = {column: (lowered[column] - as_run[column]).abs() for column in ("nse", "nse_calibrado")}
+display(Markdown(
+    "The EOD records the head's level of schooling, not whether it was completed, and AMAI's points assume the level "
+    "completed (primaria 11, secundaria 18, preparatoria 27, licenciatura 59). Had the EOD's answers included "
+    "incomplete levels as often as ENIGH's metro heads do (" + ", ".join(f"{level} {pct(incomplete[level])}" for level in PAIRS)
+    + "), each level would be worth " + ", ".join(f"{expected_points[level]:.1f}" for level in PAIRS) + " points on average. "
+    f"Rerunning the chain's points, levels and calibration on its draws with those points moves the uncalibrated shares "
+    f"by up to {100 * moved['nse'].max():.2f} pp ({LEVEL_LABEL[moved['nse'].idxmax()]}) and the calibrated ones by up to "
+    f"{100 * moved['nse_calibrado'].max():.2f} pp: the calibration absorbs the assumption (documented, not corrected; "
+    "decided 2026-09-29)."
+))
 ```
 
 # Bathrooms and bedrooms from ENIGH {#sec-enigh}
@@ -299,6 +397,8 @@ table = distribution[distribution["column"] == "nse"].pivot(index="variant", col
 table.columns = [LEVEL_LABEL[c] for c in table.columns]
 agreement = C("agreement")
 table["same most probable level"] = agreement[agreement["column"] == "nse"].set_index("variant")["same_most_probable_level"].reindex(table.index).round(3)
+# the plug-in (expected points summed and cut) compresses the tails: fewer E and A/B than the chain's draws
+assert (table.loc["expected", ["E", "A/B"]] < table.loc[shipped_variant, ["E", "A/B"]]).all()
 table
 ```
 
