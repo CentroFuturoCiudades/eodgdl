@@ -1,6 +1,6 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
-## 0. Status at the end of session 5 (2026-09-28): v0.4.0 released; informal-jobs-model's figures next
+## 0. Status at the end of session 5 (2026-09-28): v0.4.0 released; informal-jobs-model's figures here, the repository archived
 
 Read this section first, starting with **Pending for session 6**; §1–§11 below are the original plan (session 1), kept
 as the record of the design. Then read `CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every
@@ -8,31 +8,7 @@ module as built) and `src/eodgdl/impute/__init__.py`.
 
 ### Pending for session 6 (start here)
 
-1. **informal-jobs-model's figures into a report here, then archive it (user, 2026-09-28).** The user chose the
-   figures of its notebooks 03 and 05 (ENOE vs EOD predictor distributions, ENOE informality profiles, the
-   known-sector comparison, the informality models' calibration, ENOE vs EOD informality overall and by sector), 06
-   and 08 (the head's education observed vs modelled, with the AMAI education score; the predominant NSE by AGEB,
-   AMAI's and the chain's before and after calibration, with the aggregate bars) and `informal_job_plots` (the
-   presentation versions: "OD duro" with the combined calibration curve; original vs modelled sector shares). Not
-   the old notebook-04 sector charts: `reports/imputation_giro.qmd` has them. In the style of eodgdl's reports (plain
-   matplotlib), shown in the report and written as PDF + 600-dpi PNG to `output/figures/`. The calibration figure's
-   isotonic curve is not saved today (`isotonic__<arm>.parquet` holds its metrics only): the retrain is to write it,
-   and the combined curve (each held-out row scored by the arm that scores it, informal-jobs-model's "hybrid")
-   beside it; then retrain informality. What session 5's inventory found:
-   - ENOE: `build_frame(load_task("informality"), Context(), role="train").frame` (`survey_weight` already / 8,
-     `informalidad`, `sector`, `edad_cat`, `municipio`); informal-jobs-model's metro benchmark is `municipio !=
-     "otro"` (38,933 rows, 39.35% informal, identical). EOD workers: the `role="score"` frame, weight `ponderador`
-     from `output/impute/{giro,informality}/scores.parquet`; the four sectors are `prob_giro_*` collapsed with
-     `chains/sector_informality.yaml`'s transform. "OD muestreo" is one seeded Bernoulli draw per worker, "OD duro"
-     `informalidad_final`, "esperado" the probabilities.
-   - NSE maps: per AGEB, the arg-max of the weighted `prob_nse_*` / `prob_nse_calibrado_*`; AMAI's
-     `nivel_predominante` through `derive.amai.read_amai_ageb`; polygons from mxcensus's Marco Geoestadístico 2020
-     (as `reweight.zoning` reads it), which holds every urban AGEB the EOD records. "Before calibration" is the
-     draws' distribution, not informal-jobs-model's plug-in cut.
-   - informal-jobs-model's `outputs/` (its figures, bundles, tables) is gitignored and stays on disk; its tracked
-     `data/GUADALAJARA_SHP/` is replaced by the Marco Geoestadístico. Then its README points to eodgdl and its GitHub
-     repository is archived: ask the user before each GitHub step.
-2. **Review notes left as they are** (design points from session 4, not bugs; raise them if the user wants to go
+1. **Review notes left as they are** (design points from session 4, not bugs; raise them if the user wants to go
    further):
    - Held-out metrics and scoring treat a missing feature differently: `run.heldout` and the evaluators use the
      model's `predict_proba`, where the missing label is a category it was trained with, while scoring
@@ -76,7 +52,26 @@ module as built) and `src/eodgdl/impute/__init__.py`.
    for education (1.84% / 46.48% → 2.50% / 46.54%), giro's `scenarios.parquet` (the delta rows' confidence), the
    stale `amai_trabajadores/evaluation/missingness.parquet` gone, and the NSE calibration (item 2). The retrained
    bundles predict as the installed ones (identical scores); their bytes differ, so they were not copied to `data/`.
-4. **informal-jobs-model**: the user decided (pending item 1).
+4. **informal-jobs-model's figures in `reports/imputation_figures.qmd`** (the user's choice: those of its notebooks 03,
+   05, 06 and 08 and the presentation versions, not the old notebook-04 sector charts, which the giro report has).
+   Nine figures under informal-jobs-model's names, in the style of eodgdl's reports with its Spanish labels, shown in
+   the report and written as PDF + 600-dpi PNG to `output/figures/` (`$EODGDL_FIGURES_DIR`). They read the retrains and
+   the chains: ENOE is the informality task's training frame in the metro municipalities (38,933 rows, 39.35%
+   informal, as informal-jobs-model's benchmark); "OD muestreo" is one seeded draw per worker, "OD duro" the arg-max,
+   a worker's hard sector its most probable one; an AGEB's EOD level on the NSE maps is the level with the largest
+   weighted probability mass, "before calibration" the draws' distribution (not informal-jobs-model's plug-in); the
+   polygons are the Marco Geoestadístico 2020's urban AGEBs (mxcensus). The ramp for the seven NSE levels is the dataviz
+   skill's blue, steps 100–700: no seven steps from 250 up clear its ordinal gate (adjacent ΔL ≥ 0.06), so the lightest
+   step recedes as a choropleth's may, with the legend and a table as relief. For the calibration figure the retrain now
+   writes each arm's `isotonic_calibration` / `isotonic_reliability` and, for a task with several arms,
+   `test_metrics__hybrid`, `calibration__hybrid` and `reliability__hybrid` (each held-out row predicted by the arm that
+   would score it, informal-jobs-model's "hybrid"). The evaluators take a probability matrix in sorted class order (the
+   model's, as sklearn's `log_loss` reads it); a first version combined the arms in the task's order and got the log
+   loss wrong (1.77 where the arms give 0.416 and 0.437), caught before the commit and pinned by `test_hybrid_heldout_predicts_each_row_with_its_arm`
+   with an unsorted task. All six tasks were retrained again: every earlier table is unchanged.
+5. **informal-jobs-model archived** (user): its README points to eodgdl (ca2c67c, pushed) and its GitHub repository is
+   archived (read-only, history kept; `gh repo unarchive` reverses it). Its `outputs/` (gitignored: figures, bundles,
+   tables) stays on disk; its tracked `data/GUADALAJARA_SHP/` is replaced by the Marco Geoestadístico.
 
 ### Where things are
 

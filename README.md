@@ -234,3 +234,15 @@ shipped one. `score` and `compare` default to the shipped bundles; `evaluate` de
 where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `data/`, update
 its sha256 in `src/eodgdl/data/registry.txt` and tag a release (see Data). Feature frames are cached under the eodgdl
 cache directory (`--refresh` rebuilds).
+
+### Figures
+
+The figures of informal-jobs-model's informality and NSE notebooks (where these models were first built), redrawn from
+the outputs above with their original names and Spanish labels, as PDF and 600-dpi PNG in `output/figures/`: ENOE and
+the EOD's predictor distributions, ENOE's informality profiles, the informality models' calibration (with the isotonic
+and the arms-combined held-out curves a retrain writes), ENOE against the EOD after the model, the head's education and
+the NSE maps by AGEB (the AGEB polygons come from `mxcensus`, the `reweight` extra):
+
+```bash
+quarto render reports/imputation_figures.qmd   # reads output/impute/{informality,educacion_jefe,sector_informality,nse}/
+```

@@ -309,6 +309,9 @@ def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path)
     assert scored["synthetic_marginalized_features"].str.contains("a").any()
     assert set(result.scenarios) == {"shift_weighted", "delta_adjusted"}
     assert {"selection__with_b", "isotonic__without_b", "shares", "profiles", "unsupported_levels__with_b"} <= set(result.tables)
+    assert {"isotonic_calibration__with_b", "isotonic_reliability__without_b", "test_metrics__hybrid", "calibration__hybrid", "reliability__hybrid"} <= set(result.tables)
+    hybrid = result.tables["test_metrics__hybrid"].iloc[0]
+    assert hybrid["rows_with_b"] + hybrid["rows_without_b"] == result.summary["test_rows"] and hybrid["rows_without_b"] > 0
 
     # the task's own definition of unobserved: b's "?" answers count as missing, as they do for the arms
     frame = result.scored
@@ -333,6 +336,19 @@ def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path)
     shipped = run.retrain(parse_task({**SYNTHETIC_TASK, "evaluation": {**SYNTHETIC_TASK["evaluation"], "isotonic": {"ship": True}}}), context=context, n_jobs=1, progress=False)
     assert type(shipped.bundle["arms"]["with_b"]["model"]).__name__ == "IsotonicCalibrated"
     np.testing.assert_allclose(shipped.scored[spec.probability_columns].sum(axis=1), 1.0)
+
+
+def test_hybrid_heldout_predicts_each_row_with_its_arm():
+    from eodgdl.impute import run
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task({**SYNTHETIC_TASK, "target": {"column": "label", "classes": {"Z": "z", "X": "x", "Y": "y"}}})   # not sorted
+    test = pd.DataFrame({"a": "a0", "b": ["b0", "?", "b1", MISSING], "c": 0.0, "w": [1.0, 2.0, 1.0, 1.0], spec.target: ["x", "y", "z", "x"]})
+    probabilities = {"with_b": np.tile([0.8, 0.1, 0.1], (4, 1)), "without_b": np.tile([0.2, 0.6, 0.2], (4, 1))}   # columns x, y, z
+    metrics = run._hybrid_tables(spec, test, probabilities, "w", None, 5)["test_metrics__hybrid"].iloc[0]
+    assert (metrics["rows_with_b"], metrics["rows_without_b"]) == (2, 2)
+    # b observed (rows 0, 2): the arm with b; "?" and the missing label (rows 1, 3): the arm without it
+    assert metrics["weighted_log_loss"] == pytest.approx(-np.average(np.log([0.8, 0.6, 0.1, 0.2]), weights=[1, 2, 1, 1]))
 
 
 def test_compare_pairs_candidates_with_the_baseline(labelled_source, tmp_path):

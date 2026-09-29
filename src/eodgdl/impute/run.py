@@ -198,7 +198,9 @@ def _selected_row(summary):
 
 def _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits):
     """The held-out evaluation of one arm's selected model: metrics, bootstrap intervals, per-class tables,
-    calibration and the isotonic recalibration (maps from out-of-fold probabilities on the training rows)."""
+    calibration and the isotonic recalibration (maps from out-of-fold probabilities on the training rows), with its
+    own calibration tables. Returns ``(tables, uncertainty, probabilities)``: the held-out probabilities, columns in
+    sorted class order (the evaluators' convention: the model's order, as ``predict_proba`` gives it)."""
     n_bins, positive = ev.get("calibration_bins", 10), ev.get("positive_class")
     y_test, probabilities, classes, w_test = heldout(model, spec, test, weight)
     metrics, class_metrics, confusion, distribution = evaluate.evaluate_classifier(y_test, probabilities, classes, w_test, labels=spec.class_slugs, positive=positive, n_bins=n_bins)
@@ -206,13 +208,35 @@ def _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_sp
                                                         random_state=seed, positive=positive)
     in_the_large, reliability = evaluate.calibration_by_class(y_test, probabilities, classes, w_test, n_bins=n_bins)
     calibrated = evaluate.fit_isotonic(model, X, y, w, select.grouped_splits(X, y, g, cv_splits=n_splits, random_state=seed))
+    recalibrated = calibrated.predict_proba(test)
     isotonic = pd.DataFrame([
         {"probabilities": "selected", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), probabilities, classes, w_test.to_numpy(), n_bins)},
-        {"probabilities": "isotonic", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), calibrated.predict_proba(test), calibrated.classes_, w_test.to_numpy(), n_bins)},
+        {"probabilities": "isotonic", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), recalibrated, calibrated.classes_, w_test.to_numpy(), n_bins)},
     ])
+    isotonic_in_the_large, isotonic_reliability = evaluate.calibration_by_class(y_test, recalibrated, calibrated.classes_, w_test, n_bins=n_bins)
+    in_class_order = pd.DataFrame(probabilities, columns=classes).reindex(columns=sorted(spec.class_slugs), fill_value=0.0).to_numpy()
     return {"test_metrics": metrics, "test_uncertainty": uncertainty.rename_axis("metric").reset_index(), "class_metrics": class_metrics,
             "confusion": confusion.rename_axis("observed").reset_index(), "test_distribution": distribution, "calibration": in_the_large,
-            "reliability": reliability, "isotonic": isotonic}, uncertainty
+            "reliability": reliability, "isotonic": isotonic, "isotonic_calibration": isotonic_in_the_large,
+            "isotonic_reliability": isotonic_reliability}, uncertainty, in_class_order
+
+
+def _hybrid_tables(spec, test, probabilities, weight, positive, n_bins):
+    """The held-out evaluation of the arms as scoring combines them: each held-out row predicted by the arm that
+    would score it (the first whose required features it has; ``probabilities``: {arm: held-out probabilities, columns
+    in sorted class order}). Tables ``<name>__hybrid`` (informal-jobs-model's hybrid calibration)."""
+    classes = sorted(spec.class_slugs)
+    assigned = assign_arms(test, spec.arms, spec.is_missing)
+    combined = np.zeros((len(test), len(classes)))
+    for arm in spec.arms:
+        rows = assigned.eq(arm.name).fillna(False).to_numpy(bool)
+        combined[rows] = probabilities[arm.name][rows]
+    y_test, w_test = test[spec.target].astype(str), test[weight].astype(float)
+    metrics = evaluate.evaluate_classifier(y_test, combined, classes, w_test, labels=spec.class_slugs, positive=positive, n_bins=n_bins)[0]
+    in_the_large, reliability = evaluate.calibration_by_class(y_test, combined, classes, w_test, n_bins=n_bins)
+    rows = assigned.value_counts().reindex([arm.name for arm in spec.arms], fill_value=0)
+    return {"test_metrics__hybrid": metrics.assign(**{f"rows_{name}": int(count) for name, count in rows.items()}),
+            "calibration__hybrid": in_the_large, "reliability__hybrid": reliability}
 
 
 def _compare_populations(spec, ev, train, test, selected_models, weight, group, positive, n_bins):
@@ -288,7 +312,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
                            "training_population": spec.selection.get("population") or "all", "source_rows": len(full_frame),
                            "known": int(known.sum()), "unknown": int(unknown.sum()), "train_rows": len(train), "test_rows": len(test),
                            "train_groups": int(train[group].nunique()), "test_groups": int(test[group].nunique()), "arms": {}}
-    arms, selected_models, auxiliary, selected, test_metrics = {}, {}, {}, {}, {}
+    arms, selected_models, auxiliary, selected, test_metrics, heldout_probabilities = {}, {}, {}, {}, {}, {}
     for arm in spec.arms:
         features = list(arm.features)
         started = time.perf_counter()
@@ -300,7 +324,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         selected_models[arm.name] = model
 
         started = time.perf_counter()
-        arm_tables, uncertainty = _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits)
+        arm_tables, uncertainty, heldout_probabilities[arm.name] = _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits)
         test_metrics[arm.name] = arm_tables["test_metrics"].iloc[0].to_dict()
         timings[f"evaluate_{arm.name}"] = time.perf_counter() - started
         arm_tables = {"selection": tuning, "grid": tuning.attrs["grid_results"], **arm_tables, "fold_losses": select.fold_table(tuning).rename_axis("model").reset_index()}
@@ -334,6 +358,8 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         summary["arms"][arm.name] = {"selected": selected[arm.name], "test_metrics": test_metrics[arm.name],
                                      "test_uncertainty": uncertainty["estimate"].to_dict(), "isotonic": arm_tables["isotonic"].set_index("probabilities").to_dict("index")}
 
+    if len(spec.arms) > 1:
+        tables.update(_hybrid_tables(spec, test, heldout_probabilities, weight, positive, n_bins))
     if "components_heldout" in tables:
         tables["components_heldout"] = pd.concat(tables["components_heldout"], ignore_index=True)
     component_models = {name: {"classes": dict(component.classes), "positive": ev["components"][name]["positive"],
