@@ -211,6 +211,10 @@ pd.concat([T("robustness_cv", arm).assign(arm=ARM_LABEL[arm]) for arm in ARMS]).
 
 # Held-out evaluation {#sec-evaluation}
 
+The held-out ENOE workers are scored as the bundle scores an EOD worker: a value missing in ENOE is averaged over its
+observed levels (the place of work over the arm's auxiliary model, fitted outside the held-out households), never read
+as the category the model learned for missing values.
+
 ```{python}
 #| label: tbl-heldout
 #| tbl-cap: "Held-out metrics on the metro households (weighted), with 95% household-bootstrap intervals where given."

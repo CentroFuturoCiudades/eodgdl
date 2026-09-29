@@ -2,8 +2,9 @@
 
 - **score** (:func:`score_task`): load the task's bundle, check it, score the source's rows (seconds).
 - **retrain** (:func:`retrain`): grouped-CV selection per arm on the training rows, evaluation on the held-out
-  households, refit on every observed row, auxiliary models, scoring, the covariate-shift and delta scenarios; writes
-  the bundle and every evaluation table (:func:`write_retrain`) for a report to read.
+  households (predicted as scoring predicts them, :func:`heldout`), refit on every observed row, auxiliary models,
+  scoring, the covariate-shift and delta scenarios; writes the bundle and every evaluation table
+  (:func:`write_retrain`) for a report to read.
 - **compare** (:func:`compare`): feature specifications evaluated cheaply: the published winner's family and
   hyperparameters fixed, the same grouped folds on the training rows (the held-out fold never touched), each
   candidate's fold log losses paired against the baseline's.
@@ -23,7 +24,7 @@ import pandas as pd
 from sklearn.base import clone
 
 from . import evaluate, select
-from .arms import assign_arms, impute_with_arms, predict_arms
+from .arms import Arm, assign_arms, impute_with_arms, predict_arms, score_arm
 from .bundle import as_v2, bundle_arms, check_bundle, load_bundle, make_bundle, save_bundle
 from .features import build_frame, builder_config
 from .levels import count_levels_without_training_support, normalize_sample_weights, prepare_features
@@ -142,15 +143,23 @@ def shipped_arm(model, spec, rows, features, weight, group):
     return final
 
 
-def heldout(model, spec, rows, weight):
-    """``(y, probabilities, classes, weights)`` of ``rows`` under a fitted pipeline (whose first step selects its
-    features), for the evaluators of :mod:`eodgdl.impute.evaluate`."""
-    return rows[spec.target].astype(str), model.predict_proba(rows), list(model.named_steps["classifier"].classes_), rows[weight].astype(float)
+def heldout(model, spec, rows, weight, auxiliary=None):
+    """``(y, probabilities, classes, weights)`` of ``rows`` as scoring predicts them, for the evaluators of
+    :mod:`eodgdl.impute.evaluate`: ``model`` (a fitted pipeline whose first step selects its features, or its isotonic
+    wrapper, carrying its training level shares) through :func:`~eodgdl.impute.arms.score_arm`, so a missing value and
+    a level without training support are averaged over the supported levels, by ``auxiliary``'s P(level | x) where it
+    has a model for the feature (``{feature: model}``), else by the training shares. Columns in the model's class
+    order. Model selection still compares ``predict_proba`` on its validation folds, where the missing label is the
+    category the model learned."""
+    features = list(model.named_steps["prepare"].kw_args["features"])
+    probabilities, _, classes = score_arm(Arm("heldout", model, features, auxiliary=auxiliary or {}), rows, spec.numeric, task_levels(spec),
+                                          level_subsets=spec.level_subsets or None, missing_label=spec.missing_label)
+    return rows[spec.target].astype(str), probabilities, list(classes), rows[weight].astype(float)
 
 
-def _metrics(model, spec, rows, weight, positive, n_bins):
-    """The one-row metrics table of :func:`eodgdl.impute.evaluate.evaluate_classifier` on ``rows``."""
-    return evaluate.evaluate_classifier(*heldout(model, spec, rows, weight), labels=spec.class_slugs, positive=positive, n_bins=n_bins)[0]
+def _metrics(model, spec, rows, weight, positive, n_bins, auxiliary=None):
+    """The one-row metrics table of :func:`eodgdl.impute.evaluate.evaluate_classifier` on ``rows`` (:func:`heldout`)."""
+    return evaluate.evaluate_classifier(*heldout(model, spec, rows, weight, auxiliary), labels=spec.class_slugs, positive=positive, n_bins=n_bins)[0]
 
 
 @dataclass
@@ -207,19 +216,20 @@ def _selected_row(summary):
             "fold_log_losses": [float(value) for value in row["fold_log_losses"]]}
 
 
-def _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits):
-    """The held-out evaluation of one arm's selected model: metrics, bootstrap intervals, per-class tables,
-    calibration and the isotonic recalibration (maps from out-of-fold probabilities on the training rows), with its
-    own calibration tables. Returns ``(tables, uncertainty, probabilities)``: the held-out probabilities, columns in
-    sorted class order (the evaluators' convention: the model's order, as ``predict_proba`` gives it)."""
+def _heldout_tables(spec, model, auxiliary, X, y, w, g, test, weight, group, ev, seed, n_splits):
+    """The held-out evaluation of one arm's selected model (the held-out rows predicted as scoring predicts them, with
+    the arm's held-out ``auxiliary`` models: :func:`heldout`): metrics, bootstrap intervals, per-class tables,
+    calibration and the isotonic recalibration (maps from out-of-fold probabilities on the training rows, scored as a
+    shipped isotonic arm would be), with its own calibration tables. Returns ``(tables, uncertainty, probabilities)``:
+    the held-out probabilities, columns in sorted class order (the evaluators' convention: the model's order)."""
     n_bins, positive = ev.get("calibration_bins", 10), ev.get("positive_class")
-    y_test, probabilities, classes, w_test = heldout(model, spec, test, weight)
+    y_test, probabilities, classes, w_test = heldout(model, spec, test, weight, auxiliary)
     metrics, class_metrics, confusion, distribution = evaluate.evaluate_classifier(y_test, probabilities, classes, w_test, labels=spec.class_slugs, positive=positive, n_bins=n_bins)
     uncertainty = evaluate.test_metrics_with_uncertainty(y_test, probabilities, classes, w_test, test[group].astype(str), n_bootstrap=ev.get("bootstrap", 500),
                                                         random_state=seed, positive=positive)
     in_the_large, reliability = evaluate.calibration_by_class(y_test, probabilities, classes, w_test, n_bins=n_bins)
     calibrated = evaluate.fit_isotonic(model, X, y, w, select.grouped_splits(X, y, g, cv_splits=n_splits, random_state=seed))
-    recalibrated = calibrated.predict_proba(test)
+    recalibrated = heldout(calibrated, spec, test, weight, auxiliary)[1]
     isotonic = pd.DataFrame([
         {"probabilities": "selected", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), probabilities, classes, w_test.to_numpy(), n_bins)},
         {"probabilities": "isotonic", **evaluate.multiclass_calibration_summary(y_test.to_numpy(), recalibrated, calibrated.classes_, w_test.to_numpy(), n_bins)},
@@ -252,8 +262,9 @@ def _hybrid_tables(spec, test, probabilities, weight, positive, n_bins):
 
 def _compare_populations(spec, ev, train, test, selected_models, weight, group, positive, n_bins):
     """Each arm's selected configuration refitted on the training fold restricted to each ``evaluation.populations``
-    entry, all evaluated on the same held-out rows of each ``evaluation.population_tests`` entry: which training
-    population predicts best where the model is applied."""
+    entry, all evaluated on the same held-out rows of each ``evaluation.population_tests`` entry (predicted as scoring
+    would with the population's training shares; no population's auxiliary models are fitted, and no task with
+    populations has any): which training population predicts best where the model is applied."""
     rows = []
     for test_name, test_filter in ev.get("population_tests", {"held-out": {}}).items():
         held_out = select_rows(test, keep=test_filter)
@@ -261,7 +272,7 @@ def _compare_populations(spec, ev, train, test, selected_models, weight, group, 
             training = select_rows(train, keep=conditions)
             for arm in spec.arms:
                 X, y, w, _, _ = training_data(spec, training, list(arm.features), weight, group)
-                model = clone(selected_models[arm.name]).fit(X, y, classifier__sample_weight=w)
+                model = attach_training_level_shares(clone(selected_models[arm.name]).fit(X, y, classifier__sample_weight=w), X, w, spec.numeric)
                 metrics = _metrics(model, spec, held_out, weight, positive, n_bins).iloc[0]
                 rows.append({"test": test_name, "population": population, "arm": arm.name, "training_rows": len(X), "test_rows": len(held_out),
                              "weighted_log_loss": metrics["weighted_log_loss"], "weighted_accuracy": metrics["weighted_accuracy"]})
@@ -317,13 +328,16 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     unknown = rows[spec.unknown_column].astype(bool).to_numpy()          # scored rows to impute
     train, test = select.split_known(frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
     test = select_rows(test, drop=cv.get("test_exclude"))
+    # every row outside the held-out fold, whatever its target: where the held-out evaluation's auxiliary models are
+    # fitted, as the bundle's are on every row
+    training_side = pd.concat([train, frame[frame[spec.unknown_column].astype(bool).to_numpy()]], ignore_index=True)
     timings["features"] = time.perf_counter() - started
 
     tables, summary = {}, {"task": spec.name, "source": spec.source, "score_source": spec.score_source, "rows": len(rows),
                            "training_population": spec.selection.get("population") or "all", "source_rows": len(full_frame),
                            "known": int(known.sum()), "unknown": int(unknown.sum()), "train_rows": len(train), "test_rows": len(test),
                            "train_groups": int(train[group].nunique()), "test_groups": int(test[group].nunique()), "arms": {}}
-    arms, selected_models, auxiliary, selected, test_metrics, heldout_probabilities = {}, {}, {}, {}, {}, {}
+    arms, selected_models, auxiliary, heldout_auxiliary, selected, test_metrics, heldout_probabilities = {}, {}, {}, {}, {}, {}, {}
     for arm in spec.arms:
         features = list(arm.features)
         started = time.perf_counter()
@@ -332,10 +346,13 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         tuning, model = select.tune(candidates, X, y, w, g, cv_splits=n_splits, random_state=seed, n_jobs=n_jobs, progress=progress)
         timings[f"tune_{arm.name}"] = time.perf_counter() - started
         selected[arm.name] = _selected_row(tuning)
-        selected_models[arm.name] = model
+        selected_models[arm.name] = attach_training_level_shares(model, X, w, spec.numeric)   # the held-out rows are scored as scoring scores
 
         started = time.perf_counter()
-        arm_tables, uncertainty, heldout_probabilities[arm.name] = _heldout_tables(spec, model, X, y, w, g, test, weight, group, ev, seed, n_splits)
+        heldout_auxiliary[arm.name] = {feature: fit_level_model(training_side, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels,
+                                                                sample_weights=training_side[weight], random_state=seed, missing_label=spec.missing_label)
+                                       for feature in spec.auxiliary}
+        arm_tables, uncertainty, heldout_probabilities[arm.name] = _heldout_tables(spec, model, heldout_auxiliary[arm.name], X, y, w, g, test, weight, group, ev, seed, n_splits)
         test_metrics[arm.name] = arm_tables["test_metrics"].iloc[0].to_dict()
         timings[f"evaluate_{arm.name}"] = time.perf_counter() - started
         arm_tables = {"selection": tuning, "grid": tuning.attrs["grid_results"], **arm_tables, "fold_losses": select.fold_table(tuning).rename_axis("model").reset_index()}
@@ -351,8 +368,8 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         for name, component in components.items():
             # each component of the label with the arm's selected configuration, judged on the same held-out rows
             X_component, y_component, w_component, _, _ = training_data(component, train, features, weight, group)
-            component_model = clone(model).fit(X_component, y_component, classifier__sample_weight=w_component)
-            component_metrics = _metrics(component_model, component, test, weight, ev["components"][name]["positive"], n_bins)
+            component_model = attach_training_level_shares(clone(model).fit(X_component, y_component, classifier__sample_weight=w_component), X_component, w_component, spec.numeric)
+            component_metrics = _metrics(component_model, component, test, weight, ev["components"][name]["positive"], n_bins, heldout_auxiliary[arm.name])
             tables.setdefault("components_heldout", []).append(component_metrics.assign(component=name, arm=arm.name))
 
         started = time.perf_counter()
@@ -383,7 +400,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
         target_rows = rows[unknown & spec.is_missing(rows, profile["missing"]).to_numpy()] if profile.get("missing") else rows[unknown]
         reweighted_test, diagnostics = evaluate.reweight_to_target_profile(test, within_support(spec, target_rows, frame[known]), profile["features"], weight, rows_weight,
                                                                            spec.numeric, random_state=seed, missing_label=spec.missing_label)
-        tables["target_profile"] = pd.concat([_metrics(selected_models[arm.name], spec, data, weight, positive, n_bins).assign(weighting=weighting, arm=arm.name)
+        tables["target_profile"] = pd.concat([_metrics(selected_models[arm.name], spec, data, weight, positive, n_bins, heldout_auxiliary[arm.name]).assign(weighting=weighting, arm=arm.name)
                                               for weighting, data in (("training weights", test), ("reweighted to the scored rows' profile", reweighted_test))
                                               for arm in spec.arms], ignore_index=True)
         tables["target_profile_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")

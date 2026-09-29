@@ -221,9 +221,11 @@ display(Markdown("Selected, " + "; ".join(parts) + "."))
 
 # Held-out evaluation {#sec-evaluation}
 
-The selected configuration of each arm, trained on the training households, is scored on the held-out households. The
-intervals resample households (500 bootstrap draws). The baseline is the constant predictor that outputs the weighted
-class shares.
+The selected configuration of each arm, trained on the training households, is scored on the held-out households as
+the bundle scores an imputed worker: a missing value is averaged over its observed levels, never read as the category
+the model learned for missing values (a worker without a work trip on the survey day: the destination over the arm's
+auxiliary model, fitted outside the held-out households, the mode over the training shares). The intervals resample
+households (500 bootstrap draws). The baseline is the constant predictor that outputs the weighted class shares.
 
 ```{python}
 #| label: tbl-heldout

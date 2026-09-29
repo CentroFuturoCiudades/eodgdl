@@ -138,11 +138,74 @@ display(Markdown(
     "tenure, income, cars and internet, the head's weekend travel, and the dwelling's centrality. The model trains "
     "with the dwelling weight. "
     f"Selected: **{sel['model']}** ({params}), "
-    f"CV log loss {sel['weighted_log_loss']:.4f}. On held-out households the log loss is {m['weighted_log_loss']:.4f}, "
+    f"CV log loss {sel['weighted_log_loss']:.4f}. On held-out households, scored as the imputed ones are (an unanswered "
+    f"income averaged over the reported ones: @sec-income), the log loss is {m['weighted_log_loss']:.4f}, "
     f"{pct(u['relative_improvement_over_marginal'])} below the weighted-marginal baseline, at a weighted accuracy of "
     f"{pct(m['weighted_accuracy'])}."
 ))
 display(T("educacion_jefe", "shares").set_index("class").mul(100).round(2))
+```
+
+## Income non-response {#sec-income}
+
+```{python}
+#| label: income-refusal
+from eodgdl.impute.derive.amai import nse_ageb_shares
+from eodgdl.impute.features import build_frame
+from eodgdl.impute.sources import Context
+
+heads = build_frame(load_task("educacion_jefe"), Context()).frame
+income = heads["ingreso_mensual_hogar"].astype("string")
+ageb = nse_ageb_shares(next(step for step in CHAIN.steps if getattr(step, "name", None) == "nse_ageb_calibrado").config)
+heads = heads.assign(
+    answer=np.where(income.eq("No quiso responder"), "refused", np.where(income.isna() | income.eq("No sabe"), "does not know", "reported")),
+    month=pd.to_datetime(heads["fecha"]).dt.month, refused=income.eq("No quiso responder").fillna(False).astype(float),
+    licenciatura=heads["educacion_jefe"].eq("licenciatura").fillna(False).astype(float), posgrado=heads["educacion_jefe"].eq("posgrado").fillna(False).astype(float),
+    level=heads["ageb"].astype(str).map(pd.Series(ageb[LEVELS].to_numpy() @ np.arange(len(LEVELS)), index=ageb.index)))   # AMAI's mean level of the AGEB, 0 = E ... 6 = A/B
+heads["group"] = np.where(heads["educacion_jefe_desconocido"], "imputed", "known, " + heads["answer"])
+
+
+def weighted(frame, by, columns):
+    """Weighted means (dwelling weight) of ``columns`` by ``by``, with the number of dwellings."""
+    frame = frame.dropna(subset=columns)
+    totals = frame[columns].mul(frame["ponderador"], axis=0).assign(weight=frame["ponderador"]).groupby([frame[b] for b in np.atleast_1d(by)], observed=True).sum()
+    return totals[columns].div(totals["weight"], axis=0).assign(dwellings=frame.groupby([frame[b] for b in np.atleast_1d(by)], observed=True).size())
+
+
+known = heads[~heads["educacion_jefe_desconocido"] & heads["answer"].ne("does not know")]
+refusal = weighted(heads, "group", ["refused"])["refused"]
+by_month = weighted(heads[~heads["educacion_jefe_desconocido"]], "month", ["refused"])["refused"]
+where = weighted(heads, "group", ["level"])["level"]
+overall = weighted(known, "answer", ["licenciatura", "posgrado"])
+bands = ["< 2.5", "2.5 – 3", "3 – 3.5", "3.5 – 4", "≥ 4"]
+table = weighted(known.assign(band=pd.cut(known["level"], [-np.inf, 2.5, 3.0, 3.5, 4.0, np.inf], right=False, labels=bands)).dropna(subset=["band"]),
+                 ["band", "answer"], ["licenciatura", "posgrado"]).unstack("answer")
+refused_known = float(np.average(heads.loc[~heads["educacion_jefe_desconocido"], "refused"], weights=heads.loc[~heads["educacion_jefe_desconocido"], "ponderador"]))
+assert refusal["imputed"] > refused_known and by_month.iloc[-1] > by_month.iloc[0]
+assert overall.loc["refused", "licenciatura"] > overall.loc["reported", "licenciatura"] and overall.loc["refused", "posgrado"] < overall.loc["reported", "posgrado"]
+assert (table[("licenciatura", "refused")] > table[("licenciatura", "reported")]).all()
+assert where["imputed"] < where["known, reported"] < where["known, refused"]
+display(Markdown(
+    f"{pct(refusal['imputed'])} of the dwellings whose head's education is imputed refused the income question (*No quiso "
+    f"responder*), against {pct(refused_known)} of those whose head's education is known, a share that rises through the "
+    f"fieldwork ({pct(by_month.iloc[0])} in the first month, {pct(by_month.iloc[-1])} in the last). Among the known heads, "
+    f"the dwellings that refused report a licenciatura {pct(overall.loc['refused', 'licenciatura'])} of the time, against "
+    f"{pct(overall.loc['reported', 'licenciatura'])} for those that report an income, yet a posgrado less often "
+    f"({pct(overall.loc['refused', 'posgrado'])} against {pct(overall.loc['reported', 'posgrado'])}), and the gap holds at "
+    "every AMAI level of the AGEB, the poorest included (the table, by AMAI's mean level of the AGEB: 0 = E, 2 = D+, "
+    "3 = C-, 4 = C, 6 = A/B). One answer inflated rather than a better-educated group: it looks like a capture pattern, "
+    "which the survey records no interviewer to trace. So the imputation does not read a refused income as a category: "
+    "like the held-out evaluation, it averages an unanswered income over the reported ones by their training shares. "
+    "Read as a category, it would fit the known heads better and carry the pattern to the imputed heads, whose AGEBs "
+    f"are poorer (AMAI mean level {where['imputed']:.2f}, against {where['known, reported']:.2f} for the known heads "
+    f"that report an income and {where['known, refused']:.2f} for those that refused)."
+))
+out = pd.DataFrame({"dwellings (refused / reported)": table[("dwellings", "refused")].astype(int).astype(str) + " / " + table[("dwellings", "reported")].astype(int).astype(str)})
+for kind in ("licenciatura", "posgrado"):
+    for answer in ("refused", "reported"):
+        out[f"{kind}, {answer} (%)"] = (table[(kind, answer)] * 100).round(1)
+out.index.name = "AGEB level"
+out
 ```
 
 # Bathrooms and bedrooms from ENIGH {#sec-enigh}

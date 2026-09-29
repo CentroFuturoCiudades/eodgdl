@@ -369,6 +369,32 @@ def test_hybrid_heldout_predicts_each_row_with_its_arm():
     assert metrics["weighted_log_loss"] == pytest.approx(-np.average(np.log([0.8, 0.6, 0.1, 0.2]), weights=[1, 2, 1, 1]))
 
 
+def test_heldout_rows_are_predicted_as_scoring_predicts_them(fitted, labelled_source):
+    from eodgdl.impute import run
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task({"task": "h", "source": "test.labelled", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
+                       "features": {"numeric": NUMERIC}, "levels": {"declared": {"a": LEVELS["a"][:-1], "b": LEVELS["b"][:-1]}},
+                       "arms": {"only": {"features": FEATURES}}})
+    rows = synthetic(n=80, seed=11).assign(h=lambda frame: frame["y"])
+    rows.loc[::5, "b"] = None                                      # unobserved: the missing label
+    rows.loc[::7, "a"] = "a3"                                      # a level without training support
+    X = levels.prepare_features(rows, FEATURES, NUMERIC)
+    averaged = ((X["b"] == MISSING) | (X["a"] == "a3")).to_numpy()
+    y, probabilities, classes, _ = run.heldout(fitted, spec, rows, "w")
+    np.testing.assert_array_equal(probabilities, marginalize.predict_proba_marginalizing(fitted, X)[0])
+    direct = fitted.predict_proba(rows)                            # the missing label as the category the model learned
+    np.testing.assert_allclose(probabilities[~averaged], direct[~averaged], rtol=0, atol=1e-12)
+    assert not np.allclose(probabilities[averaged], direct[averaged])
+    assert classes == list(fitted.named_steps["classifier"].classes_) and y.tolist() == rows["y"].tolist()
+    # with an auxiliary model an unobserved b is averaged over P(b | x), as the bundle's arm scores it
+    auxiliary = {"b": models.fit_level_model(synthetic(), "b", ["a", "c"], NUMERIC, LEVELS)}
+    with_auxiliary = run.heldout(fitted, spec, rows, "w", auxiliary)[1]
+    conditional = {"b": marginalize.predict_level_shares(auxiliary["b"], X)}
+    np.testing.assert_array_equal(with_auxiliary, marginalize.predict_proba_marginalizing(fitted, X, conditional_shares=conditional)[0])
+    assert not np.allclose(with_auxiliary[X["b"].eq(MISSING).to_numpy()], probabilities[X["b"].eq(MISSING).to_numpy()])
+
+
 def test_delta_adjustment_reaches_its_target_where_probabilities_reach_one():
     from eodgdl.impute import evaluate
 

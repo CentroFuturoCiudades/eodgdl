@@ -3,7 +3,8 @@ weighted-marginal baseline, one-vs-rest reliability, known vs unknown profiles, 
 covariate-shift sensitivity, and the delta adjustment of an imputed share.
 
 The held-out evaluators take the observed labels, a probability matrix (columns ``classes``, the model's order, as
-``model.predict_proba(rows)`` gives them) and the weights, so a caller predicts once and evaluates many ways."""
+:func:`eodgdl.impute.run.heldout` gives them: the rows predicted as scoring predicts them) and the weights, so a caller
+predicts once and evaluates many ways."""
 
 import numpy as np
 import pandas as pd
