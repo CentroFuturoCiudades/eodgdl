@@ -166,6 +166,9 @@ Any change to the engine is proved with the last two: rerun into a new root and 
 - Data fusion rests on conditional independence given the harmonized covariates.
 - The within-imputation variance ignores the survey's strata and the stages of its design
   (`reports/expansion_factors.qmd`).
+- The bootstrap bundles resample each training source's CV group (the EOD's and ENIGH's dwellings, ENOE's
+  cross-quarter households), not its survey's primary sampling units within strata, so the between-imputation variance
+  ignores those designs too (ENOE's frame keeps `survey_stratum` and `survey_psu`).
 - Auxiliary level models have fixed hyperparameters; SHAP, ROPE and a varying training population in `compare` are not
   implemented.
 - The education task uses the dwelling's centrality, not its AGEB (1,700 levels).
