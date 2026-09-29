@@ -67,9 +67,37 @@ commits ahead of `origin` at the end of session 6 (70eab10, c5f905f, eee00ad, be
    trip's).
 4. **What the reports claim.** CV and held-out log losses now describe different predictors (focus 2): read every
    sentence that compares or interprets them, and every structural claim that no `assert` holds. The chains carry the
-   draws' Monte Carlo error but no model uncertainty (one fitted bundle per task): say so where intervals are shown,
-   or propose a bootstrap of the bundles.
-5. **Tests.** The suite runs 84% of `eodgdl.impute`'s and `eodgdl.giro`'s statements (2026-09-29: `uv run --with
+   draws' Monte Carlo error but no model uncertainty (one fitted bundle per task): say so where intervals are shown
+   until focus 5 gives them.
+5. **Proper multiple imputation: bootstrap bundles** (the user asked for it, 2026-09-29, after asking whether MICE
+   would fit: it would not replace the engine, since most of it is data fusion under conditional independence, which
+   chained equations cannot improve and, cycling EOD-only against ENOE- or ENIGH-only variables, would fill with
+   artifacts; its multiple-imputation discipline is what is missing). Today each task has one fitted bundle, so the
+   NSE chain's 50 draws carry the predictive randomness only: the imputations are improper and every interval
+   computed from them is too narrow. Design, to measure and then bring to the user:
+   - Per task, B refits of each arm's selected configuration (no new selection) and of its auxiliary models on a
+     household-cluster bootstrap of the training rows (the source's CV group, survey weights kept; ENOE's `hogar`,
+     ENIGH's dwelling), seeded from the task's seed. They are a retrain product (`<root>/<task>/bootstrap/`, or
+     refitted on demand from the seeds): at B = 50 they would weigh ~50 times today's 16 MB of installed bundles, too
+     much for the data mirror, so the shipped bundle stays the single fit.
+   - A chain option (say `uncertainty: bootstrap`, default off so no output moves until the user decides): with
+     `draws`, draw m scores every step with bootstrap model m mod B (bootstrap multiple imputation: a posterior draw
+     of the model, then a draw from its predictive); with `enumerate` or `expected`, the marginals per bootstrap model,
+     whose spread is the model's share of the uncertainty. The rank calibration already runs per draw.
+   - Estimates combine by Rubin's rules: the mean over imputations, and a variance of the within-imputation part
+     (the survey's own design variance of the estimate, which needs a design-based estimator for the EOD's three
+     nested weights: `reports/expansion_factors.qmd`) plus (1 + 1/M) times the between-imputation part. The
+     diagnostics (`evaluate_distribution`'s Monte Carlo table) and the reports gain the intervals: giro's imputed
+     shares, the informality rate by sector and zone, the NSE mix by AGEB before and after calibration.
+   - Check that the point estimates barely move (the mean over bootstrap models against the single fit) while the
+     intervals widen, and by how much per estimate; then numbers and options to the user.
+   - For the travel-demand model: M completed datasets (discrete sector, informality and NSE per person or dwelling)
+     that the model runs M times, so the imputation's uncertainty reaches its outputs; the NSE chain already writes
+     its draws (`completions.parquet`), `sector_informality` would need `draws` next to `enumerate`.
+   - Congeniality: where an analysis relates an imputed variable to travel behaviour (trip rates by sector or NSE,
+     say), the imputation models must see that behaviour, or the association comes out attenuated; `run.compare`
+     measures candidate features (e.g. trip counts or modes for the education and NSE tasks).
+6. **Tests.** The suite runs 84% of `eodgdl.impute`'s and `eodgdl.giro`'s statements (2026-09-29: `uv run --with
    coverage python -m coverage run --source=src/eodgdl/impute,src/eodgdl/giro -m pytest`; `uv run --with pytest-cov`
    fails on a second numpy import). Not run by any test: `diagnostics.py`
    (212 statements, all of `eodgdl impute evaluate`: only the reports run it), most of `check_bundle`'s refusals
@@ -77,7 +105,7 @@ commits ahead of `origin` at the end of session 6 (70eab10, c5f905f, eee00ad, be
    (`sources/eod.py` 62%, `sources/enigh.py` 36%) and AMAI's file readers (`derive/amai.py` 56–81), and the CLI's
    `impute` commands. The diagnostics and the bundle guard matter most: a synthetic chain like `tests/test_chain.py`'s
    can carry an `evaluation:` section.
-6. **Code and docs.** `run.retrain` (144 lines) holds most of the logic; ruff's B023 in `features.build_frame` (a
+7. **Code and docs.** `run.retrain` (144 lines) holds most of the logic; ruff's B023 in `features.build_frame` (a
    closure over loop variables, called at once: correct but fragile) and in `giro/features.py`; the legacy giro bundle
    path (`bundle.from_legacy_giro`, `legacy_view`, `giro/_ml.py`) could go in a breaking release; the installed bundles
    in `data/` carry pre-be127dc held-out metrics in their metadata (reinstall at the next release). This handoff holds
