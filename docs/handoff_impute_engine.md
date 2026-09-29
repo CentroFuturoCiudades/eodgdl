@@ -7,12 +7,14 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
-- Branch `impute-chains`, ahead of `origin` by the session 6 and 7 commits (none pushed): session 7's are 2bf14e0
-  (parity tool), 41cd5a7 (selection on the scoring path), 0c0b120 (copied records documented), 855c09f (focus 3,
-  bundles installed), ce40f35 (bootstrap multiple imputation), 83df4f2 (tests, a YAML bug, the legacy giro path
-  removed) and the commits after them (the final run: see `git log`).
-- Released: `v0.3.0`, `v0.4.0`. `data/` holds the six bundles of session 7's final run and their `registry.txt`
-  sha256; the data mirror serves `v0.4.0`'s until a release moves `REF`.
+- **Released `v0.5.0`** (2026-09-29, the user's request): c89d20b (version 0.5.0, `REF = "v0.5.0"`, `uv lock`), tagged
+  `v0.5.0` (lightweight, as before), pushed with `impute-chains`, which is merged into `main` (`--no-ff`) and pushed.
+  Session 7's commits: 2bf14e0 (parity tool), 41cd5a7 (selection on the scoring path), 0c0b120 (copied records
+  documented), 855c09f (focus 3), ce40f35 (bootstrap multiple imputation), 83df4f2 (tests, a YAML bug, the legacy giro
+  path removed), ae8c836 (the final run, the six bundles reinstalled, the docs).
+- The mirror check passed: with an empty `EODGDL_CACHE_DIR` and no `EODGDL_DATA_DIR`, `giro.load_model()` and `eodgdl
+  impute score` of giro and both chains fetched the survey, the zone file, AMAI's table and the bundles from the tag,
+  each checksum-verified, and giro's scores and both chains' scores and completions equal `output/impute/`'s exactly.
 - `output/impute/` is session 7's final run (`scripts/impute/rerun.sh`: six retrains with 50 bootstrap bundles each,
   giro and both chains scored, each chain's 50 completed datasets with bootstrap models under
   `<chain>/multiple_imputation/`, both evaluations with Rubin's rules). Older roots, kept for comparison and to be
@@ -20,16 +22,14 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   alone), `output/impute_70eab10/` (before session 6's held-out change), with `output/{figures,reports}_*` alike.
 - `uv run pytest`: 175 passed (~4 min).
 
+`v0.5.0` is **breaking**: `giro.load_model` returns the v2 bundle; `giro.impute_giro`, `bundle.from_legacy_giro`,
+`legacy_view` and `giro/_ml.py` are gone (pickles from before 0.3.0 no longer load); informality's sector level
+`gobierno_otro_agricultura` is `gobierno`; giro reads the interview month.
+
 ## Pending for the user
 
-1. Push `impute-chains` and merge it into `main`.
-2. A release, **breaking**: `giro.load_model` returns the v2 bundle; `giro.impute_giro`, `bundle.from_legacy_giro`,
-   `legacy_view` and `giro/_ml.py` are gone (pickles from before 0.3.0 no longer load); informality's sector level
-   `gobierno_otro_agricultura` is `gobierno`; giro reads the interview month. The usual steps (CLAUDE.md "Data
-   access"): bump `pyproject.toml` (0.5.0 for the break), `REF`, `uv lock`, tag, push, and check the mirror (score giro
-   and both chains from the tag with an empty cache and no `EODGDL_DATA_DIR`).
-3. Option B for giro (the missing work destination and mode read as a learned category), open since session 6.
-4. Whether a chain should publish with `uncertainty: bootstrap` (the published scores are the single fit's; the
+1. Option B for giro (the missing work destination and mode read as a learned category), open since session 6.
+2. Whether a chain should publish with `uncertainty: bootstrap` (the published scores are the single fit's; the
    evaluations report both).
 
 ## Session 7, by focus
