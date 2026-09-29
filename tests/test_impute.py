@@ -229,10 +229,9 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     monkeypatch.setitem(sources._SOURCES, "test.rows", sources.Source("test.rows", build_source, {"keys": ["k"], "weight": "c", "group": "k"},
                                                                     lambda context, config: {"data": "v1"}, lambda column: LEVELS[column][:-1], __file__))
     monkeypatch.setitem(features._BUILDERS, "test.double", features.Builder("test.double", build_columns, {"scale": 2.0}, lambda context, config: {}, __file__))
-    spec = spec_module.parse_task({
-        "task": "t", "source": "test.rows", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
-        "features": {"builders": ["test.double"], "numeric": ["c", "d"]}, "arms": {"only": {"features": ["a", "b", "c", "d", "e"]}},
-    })
+    raw = {"task": "t", "source": "test.rows", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
+           "features": {"builders": ["test.double"], "numeric": ["c", "d"]}, "arms": {"only": {"features": ["a", "b", "c", "d", "e"]}}}
+    spec = spec_module.parse_task(raw)
     context = sources.Context(cache=True, cache_dir=tmp_path)
     first = features.build_frame(spec, context).frame
     again = features.build_frame(spec, context).frame
@@ -244,6 +243,15 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     assert calls == {"source": 1, "builder": 2}                           # new configuration, new key
     features.build_frame(spec, sources.Context(cache=True, cache_dir=tmp_path, refresh=True))
     assert calls["source"] == 2 and calls["builder"] == 3                  # refresh rebuilds
+    # a task with other classes shares the builder's columns, unless the builder reads the classes
+    other = spec_module.parse_task({**raw, "task": "u", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z", "W": "w"}}})
+    features.build_frame(other, context)
+    assert calls == {"source": 2, "builder": 3}
+    monkeypatch.setitem(features._BUILDERS, "test.double", features.Builder("test.double", build_columns, {"scale": 2.0}, lambda context, config: {}, __file__, reads_classes=True))
+    features.build_frame(spec, context)
+    features.build_frame(other, context)
+    assert calls == {"source": 2, "builder": 5}
+    assert features.get_builder("giro.destination").reads_classes and not features.get_builder("harmonize.enigh").reads_classes
 
 
 def test_spec_validation():
@@ -295,7 +303,7 @@ def labelled_source(monkeypatch):
                                                                         lambda context, config: {"data": "v1"}, lambda column: [], __file__))
 
 
-def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path):
+def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path, monkeypatch):
     from eodgdl.impute import bundle as bundles, run, sources
     from eodgdl.impute.spec import parse_task
 
@@ -333,9 +341,19 @@ def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path)
     assert bundles.bundle_path(spec, retrained=tmp_path / "out") == path
     assert bundles.load_bundle(spec, retrained=tmp_path / "out")["metadata"]["spec_hash"] == result.bundle["metadata"]["spec_hash"]
 
+    scenario_bundles, score_frame = {}, run.score_frame
+
+    def recording(spec, frame, bundle, **kwargs):
+        scenario_bundles[bundle["metadata"].get("scenario", "scored")] = bundle
+        return score_frame(spec, frame, bundle, **kwargs)
+
+    monkeypatch.setattr(run, "score_frame", recording)
     shipped = run.retrain(parse_task({**SYNTHETIC_TASK, "evaluation": {**SYNTHETIC_TASK["evaluation"], "isotonic": {"ship": True}}}), context=context, n_jobs=1, progress=False)
     assert type(shipped.bundle["arms"]["with_b"]["model"]).__name__ == "IsotonicCalibrated"
     np.testing.assert_allclose(shipped.scored[spec.probability_columns].sum(axis=1), 1.0)
+    # the shift scenario refits the arms as the bundle ships them
+    assert {type(entry["model"]).__name__ for entry in scenario_bundles["shift_weighted"]["arms"].values()} == {"IsotonicCalibrated"}
+    np.testing.assert_allclose(shipped.scenarios["shift_weighted"][spec.probability_columns].sum(axis=1), 1.0)
 
 
 def test_hybrid_heldout_predicts_each_row_with_its_arm():
@@ -349,6 +367,30 @@ def test_hybrid_heldout_predicts_each_row_with_its_arm():
     assert (metrics["rows_with_b"], metrics["rows_without_b"]) == (2, 2)
     # b observed (rows 0, 2): the arm with b; "?" and the missing label (rows 1, 3): the arm without it
     assert metrics["weighted_log_loss"] == pytest.approx(-np.average(np.log([0.8, 0.6, 0.1, 0.2]), weights=[1, 2, 1, 1]))
+
+
+def test_delta_adjustment_reaches_its_target_where_probabilities_reach_one():
+    from eodgdl.impute import evaluate
+
+    classes, columns = ["a", "b", "c"], ["prob_t_a", "prob_t_b", "prob_t_c"]
+    imputed = pd.DataFrame({"t_fue_imputado": [True, True, True, False], "w": [1.0, 2.0, 1.0, 1.0], "t_final": [None, None, None, "a"],
+                            "prob_t_a": [0.9, 0.5, 0.1, 1.0], "prob_t_b": [0.1, 0.3, 0.6, 0.0], "prob_t_c": [0.0, 0.2, 0.3, 0.0]})   # imputed share of a: 0.5
+
+    def share(frame):
+        rows = frame["t_fue_imputado"]
+        return np.average(frame.loc[rows, "prob_t_a"], weights=frame.loc[rows, "w"])
+
+    # scaling down: the ratio of the target to the current share
+    adjusted, factor = evaluate.adjust_imputed_share(imputed, "t", classes, "a", target_share=0.25, weight_column="w")
+    assert factor == pytest.approx(0.5) and share(adjusted) == pytest.approx(0.25)
+    # scaling up past one (the ratio, 1.6, would leave the share at 0.69): the largest probabilities held at one
+    adjusted, factor = evaluate.adjust_imputed_share(imputed, "t", classes, "a", target_share=0.8, weight_column="w")
+    assert factor == pytest.approx(2.0) and share(adjusted) == pytest.approx(0.8)
+    np.testing.assert_allclose(adjusted.loc[[0, 1, 2], "prob_t_a"], [1.0, 1.0, 0.2])
+    np.testing.assert_allclose(adjusted[columns].sum(axis=1), 1.0)
+    assert (adjusted.loc[[0, 1], ["prob_t_b", "prob_t_c"]] == 0).all().all() and adjusted.loc[3, columns].tolist() == [1.0, 0.0, 0.0]
+    with pytest.raises(ValueError, match="No factor reaches"):      # a quarter of the imputed weight has a positive probability
+        evaluate.adjust_imputed_share(imputed.assign(prob_t_a=[0.9, 0.0, 0.0, 1.0], prob_t_b=[0.1, 0.8, 0.7, 0.0]), "t", classes, "a", target_share=0.5, weight_column="w")
 
 
 def test_compare_pairs_candidates_with_the_baseline(labelled_source, tmp_path):

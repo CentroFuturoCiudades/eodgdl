@@ -269,11 +269,35 @@ def validate_probability_rows(frame, columns, tolerance=1e-8):
     return maximum_error
 
 
+def clipped_scale_factor(probabilities, weights, target_share):
+    """The factor f whose scaled probabilities, held at one, reach ``target_share``: Σ w·min(f·p, 1) / Σ w = target.
+    Where no f·p passes one it is the plain ratio of the target to the current share; else the rows held at one are
+    the largest probabilities, as many as the target needs."""
+    p, w = np.asarray(probabilities, dtype=float), np.asarray(weights, dtype=float)
+    factor = target_share / ((w * p).sum() / w.sum())
+    if factor * p.max() <= 1.0:
+        return factor
+    target = target_share * w.sum()
+    if target > w[p > 0].sum():
+        raise ValueError(f"No factor reaches the share {target_share:.4f}: the rows with a positive probability hold {w[p > 0].sum() / w.sum():.4f} of the weight")
+    order = np.argsort(-p, kind="stable")
+    p, w = p[order], w[order]
+    held = np.r_[0.0, np.cumsum(w)[:-1]]                         # k = 0, 1, ...: the weight of the k largest, held at one
+    scaled = np.cumsum((w * p)[::-1])[::-1]                      # and the probability mass of the others
+    with np.errstate(divide="ignore", invalid="ignore"):    # no mass left beyond k (scaled 0): no solution there
+        factors = (target - held) / scaled
+        # k rows at one: the k-th largest reaches one and the next does not pass it
+        fits = (scaled > 0) & (factors * p <= 1.0) & np.r_[True, factors[1:] * p[:-1] >= 1.0]
+    assert fits.any(), "no number of rows held at one reaches the target"
+    return float(factors[np.argmax(fits)])
+
+
 def adjust_imputed_share(imputed, prefix, classes, label, target_share=None, weight_column="ponderador"):
     """Delta adjustment: scale the imputed probability of ``label`` so the weighted imputed share equals
     ``target_share`` (default: its observed share among the rows with an observed target), renormalizing the other
-    classes; the arg-max and confidence follow. Returns ``(adjusted, factor)``. The scaled probability is clipped at
-    one, so the target is not reached where the clip binds."""
+    classes; the arg-max and confidence follow. Returns ``(adjusted, factor)``. A scaled probability that would pass
+    one is held at one and the factor solved so the target is still reached (:func:`clipped_scale_factor`); where none
+    does, the factor is the ratio of the target to the current share."""
     imputed = imputed.copy()
     columns = [f"prob_{prefix}_{c}" for c in classes]
     rows = imputed[f"{prefix}_fue_imputado"].to_numpy()
@@ -283,6 +307,8 @@ def adjust_imputed_share(imputed, prefix, classes, label, target_share=None, wei
         target_share = (weights[~rows] * (imputed.loc[~rows, f"{prefix}_final"] == label).to_numpy(dtype=float)).sum() / weights[~rows].sum()
     current_share = (weights[rows] * imputed.loc[rows, column]).sum() / weights[rows].sum()
     factor = target_share / current_share
+    if (imputed.loc[rows, column] * factor).max() > 1.0:
+        factor = clipped_scale_factor(imputed.loc[rows, column], weights[rows], target_share)
     adjusted = imputed.loc[rows, columns].copy()
     others = [c for c in columns if c != column]
     scaled = (adjusted[column] * factor).clip(upper=1.0)

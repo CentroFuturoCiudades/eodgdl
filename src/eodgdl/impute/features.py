@@ -8,9 +8,10 @@ Harmonizations (:func:`eodgdl.impute.harmonize.register_harmonization`) are buil
 :func:`build_frame` assembles a task's frame: the source, then each builder in the task's order, then the target
 slug. With a :class:`~eodgdl.impute.sources.Context` that uses the cache, the source frame and each builder's columns
 are read from parquet under the cache directory when a file with the same key exists, else built and written. A key
-covers the builder's module source, this module's, its configuration, the task's classes, the data versions it
-declares and the keys of everything it was built on, so an edit to the chain rules, a survey file, DENUE's release or
-the builder's code moves it; ``Context(refresh=True)`` rebuilds regardless."""
+covers the builder's module source, this module's, its configuration, the data versions it declares, the task's
+classes when the builder reads them (``reads_classes``) and the keys of everything it was built on, so an edit to the
+chain rules, a survey file, DENUE's release or the builder's code moves it, while tasks that share a source and its
+builders (the AMAI tasks on ENIGH) share its cached columns; ``Context(refresh=True)`` rebuilds regardless."""
 
 import importlib
 from dataclasses import dataclass
@@ -31,14 +32,17 @@ class Builder:
     versions: object               # versions(context, config) -> dict
     module_file: str
     replaces: bool = False         # its columns may replace the frame's columns of the same name
+    reads_classes: bool = False    # its columns depend on the task's classes (``spec.classes``), which key its cache
 
 
-def register_builder(name, config=None, versions=None, replaces=False):
+def register_builder(name, config=None, versions=None, replaces=False, reads_classes=False):
     """Decorator registering ``build(frame, context, config, spec)`` as feature builder ``name``; with ``replaces`` its
-    columns replace any of the frame's columns of the same name (a harmonization over a source's raw columns)."""
+    columns replace any of the frame's columns of the same name (a harmonization over a source's raw columns); with
+    ``reads_classes`` its columns depend on the task's classes (the only part of ``spec`` a builder may read), so they
+    key its cache."""
     def decorate(function):
         module = importlib.import_module(function.__module__)
-        _BUILDERS[name] = Builder(name, function, dict(config or {}), versions or (lambda context, config: {}), module.__file__, replaces)
+        _BUILDERS[name] = Builder(name, function, dict(config or {}), versions or (lambda context, config: {}), module.__file__, replaces, reads_classes)
         return function
     return decorate
 
@@ -106,8 +110,8 @@ def build_frame(spec, context, overrides=None, role="train"):
     for name in spec.builders_for(source.name):
         builder = get_builder(name)
         config = builder_config(spec, name, overrides)
-        key = _key(builder=name, module=file_digest(builder.module_file), config=config, classes=spec.classes,
-                   versions=builder.versions(context, config), input=key)
+        key = _key(builder=name, module=file_digest(builder.module_file), config=config, versions=builder.versions(context, config), input=key,
+                   **({"classes": spec.classes} if builder.reads_classes else {}))
         base = frame
 
         def build_columns():

@@ -131,6 +131,17 @@ def refit(model, spec, rows, features, weight, group):
     return attach_training_level_shares(final, X, sample_weights, spec.numeric)
 
 
+def shipped_arm(model, spec, rows, features, weight, group):
+    """The arm a bundle ships: :func:`refit`, wrapped in its isotonic recalibration (maps from grouped out-of-fold
+    probabilities on the same rows) when the task's ``evaluation.isotonic.ship`` asks for it."""
+    final = refit(model, spec, rows, features, weight, group)
+    if spec.evaluation.get("isotonic", {}).get("ship", False):
+        cv = spec.selection["cv"]
+        X, y, w, g, _ = training_data(spec, rows, features, weight, group)
+        final = evaluate.fit_isotonic(final, X, y, w, select.grouped_splits(X, y, g, cv_splits=cv["splits"], random_state=cv["seed"]))
+    return final
+
+
 def heldout(model, spec, rows, weight):
     """``(y, probabilities, classes, weights)`` of ``rows`` under a fitted pipeline (whose first step selects its
     features), for the evaluators of :mod:`eodgdl.impute.evaluate`."""
@@ -345,11 +356,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
             tables.setdefault("components_heldout", []).append(component_metrics.assign(component=name, arm=arm.name))
 
         started = time.perf_counter()
-        final = refit(model, spec, frame, features, weight, group)
-        if ship_isotonic:
-            X_all, y_all, w_all, g_all, _ = training_data(spec, frame, features, weight, group)
-            final = evaluate.fit_isotonic(final, X_all, y_all, w_all, select.grouped_splits(X_all, y_all, g_all, cv_splits=n_splits, random_state=seed))
-        arms[arm.name] = final
+        arms[arm.name] = shipped_arm(model, spec, frame, features, weight, group)
         # the auxiliary models: P(feature | x) fitted on every training row, whatever its target
         auxiliary[arm.name] = {feature: fit_level_model(frame, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels,
                                                         sample_weights=frame[weight], random_state=seed, missing_label=spec.missing_label)
@@ -397,11 +404,12 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     scenarios = {}
     observed = evaluate.weighted_distribution(frame[known], spec.target, weight_column=weight)
     if "shift" in ev:
-        # the training rows reweighted to the imputed rows' profile, every arm refitted (the auxiliary models kept)
+        # the training rows reweighted to the imputed rows' profile, every arm refitted as the bundle ships it (the
+        # auxiliary models kept)
         started = time.perf_counter()
         reweighted, diagnostics = evaluate.reweight_to_target_profile(frame[known], within_support(spec, rows[unknown], frame[known]), ev["shift"]["profile"], weight, rows_weight,
                                                                       spec.numeric, random_state=seed, missing_label=spec.missing_label)
-        shift_arms = {arm.name: refit(selected_models[arm.name], spec, reweighted, list(arm.features), weight, group) for arm in spec.arms}
+        shift_arms = {arm.name: shipped_arm(selected_models[arm.name], spec, reweighted, list(arm.features), weight, group) for arm in spec.arms}
         scenarios["shift_weighted"] = score_frame(spec, rows, make_bundle(spec, shift_arms, auxiliary, levels, {"scenario": "shift_weighted"}))
         tables["shift_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
         timings["shift"] = time.perf_counter() - started

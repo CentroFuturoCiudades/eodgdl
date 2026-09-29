@@ -13,8 +13,9 @@ upstream imputations along with ``propagation``:
   ``transform``); a numeric one takes a number per class (a numeric ``transform``, else the upstream's target score).
 - ``draws``: ``draws`` seeded multiple imputations: y₁ ~ P(y₁ | x), then y₂ ~ P(y₂ | x, y₁), ...; each step's marginal
   is the mean over draws of its conditional probabilities (not the share of draws), and derive steps run per draw.
-- ``expected``: the upstream's expected score (its task declares ``target.scores``) is plugged in as a numeric feature;
-  the downstream outputs are flagged as plug-in.
+- ``expected``: the upstream's expected score is plugged in as a numeric feature (a derive step reads the expected
+  scores too, so every task whose value a later step reads declares ``target.scores``); the downstream outputs are
+  flagged as plug-in.
 
 Every mode builds **completions**: one row per (row, scenario) or (row, draw) with a weight (the weights of a row sum
 to one) and the value of each step. A step is scored once over the unique (row, upstream values) combinations, in one
@@ -117,7 +118,6 @@ def parse_chain(raw, load=load_task):
                 _check(use.feature in spec.features, f"{name}: {step.task} has no feature {use.feature!r} for {use.task}")
                 upstream = load(use.task)
                 if propagation == "expected":
-                    _check(bool(upstream.scores), f"{name}: expected propagation needs target scores on {use.task}")
                     _check(use.feature in spec.numeric, f"{name}: {step.task}.{use.feature} must be numeric to take {use.task}'s expected score")
                     _check(not use.transform, f"{name}: a transform does not apply to an expected score")
                 else:
@@ -129,7 +129,12 @@ def parse_chain(raw, load=load_task):
                                f"{name}: {step.task}.{use.feature} is numeric: {use.task}'s classes need numbers (a numeric transform or target scores)")
             seen.append(step.task)
     _check(any(isinstance(step, TaskStep) for step in steps), f"{name}: no task steps")
-    return ChainSpec(name, mode, propagation, int(raw.get("draws", 50)), int(raw.get("seed", 42)), steps, raw)
+    chain = ChainSpec(name, mode, propagation, int(raw.get("draws", 50)), int(raw.get("seed", 42)), steps, raw)
+    if propagation == "expected":   # every value a later step reads is an expected score
+        needed = _needed(chain)
+        unscored = [task for task in chain.tasks if task in needed and not load(task).scores]
+        _check(not unscored, f"{name}: expected propagation carries the expected score of {unscored}, which declare no target scores")
+    return chain
 
 
 @functools.cache
@@ -215,11 +220,24 @@ def _check_uses(chain, specs):
             _check(values <= set(declared[use.feature]), f"{chain.name}: {use.task} fills {step.task}.{use.feature} with levels it does not declare: {sorted(values - set(declared[use.feature]))}")
 
 
+def _joined_over_scenarios(values, rows, n_rows):
+    """Per row (``rows``: the row of each value), the value its scenarios share, else the union of their "+"-joined
+    names in order of appearance (e.g. every feature marginalized in some scenario)."""
+    distinct = pd.DataFrame({"row": rows, "value": values}).drop_duplicates()
+    several = distinct["row"].duplicated(keep=False)
+    joined = distinct[~several].set_index("row")["value"]
+    if several.any():
+        union = distinct[several].groupby("row")["value"].agg(lambda group: "+".join(dict.fromkeys(name for value in group for name in value.split("+") if name)))
+        joined = pd.concat([joined, union])
+    return pd.array(joined.reindex(range(n_rows)).to_numpy(), dtype="string")
+
+
 def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_subsets):
     """P(y | x, the upstream values of each completion), one row per completion, each distinct (row, upstream values)
     scored once: ``(conditional, first, conditionals)``, with the task's outputs on each row's first combination (the
-    columns that do not depend on the upstream) and, for an enumerated step with one upstream, the conditionals of
-    every row at every level of the feature (``{prob_<p>_<class>_given_<feature>_<level>: values}``)."""
+    columns that do not depend on the upstream; the arms used and the marginalized features joined over the
+    combinations the row's completions take) and, for an enumerated step with one upstream, the conditionals of every
+    row at every level of the feature (``{prob_<p>_<class>_given_<feature>_<level>: values}``)."""
     n_rows = len(frame)
     filled = pd.DataFrame({"row": completions["row"].to_numpy()})
     for use in step.uses:
@@ -244,6 +262,9 @@ def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_su
     firsts = combos.drop_duplicates("row")
     first = scored.iloc[firsts.index].set_index(firsts["row"].to_numpy()).sort_index()
     first.index = frame.index
+    used = np.unique(position)                      # the combinations some completion takes (not the grid's other levels)
+    for column in (f"{spec.prefix}_model_used", f"{spec.prefix}_marginalized_features"):
+        first[column] = _joined_over_scenarios(scored[column].to_numpy()[used], combos["row"].to_numpy()[used], n_rows)
 
     conditionals = {}
     if by_level:
@@ -288,7 +309,7 @@ def _advance(completions, spec, conditional, propagation, rng):
     elif propagation == "draws":
         completions[spec.prefix] = _sample(conditional, classes, rng)
     else:
-        completions[spec.prefix] = conditional @ np.array([spec.scores[slug] for slug in classes]) if spec.scores else pd.NA
+        completions[spec.prefix] = conditional @ np.array([spec.scores[slug] for slug in classes])   # parse_chain: every needed task has scores
     return completions
 
 

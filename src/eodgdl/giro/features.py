@@ -116,7 +116,7 @@ def _destination_versions(context, config):
     return {**survey_versions(), "mxcensus": version("mxcensus"), "zoning": files_digest([package / "reweight" / "zoning.py", package / "taz.py"])}
 
 
-@register_builder("giro.destination", versions=_destination_versions)
+@register_builder("giro.destination", versions=_destination_versions, reads_classes=True)
 def destination(frame, context, config, spec):
     """``destino_ambito`` and the DENUE establishment mix (``dest_establecimientos_log``, ``dest_share_grandes``,
     ``dest_share_<class>``) of each row's work-trip destination."""

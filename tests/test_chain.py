@@ -31,7 +31,11 @@ T1 = task("t1", "lab1", {"A": "a", "B": "b", "C": "c"}, ["x1", "x2", "c"], decla
 T2 = task("t2", "lab2", {"P": "p", "Q": "q"}, ["x1", "c", "u1"], declared=LEVELS)
 T3 = task("t3", "lab3", {"M": "m", "N": "n"}, ["x2", "c", "u1", "u2"], declared=LEVELS)
 T2E = task("t2e", "lab2", {"P": "p", "Q": "q"}, ["x1", "c", "v1"], numeric=["v1"], declared=LEVELS)
-SPECS = {spec.name: spec for spec in (T1, T2, T3, T2E)}
+# two arms, and a level of u1 no training row holds (uc)
+T2A = parse_task({"task": "t2a", "source": "test.chain", "target": {"column": "lab2", "classes": {"P": "p", "Q": "q"}}, "features": {"numeric": ["c"]},
+                  "levels": {"declared": {"x1": LEVELS["x1"], "u1": [*LEVELS["u1"], "uc"]}},
+                  "arms": {"with_u1": {"features": ["x1", "c", "u1"], "requires": ["u1"]}, "without_u1": {"features": ["x1", "c"]}}})
+SPECS = {spec.name: spec for spec in (T1, T2, T3, T2E, T2A)}
 
 
 def synthetic_frame(n=900, seed=5):
@@ -69,13 +73,15 @@ def _chain_source(monkeypatch, tmp_path):
     for spec in SPECS.values():
         rows = build_frame(spec, context).frame
         known = rows[~rows[spec.unknown_column]]
-        features = list(spec.arms[0].features)
-        X = levels.prepare_features(known, features, spec.numeric)
         weights = levels.normalize_sample_weights(known["w"].reset_index(drop=True))
-        model = models.build_candidates(features, spec.numeric, spec.category_levels(lambda column: []), FAMILY)["GradientBoosting"]["model"]
-        model.fit(X, known[spec.target].astype(str), classifier__sample_weight=weights)
-        marginalize.attach_training_level_shares(model, X, weights, spec.numeric)
-        bundles[spec.name] = make_bundle(spec, {"only": model}, {}, spec.category_levels(lambda column: []), {})
+        fitted = {}
+        for arm in spec.arms:
+            features = list(arm.features)
+            X = levels.prepare_features(known, features, spec.numeric)
+            model = models.build_candidates(features, spec.numeric, spec.category_levels(lambda column: []), FAMILY)["GradientBoosting"]["model"]
+            model.fit(X, known[spec.target].astype(str), classifier__sample_weight=weights)
+            fitted[arm.name] = marginalize.attach_training_level_shares(model, X, weights, spec.numeric)
+        bundles[spec.name] = make_bundle(spec, fitted, {}, spec.category_levels(lambda column: []), {})
     return context, bundles
 
 
@@ -134,6 +140,25 @@ def test_draws_converge_to_enumerate_on_a_three_task_chain(chain_source):
     pd.testing.assert_frame_equal(again.frame, drawn.frame)                                          # seeded
 
 
+def test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios(chain_source):
+    context, bundles = chain_source
+    # t1's class a fills u1 with a level the arm with u1 was trained on, b with one it never saw (marginalized), c with
+    # the missing label (the arm without u1 scores it)
+    transform = {"a": "ua", "b": "uc", "c": levels.MISSING_LABEL}
+    arm_of = {"a": "with_u1", "b": "with_u1", "c": "without_u1"}
+    for settings in ({"propagation": "enumerate"}, {"propagation": "draws", "draws": 30, "seed": 1}):
+        result = run_chain(chain(["t1", {"t2a": {"uses": {"t1": {"as": "u1", "transform": transform}}}}], **settings), context=context, bundles=bundles, specs=SPECS)
+        taken = result.completions.groupby("k", sort=False)["t1"].agg(list)                       # each row's scenarios, in order
+        frame = result.frame.set_index("k")
+        imputed = frame["t2a_fue_imputado"]
+        expected_arms = taken.map(lambda values: "+".join(dict.fromkeys(arm_of[value] for value in values))).where(imputed, "observed")
+        expected_marginalized = taken.map(lambda values: "u1" if "b" in values else "").where(imputed, "")
+        pd.testing.assert_series_equal(frame["t2a_model_used"], expected_arms, check_names=False)
+        pd.testing.assert_series_equal(frame["t2a_marginalized_features"], expected_marginalized, check_names=False)
+        assert frame.loc[imputed, "t2a_model_used"].str.contains("+", regex=False).any()                # rows scored by both arms
+        assert frame.loc[imputed & taken.map(lambda values: set(values) == {"a"}), "t2a_marginalized_features"].eq("").all()
+
+
 def test_derive_steps_draw_from_streams_of_their_own(chain_source):
     context, bundles = chain_source
     uniform = lambda column: lambda completions, base, config: pd.DataFrame({column: np.random.default_rng(config["seed"]).random(len(completions))})
@@ -172,6 +197,10 @@ def test_expected_propagation_plugs_in_the_upstream_score(chain_source):
     direct = score_frame(T2E, build_frame(T2E, context).frame.assign(v1=score), bundles["t2e"])[T2E.probability_columns].to_numpy()
     np.testing.assert_allclose(result.frame[T2E.probability_columns].to_numpy(), direct, rtol=1e-12)
     assert (result.frame["t2e_condicionado_en"] == "t1:expected (plug-in)").all()
+    # a derive step reads the same expected score
+    double = lambda completions, base, config: pd.DataFrame({"doble": 2 * completions["t1"].astype(float)})
+    derived = run_chain(chain(["t1", {"derive": "double"}], propagation="expected"), context=context, bundles=bundles, specs=SPECS, derive_functions={"double": double})
+    np.testing.assert_allclose(derived.frame["doble_media"], 2 * score)
 
 
 def test_chain_validation():
@@ -185,6 +214,12 @@ def test_chain_validation():
         chain(["t1", {"t2": {"uses": {"t1": {"as": "u1"}}}}], propagation="expected")
     with pytest.raises(ValueError, match="no feature"):
         chain(["t1", {"t2": {"uses": {"t1": {"as": "zz"}}}}])
+    # expected propagation carries each needed task's expected score: to a downstream feature or to a derive step
+    with pytest.raises(ValueError, match=r"expected score of \['t2'\], which declare no target scores"):
+        chain(["t2", {"t2e": {"uses": {"t2": {"as": "v1"}}}}], propagation="expected")
+    with pytest.raises(ValueError, match=r"expected score of \['t2'\], which declare no target scores"):
+        chain(["t1", "t2", {"derive": "pair"}], mode="parallel", propagation="expected")
+    chain(["t1", {"derive": "points"}, "t2"], propagation="expected")      # t2's value is read by no later step
 
 
 def test_undeclared_levels_fail_and_runs_are_written(chain_source, tmp_path):
