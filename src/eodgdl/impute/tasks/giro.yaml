@@ -1,7 +1,7 @@
 # Imputation task: the economic activity (`giro_empresa`) of the EOD workers who did not report it. Trained and
 # scored within the survey on its own workers (source `eod.workers`, see sources/eod.yaml); read by
 # eodgdl.impute.spec. Everything the engine needs to build, select, evaluate and score the model is here: target
-# classes, features, declared levels, feature arms, the auxiliary destination model, the candidate grid and the
+# classes, features, declared levels, feature arms, the candidate grid and the
 # evaluation settings, plus the configuration of giro's DENUE feature builder.
 
 task: giro
@@ -52,6 +52,13 @@ levels:
   schema_columns:
     destino_trabajo: tipo_lugar_destino
     modo_trabajo: modo_principal
+  # A worker who made no work trip on the survey day takes the level sin_viaje for both (builders.eod.work_trip.no_trip):
+  # a state the model learns, not a missing value averaged over destinations. Decided 2026-09-29: over every known worker
+  # without a work trip, out-of-fold, averaging predicted commerce 36.0% and services 40.7% against 42.3% and 34.4%
+  # observed; the level predicts 42.9% and 34.3%, and a log loss lower by 0.014-0.043 on those workers.
+  extra:
+    destino_trabajo: [sin_viaje]
+    modo_trabajo: [sin_viaje]
 
 arms:
   # In order: a row to impute is scored by the first arm whose `requires` it has observed. `features` lists groups
@@ -62,12 +69,6 @@ arms:
   without_education:
     features: [person, destination, mobility, interview]
     exclude: [escolaridad]
-
-auxiliary:
-  # P(feature | x) for the rows whose value of the feature has no training support (workers without a work trip),
-  # one model per arm, on the arm's features minus `exclude`.
-  destino_trabajo:
-    exclude: [destination, modo_trabajo]
 
 selection:
   cv: {splits: 5, seed: 42, test_fold: 0}   # household-grouped, stratified; fold `test_fold` is held out
@@ -100,6 +101,8 @@ outputs:
   prefix: giro
 
 builders:
+  eod.work_trip:
+    no_trip: sin_viaje          # the destination type and mode of a worker without a work trip (see levels.extra)
   giro.destination:
     state_code: 14              # DENUE and census state (Jalisco)
     denue_release: "202211"     # November 2022: the DENUE snapshot closest to (and before) the OD fieldwork of Jan-Apr 2023

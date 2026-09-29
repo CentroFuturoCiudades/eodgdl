@@ -20,17 +20,28 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   `<chain>/multiple_imputation/`, both evaluations with Rubin's rules). Older roots, kept for comparison and to be
   deleted when done: `output/impute_7f783b3/` (before session 7), `output/impute_41cd5a7/` (after the selection change
   alone), `output/impute_70eab10/` (before session 6's held-out change), with `output/{figures,reports}_*` alike.
-- `uv run pytest`: 175 passed (~4 min).
+- `uv run pytest`: 176 passed (~4 min).
 
 `v0.5.0` is **breaking**: `giro.load_model` returns the v2 bundle; `giro.impute_giro`, `bundle.from_legacy_giro`,
 `legacy_view` and `giro/_ml.py` are gone (pickles from before 0.3.0 no longer load); informality's sector level
 `gobierno_otro_agricultura` is `gobierno`; giro reads the interview month.
 
+**Giro's workers without a work trip** (option B, decided 2026-09-29 after `v0.5.0`, released as `v0.5.1`): not
+having made a work trip on the survey day is a state, not a missing value. `eod.work_trip` takes a `no_trip` level
+(default null: missing, as informality keeps it, since ENOE knows no such state); giro names `sin_viaje` and declares it
+(`levels.extra`, a new spec field: levels appended to a schema column's), and its auxiliary destination model is gone.
+Measured first on the published model: over all 2,895 known workers without a work trip, out of fold (three seeds),
+averaging over destinations predicted commerce 36.0% and services 40.7% against 42.3% and 34.4% observed; the level
+42.9% and 34.3%, log loss lower by 0.014–0.043 on those workers (the held-out fold's gain the largest). Retrained: the
+same selections, the combined held-out loss 0.8966 → 0.8896 (accuracy 63.3% → 63.7%), imputed shares within 0.3 pp
+(commerce +0.2, services −0.3), the informality rate 35.917% → 35.908%; parity: only giro and `sector_informality`
+moved. The giro bundle reinstalled, `tests/data/giro_parity.parquet` regenerated (its 131 workers without a trip take
+`sin_viaje`).
+
 ## Pending for the user
 
-1. Option B for giro (the missing work destination and mode read as a learned category), open since session 6.
-2. Whether a chain should publish with `uncertainty: bootstrap` (the published scores are the single fit's; the
-   evaluations report both).
+1. Nothing decided is pending. The chains publish the single fit's outputs (the user's choice, 2026-09-29: the
+   bootstrap datasets stay a separate product for analyses that need intervals).
 
 ## Session 7, by focus
 

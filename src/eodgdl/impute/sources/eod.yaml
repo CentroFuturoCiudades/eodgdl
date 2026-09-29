@@ -16,6 +16,9 @@ eod.workers:
 eod.work_trip:
   # Most frequent destination type, destination code / zone and main mode of each person's work trips.
   purpose: Trabajar           # `motivo_viaje` of the trips whose destination describes the workplace
+  # The destination type and mode of a person who made no work trip on the survey day: null leaves them missing (averaged
+  # at scoring); a task that learns from that state names a level (giro: sin_viaje) and declares it (levels.extra).
+  no_trip: null
 
 eod.dwellings:
   # One row per dwelling with its head of household: the reported "Jefe del hogar" (the first, in the survey's order,

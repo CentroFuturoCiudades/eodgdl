@@ -154,6 +154,13 @@ gaps[["variable", "category", "known_share", "unknown_share", "difference_pp"]].
 
 ```{python}
 #| label: arms
+from eodgdl.impute.features import build_frame as _build_frame
+from eodgdl.impute.sources import Context as _Context
+
+WORKERS = _build_frame(SPEC, _Context()).frame
+reported = WORKERS[~WORKERS["giro_desconocido"].astype(bool)]
+no_trip_share = float(np.average(reported["destino_trabajo"].eq("sin_viaje"), weights=reported["ponderador"]))
+assert WORKERS["destino_trabajo"].notna().all() and WORKERS["destino_trabajo"].eq("sin_viaje").equals(WORKERS["modo_trabajo"].eq("sin_viaje"))
 lines = []
 for arm in SPEC.arms:
     requires = f", used when `{'`, `'.join(arm.requires)}` is observed" if arm.requires else ", used for every other worker"
@@ -164,7 +171,12 @@ display(Markdown(
     + "\n\nBesides person and dwelling attributes, the arms use the work trip: destination type, mode, weekend work "
     "travel and household vehicles. They also use the destination's ámbito and its DENUE establishment mix, taken from "
     "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder), and the month of "
-    "the interview (@sec-month)."
+    "the interview (@sec-month).\n\n"
+    f"A worker who made no work trip on the survey day ({pct(no_trip_share)} of the reported workers, weighted) "
+    "has no destination or mode: both take the level `sin_viaje`, a state the model learns from the reported workers who "
+    "made none, not a missing value averaged over destinations as if they had commuted (until 2026-09-29; over every "
+    "reported worker without a work trip, out of fold, that averaging predicted commerce 36% and services 41% against 42% "
+    "and 34% observed, the level 43% and 34%: `src/eodgdl/impute/tasks/giro.yaml`)."
 ))
 ```
 
@@ -175,8 +187,8 @@ display(Markdown(
 from eodgdl.impute.features import build_frame as _build_frame
 from eodgdl.impute.sources import Context as _Context
 
-by_month = _build_frame(SPEC, _Context()).frame
-with_trip = by_month[by_month["destino_trabajo"].notna()]
+by_month = WORKERS
+with_trip = by_month[by_month["destino_trabajo"].ne("sin_viaje")]
 month = pd.DataFrame({
     "workers": by_month.groupby("mes_entrevista").size(),
     "giro not reported (%)": by_month.groupby("mes_entrevista")["giro_desconocido"].mean() * 100,
@@ -228,8 +240,8 @@ display(Markdown(
     f"household-grouped CV with the survey's person weights: " + "; ".join(
         f"**{name}** over " + ", ".join(f"`{k}` ∈ {v}" for k, v in f["params"].items()) for name, f in families.items())
     + f". That is {total} configurations × {cv['splits']} folds per arm. Each validation fold is scored as the bundle "
-    "scores an imputed worker (@sec-evaluation), with the fold's training shares and a destination model fitted outside "
-    "the fold, so the CV and the held-out log losses describe the same predictor. Within each family, and then across "
+    "scores an imputed worker (@sec-evaluation), with the fold's training shares, so the CV and the held-out log losses "
+    "describe the same predictor. Within each family, and then across "
     "families, the simplest configuration whose paired fold difference to the best mean log loss is within one standard "
     "error is kept."
 ))
@@ -298,9 +310,9 @@ display(Markdown("Selected, " + "; ".join(parts) + "."))
 # Held-out evaluation {#sec-evaluation}
 
 The selected configuration of each arm, trained on the training households, is scored on the held-out households as
-the bundle scores an imputed worker: a missing value is averaged over its observed levels, never read as the category
-the model learned for missing values (a worker without a work trip on the survey day: the destination over the arm's
-auxiliary model, fitted outside the held-out households, the mode over the training shares). The intervals resample
+the bundle scores an imputed worker: a missing value is averaged over its observed levels by their training shares,
+never read as the category the model learned for missing values. A worker without a work trip on the survey day is not
+missing a value: the destination and the mode take the level `sin_viaje` (@sec-arms). The intervals resample
 households (500 bootstrap draws). The baseline is the constant predictor that outputs the weighted class shares.
 
 ```{python}
@@ -413,8 +425,8 @@ n_marg = int(marginalized.loc[marginalized["features"] != "", "count"].sum())
 display(Markdown(
     "Both selected configurations are refitted on every worker with a reported giro. Each worker without one is scored "
     "by their arm: " + ", ".join(f"{fmt(usage.loc[arm, 'sample_rows'])} by the arm {ARM_LABEL[arm].lower()}" for arm in ARMS if arm in usage.index)
-    + ". A worker without a work trip on the survey day has no destination. Such a worker is averaged over destination "
-    "types with their own distribution P(destino | x), from an auxiliary model fitted on the workers who made one. Any "
+    + ". A worker without a work trip on the survey day takes the level `sin_viaje` for the destination and the mode, as "
+    "the reported workers without one do in training. Any "
     "categorical value no training worker has is averaged over the levels that have training support, with their training "
     f"shares. {fmt(n_marg)} imputed workers were marginalized over at least one feature; `giro_marginalized_features` "
     "records which."
@@ -474,8 +486,7 @@ display(Markdown(
     "There are two checks. **Shift-weighted**: the selected configurations are refitted on the reported-giro workers, "
     "reweighted to the unreported profile by density-ratio weights on " + ", ".join(f"`{f}`" for f in SPEC.evaluation["shift"]["profile"])
     + f" (effective sample size {fmt(diag['effective_sample_size'])} of {fmt(diag['rows'])}; the top decile of odds ratios "
-    f"carries {pct(diag['top_decile_weight_share'])} of the weight). The auxiliary destination models are the final ones "
-    "(until 2026-09-28 this scenario averaged workers without a work trip over global destination shares). "
+    f"carries {pct(diag['top_decile_weight_share'])} of the weight). "
     f"**Delta-adjusted**: the imputed probability of {LABEL[delta_class]} is scaled by {SUMMARY['delta_factor']:.3f} so its "
     "imputed share equals its reported one, and the other classes are renormalized. Both scenarios are in `scenarios.parquet`."
 ))
