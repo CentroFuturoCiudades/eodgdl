@@ -8,24 +8,58 @@ module as built) and `src/eodgdl/impute/__init__.py`.
 
 ### Pending for session 6 (start here)
 
-1. **Review notes left as they are** (design points from session 4, not bugs; raise them if the user wants to go
-   further):
-   - Held-out metrics and scoring treat a missing feature differently: `run.heldout` and the evaluators use the
-     model's `predict_proba`, where the missing label is a category it was trained with, while scoring
-     (`marginalize`) never counts the missing label as supported and averages over the observed levels. The published
-     metrics describe a slightly different predictor for rows with a missing value (as the retired notebook did).
-   - With `evaluation.isotonic.ship: true`, the shift scenario would refit uncalibrated arms beside a calibrated
-     bundle (latent: shipping is off in every task).
-   - An enumerated chain step's other outputs (`<p>_marginalized_features`, `<p>_model_used`) come from each row's
-     first scenario (`chain._conditionals`); the same in every scenario today.
-   - `expected` propagation leaves NA in the completions for a task without `target.scores` that only a derive step
-     reads (latent).
-   - `chain._aggregate` stops the run on a NA derived level ("derived values outside the declared levels"): an NSE
-     dwelling missing its internet, cars or workers answer would do it (none today).
-   - Feature-cache keys include the task's classes, so `amai_banos`, `amai_dormitorios` and `amai_trabajadores` cache
-     the same ENIGH frame three times (disk only).
-   - `adjust_imputed_share` clips at one (§6.4).
-   - ruff warns that `pyproject.toml`'s top-level `[tool.ruff] ignore` should move to `[tool.ruff.lint]` (not impute).
+The user asked (2026-09-28) that session 4's review notes go to a new session. None is a defect in today's outputs;
+they are ordered by how much they matter, with what session 5 measured. Ask the user before pushing, merging or
+releasing, and before any change that moves published outputs (scores, held-out metrics, the reports' numbers).
+Check every change with the parity recipe of "After the release" below: copy `output/impute/` aside, retrain, score
+and evaluate into another root, and compare every parquet exactly.
+
+1. **Missing values: held-out metrics against scoring (a modelling decision for the user).** Every arm is trained
+   with the missing label (`no_especificado`) as a category. The held-out evaluation (`run.heldout`, the model's
+   `predict_proba`) uses that category; scoring (`arms.score_arm` → `marginalize.predict_proba_marginalizing`) never
+   treats the missing label as supported and averages such a row over the observed levels, by the auxiliary model's
+   P(level | x) where the task has one, else by the training shares. So the published held-out metrics describe
+   another predictor than the one that scores, and scoring never uses the "missing" category the model learned.
+   Weighted share of the held-out rows with a missing categorical feature (session 5):
+   - giro: 17.6% (arm with education) / 16.3% (without). `destino_trabajo` and `modo_trabajo` are missing for the
+     16.2% without a work trip (the destination averaged by its auxiliary model, the mode by training shares);
+     `escolaridad` 1.6%.
+   - educacion_jefe: 42.7%, nearly all `ingreso_hogar` (42.1%; no auxiliary model, so training shares), where
+     non-response may well be informative.
+   - informality 0.7%; the ENIGH tasks 0%.
+
+   Steps: (a) measure each arm's held-out metrics through the scoring path (`arms.predict_arms` with the train-split
+   model, its training shares and auxiliary models fitted on the train split) against today's `predict_proba`, for
+   giro and educacion_jefe; (b) take the numbers to the user, with the choices: evaluate through the scoring path
+   (the metrics follow the shipped predictor; scores unchanged), let scoring keep the missing label where it is
+   informative (e.g. a per-feature spec option; scores change, so a retrain and a release), or document only.
+2. **`chain._aggregate` stops on a missing derived level** (latent; the behaviour is the user's call).
+   `derive.amai.amai_points` gives NaN where the dwelling's internet, cars or workers answer is missing; `nse_nivel`
+   then gives NA and `_aggregate` fails ("derived values outside the declared levels"). No EOD dwelling lacks one
+   today. Options: keep failing but name the rows and the column; carry a missing level through `nse` and
+   `nse_calibrado` (the calibration already leaves NA points uncalibrated); or impute the answer.
+3. **`expected` propagation and a task without `target.scores`** (latent, small): `chain._advance` writes NA for such
+   a task, which only a derive step would read. Make `parse_chain` refuse it (with `propagation: expected`, every task
+   `_needed` returns declares `target.scores`), with a test in `tests/test_chain.py`.
+4. **The shift scenario ignores `evaluation.isotonic.ship`** (latent, small): `run.retrain`'s `shift_arms` refits the
+   arms uncalibrated even when the bundle ships isotonic arms (off in every task). Wrap those refits in
+   `evaluate.fit_isotonic` as the shipped arms are; extend the `isotonic: {ship: True}` part of
+   `tests/test_impute.py::test_retrain_writes_a_bundle_that_scores_the_same`.
+5. **An enumerated step's other outputs come from each row's first scenario** (`chain._conditionals`, `firsts`):
+   `<p>_model_used` and `<p>_marginalized_features` of a task scored under several upstream scenarios are the first
+   scenario's; the same in every scenario today. A cheap guard: assert they agree across a row's scenarios, or keep
+   their union.
+6. **`adjust_imputed_share` clips at one** (§6.4; latent): the delta scenario misses its target share where a scaled
+   probability passes one. giro, the only task with `evaluation.delta` (`gobierno`), scales down (factor 0.69), and no
+   row reaches the clip. A version that never clips (e.g. scaling the class's odds, the factor solved for the target)
+   changes the scenario only where the clip binds.
+7. **The feature cache stores the ENIGH frame three times** (disk only): `features.build_frame` keys every builder's
+   columns on `spec.classes`, so `amai_banos`, `amai_dormitorios` and `amai_trabajadores` cache the same
+   `harmonize.enigh` columns under three keys. Keying on the classes only for builders that read them needs builders
+   to declare it; low value.
+8. **ruff** (not impute): move `pyproject.toml`'s top-level `[tool.ruff] ignore` to `[tool.ruff.lint]`.
+
+The deliberately deferred work under "Not done" below is separate and was not asked for.
 
 ### Session 5 (2026-09-28): session 4's pending list, resolved
 
@@ -88,10 +122,10 @@ module as built) and `src/eodgdl/impute/__init__.py`.
 | 7 release: six bundles installed in `data/`, giro parity fixture from the v2 bundle, docs, `v0.3.0` | 609938f, 48ae9b3 (tag `v0.3.0`) | `impute-chains`, merged into `main` |
 | review and simplification (session 4) | 3539cee | merged into `main` |
 | NSE ties at random, release `v0.4.0` (session 5) | b321096, 2ecfcdd (tag `v0.4.0`) | merged into `main` |
+| informal-jobs-model's figures (`reports/imputation_figures.qmd`), the isotonic and combined held-out tables (session 5) | ce1fedb | merged into `main` at b27a0e6 |
 
 `impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7 and sessions 4–5, with the `v0.3.0` and `v0.4.0`
-tags on it. It is merged into `main` (`--no-ff`) up to the commit that wrote this handoff. `uv run pytest`: 158 passed,
-~110 s.
+tags on it. It is merged into `main` (`--no-ff`) up to ce1fedb, at b27a0e6. `uv run pytest`: 159 passed, ~110 s.
 
 Parity reached (details in the commit messages):
 - giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
