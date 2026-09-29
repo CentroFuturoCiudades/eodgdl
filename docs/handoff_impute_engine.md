@@ -1,6 +1,6 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
-## 0. Status at the end of session 2 (2026-09-28): phases 0–6 done, phase 7 (release) next
+## 0. Status at the end of session 3 (2026-09-28): phases 0–7 done, released as v0.3.0
 
 Read this section first; §1–§11 below are the original plan (session 1), kept as the record of the design. Then read
 `CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every module as built) and
@@ -18,9 +18,10 @@ Read this section first; §1–§11 below are the original plan (session 1), kep
 | 5 ENOE source, YAML harmonization, `informality`, chain `sector_informality` | 82d86f5 | `impute-chains` |
 | 5b diagnostics (`eodgdl impute evaluate`), `reports/imputation_informality.qmd` | bf112ce | `impute-chains` |
 | 6 NSE: `eod.dwellings`, `enigh.households`, four tasks, chain `nse`, AMAI data file, `reports/imputation_nse.qmd` | 7cfef45 | `impute-chains` |
+| 7 release: six bundles installed in `data/`, giro parity fixture from the v2 bundle, docs, `v0.3.0` | see below | `impute-chains`, merged into `main` |
 
-`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–6; nothing on `main` since. `uv run pytest`: 151
-passed, ~105 s.
+`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7; it is merged into `main` (`--no-ff`) after the
+`v0.3.0` tag. `uv run pytest`: 151 passed, ~105 s.
 
 Parity reached (details in the commit messages):
 - giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
@@ -47,7 +48,28 @@ Parity reached (details in the commit messages):
 - Also: ENIGH vehicles = cars + vans + pickups; `data/NSE_por_AGEB_AMAI.xlsx` (21 MB, AMAI's NSE by AGEB) may be
   redistributed through the data mirror (it is in `_catalog.py` and `registry.txt`, not yet on a tag).
 
-### Phase 7: the release (ask the user before every commit, push, tag and merge)
+### Phase 7: the release (done, session 3, 2026-09-28)
+
+What it found:
+- **Every retrain reproduced the previous run.** All six tasks were retrained on the final code, and each
+  selection, CV loss, held-out metric and evaluation table equals the phase 3–6 run's. The four NSE bundles are
+  byte-identical to it. giro's and informality's bundles differ only in metadata: the provenance fields phases 5–6
+  added (`source`, `training_population`, `versions.training`), and the feature-code hashes.
+- **The installed bundles** are `data/od_{giro_hybrid,informality,educacion_jefe,amai_banos,amai_dormitorios,
+  amai_trabajadores}_model.joblib`, in `MODEL_FILES` and `registry.txt`. The user chose to ship the diagnostic
+  `amai_trabajadores` bundle, so `evaluate nse` works from the mirror.
+- **The chains scored from the installed bundles** (no `--retrained`) reproduce every table of the earlier runs:
+  `sector_informality` and `nse` scores, completions and evaluations. The three reports re-rendered.
+- **`tests/data/giro_parity.parquet`'s `expected__*` columns are now the v2 bundle's `score_frame`**, and the test
+  is exact on every row (no layout special case). Against the legacy bundle, 10 of its 384 rows moved beyond 1e-12
+  (max 0.07), all marginalized over `destino_trabajo`; no `giro_final` changed. `giro.load_model()` + `impute_giro`
+  on the legacy view equals the engine exactly.
+- `test_bundle_checks_and_v2_round_trip` now converts the legacy *view* of the v2 file. No test reads a real legacy
+  pickle any more; the legacy bundle is in git (6d1d1d0, sha 227afc71…) if one is wanted.
+- `evaluate sector_informality` reads `<retrained>/giro/scenarios.parquet`, which only a giro retrain writes; the
+  README says so.
+
+The checklist as it was run (the original text, kept for the record):
 
 The committed `data/od_giro_hybrid_model.joblib` is still the notebook's legacy bundle (sha 227afc71…, converted in
 memory by `bundle.as_v2`); no other task's bundle is in `data/`, so today `score` of `informality` / the chains needs

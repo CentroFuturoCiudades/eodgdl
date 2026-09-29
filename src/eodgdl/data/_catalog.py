@@ -22,8 +22,14 @@ VMRC_CSV = "VMRC_AMG.csv"
 # INEGI ENDUTIH share of dwellings with internet, 2020 and 2023 (scripts/endutih_internet.py)
 ENDUTIH_CSV = "ENDUTIH_internet_AMG.csv"
 
-# Fitted giro-imputation bundle (eodgdl.giro; scikit-learn pickle, see the sklearn version in its metadata)
+# Fitted eodgdl.impute bundles, one per task (impute/tasks/<task>.yaml names its file; scikit-learn pickles, see the
+# sklearn version in their metadata; written by `eodgdl impute retrain <task>`)
 GIRO_MODEL_JOBLIB = "od_giro_hybrid_model.joblib"
+INFORMALITY_MODEL_JOBLIB = "od_informality_model.joblib"
+EDUCACION_JEFE_MODEL_JOBLIB = "od_educacion_jefe_model.joblib"
+AMAI_BANOS_MODEL_JOBLIB = "od_amai_banos_model.joblib"
+AMAI_DORMITORIOS_MODEL_JOBLIB = "od_amai_dormitorios_model.joblib"
+AMAI_TRABAJADORES_MODEL_JOBLIB = "od_amai_trabajadores_model.joblib"   # diagnostic: read only by `evaluate nse`
 
 # AMAI's socioeconomic level (NSE) by AGEB, national, as delivered (read by eodgdl.impute.derive.amai for the AGEB
 # rank calibration of the chain `nse`; brought over from informal-jobs-model's data/, 2026-09-03)
@@ -32,6 +38,9 @@ AMAI_NSE_AGEB_XLSX = "NSE_por_AGEB_AMAI.xlsx"
 SURVEY_FILES = [VIVIENDAS_CSV, HABITANTES_CSV, VIAJES_CSV]
 ZONE_FILES = [ZONIFICACION_PARQUET]
 CENSUS_FILES = [CONAPO_CSV, VMRC_CSV, ENDUTIH_CSV]
-MODEL_FILES = [GIRO_MODEL_JOBLIB]
+MODEL_FILES = [
+    GIRO_MODEL_JOBLIB, INFORMALITY_MODEL_JOBLIB, EDUCACION_JEFE_MODEL_JOBLIB, AMAI_BANOS_MODEL_JOBLIB,
+    AMAI_DORMITORIOS_MODEL_JOBLIB, AMAI_TRABAJADORES_MODEL_JOBLIB,
+]
 REFERENCE_FILES = [AMAI_NSE_AGEB_XLSX]
 FILES = SURVEY_FILES + ZONE_FILES + CENSUS_FILES + MODEL_FILES + REFERENCE_FILES

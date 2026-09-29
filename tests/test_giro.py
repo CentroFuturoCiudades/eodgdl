@@ -61,8 +61,8 @@ BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
 
 @pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
 def test_scoring_reproduces_the_reference():
-    # 384 workers of outputs/reference/od_giro_imputed.parquet (the 2026-09-28 bundle scored by the notebook), every
-    # marginalization pattern among them: the engine's batched scoring gives the same outputs.
+    # 384 workers of outputs/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
+    # installed v2 bundle's scores (v0.3.0, the engine's score_frame): giro's legacy entry points give the same outputs.
     fixture = pd.read_parquet(FIXTURE)
     expected = fixture.filter(like="expected__").rename(columns=lambda column: column.removeprefix("expected__"))
     bundle = giro.load_model(BUNDLE)
@@ -73,15 +73,7 @@ def test_scoring_reproduces_the_reference():
     )
     columns = [column for column in giro.OUTPUT_COLUMNS if column not in giro.KEYS]
     scored = scored[columns].reset_index(drop=True)
-    # Exact on every row but one: the recursion that wrote the reference normalized a row's P(destino_trabajo | x)
-    # with numpy's row sum, whose rounding depends on the array layout, and this row (the only one marginalized over
-    # four features) was alone in its recursion call. The engine sums in one order for any batch; 2 ulp apart here.
-    layout = (expected["giro_marginalized_features"] == "estado_civil+parentesco+destino_trabajo+modo_trabajo").to_numpy()
-    assert layout.sum() == 1
-    pd.testing.assert_frame_equal(scored[~layout], expected[columns][~layout], check_dtype=False, check_exact=True)
-    floats = ["giro_prediction_confidence"] + giro.PROBABILITY_COLUMNS
-    np.testing.assert_allclose(scored.loc[layout, floats].to_numpy(float), expected.loc[layout, floats].to_numpy(float), rtol=1e-14, atol=0)
-    pd.testing.assert_frame_equal(scored[layout].drop(columns=floats), expected[columns][layout].drop(columns=floats), check_dtype=False, check_exact=True)
+    pd.testing.assert_frame_equal(scored, expected[columns], check_dtype=False, check_exact=True)
 
 
 @pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
@@ -92,8 +84,8 @@ def test_bundle_checks_and_v2_round_trip(tmp_path):
     from eodgdl.impute.run import score_frame, task_levels
 
     spec, levels = giro.TASK, task_levels(giro.TASK)
-    legacy = giro.load_model(BUNDLE)
-    v2 = bundles.check_bundle(bundles.as_v2(legacy, spec), spec, levels)    # the legacy bundle fits the task spec
+    legacy = giro.load_model(BUNDLE)                                         # the old keys (legacy_view of the v2 file)
+    v2 = bundles.check_bundle(bundles.as_v2(legacy, spec), spec, levels)    # the legacy layout fits the task spec
     assert v2["metadata"]["converted_from"] == "legacy giro bundle"
     assert list(v2["auxiliary"]) == ["with_education", "without_education"]
 

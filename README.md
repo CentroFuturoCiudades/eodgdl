@@ -139,7 +139,35 @@ part of the survey design, and the table disagreed with the survey's own zone co
 left La Aurora, Juanacatlán, whose 221 sampled dwellings the survey coded `49F`, in no
 zone). Zones are built from the census by `reweight.zoning` instead.
 
-## Giro imputation model (`eodgdl[giro]`)
+## Imputation models (`eodgdl[giro]`)
+
+`eodgdl.impute` is the package's categorical imputation engine; every imputation model on the survey runs on it. A
+**task** is one model, a YAML under `src/eodgdl/impute/tasks/` (source, classes, features, arms, candidate grid,
+evaluation settings). A **chain** strings tasks together, in parallel or in sequence, and passes each task's class
+probabilities to the tasks downstream (YAMLs under `src/eodgdl/impute/chains/`). There are three imputations:
+
+| imputation | kind | trained on | scores |
+|---|---|---|---|
+| `giro` | task | EOD workers who reported their employer's activity | every EOD worker |
+| `sector_informality` | chain: `giro` → `informality` (exact sum over the sector) | ENOE, 8 quarters of Jalisco's employed, harmonized to the survey | every EOD worker |
+| `nse` | chain: `educacion_jefe` → `amai_banos` → `amai_dormitorios` → AMAI points, level, AGEB calibration (50 draws) | the EOD's heads (education); ENIGH 2022, households in cities of 100,000+ (bathrooms, bedrooms) | every EOD dwelling |
+
+The fitted bundle of every task ships through the data mirror (`data/od_<task>_model.joblib`, giro's is
+`od_giro_hybrid_model.joblib`) and is fetched on first use. It is a scikit-learn pickle, checked against its task when
+it loads (scikit-learn version, category levels, features, scoring settings). `amai_trabajadores` is diagnostic only:
+the survey counts the workers, so the chain `nse` does not use it, and only `evaluate nse` reads it.
+
+Each task writes the same output columns, prefixed with its name `<t>`: `<t>_observado`, `<t>_imputado`, `<t>_final`
+(the reported value, else the arg-max), `<t>_fue_imputado`, `<t>_model_used` (the arm), `<t>_prediction_confidence`,
+`<t>_marginalized_features` (features whose level had no training support, averaged over) and the full probability
+vector `prob_<t>_<class>`. Inside a chain, each task also gets `<t>_condicionado_en` (the upstream it was conditioned
+on). `sector_informality` also writes `prob_informalidad_<class>_given_sector_<sector>`. `nse` also writes each
+component's `<t>_puntaje_esperado` (expected AMAI points), `amai_puntos_media`, `prob_nse_<level>` and
+`prob_nse_calibrado_<level>` (levels `e d d_mas c_menos c c_mas ab`). A chain's run also writes
+`completions.parquet`, one row per completion (per row × sector for enumerate, per row × draw for draws) with its
+weight: this is the table for any statistic beyond the marginals.
+
+### Giro
 
 Most workers in the survey did not report the activity of their employer (`giro_empresa`). The optional
 `eodgdl.giro` subpackage imputes it within the survey: a hybrid (with / without education) scikit-learn model
@@ -161,9 +189,7 @@ workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the data
 workers[giro.OUTPUT_COLUMNS].head()
 ```
 
-The model runs on `eodgdl.impute`, the package's imputation engine: the task is defined in
-`src/eodgdl/impute/tasks/giro.yaml` (classes, features, arms, candidate grid, evaluation settings), and the engine
-scores, compares and retrains it:
+The engine scores, compares and retrains the task (`src/eodgdl/impute/tasks/giro.yaml`):
 
 ```bash
 uv run eodgdl impute score giro --data data             # the fitted bundle's probabilities -> output/impute/giro_scores.parquet
@@ -172,29 +198,37 @@ uv run eodgdl impute retrain giro --data data           # grouped-CV selection, 
 quarto render reports/imputation_giro.qmd               # the retrain's evaluation (reads output/impute/giro/, trains nothing)
 ```
 
+### Informality
+
 Informality (trained on INEGI's ENOE through `mxcensus`, harmonized to the survey's workers) is imputed through the
 giro model by the chain `sector_informality`:
 
 ```bash
-uv run eodgdl impute retrain informality --data data                          # -> output/impute/informality/
-uv run eodgdl impute score sector_informality --data data --retrained output/impute
-uv run eodgdl impute evaluate sector_informality --data data                  # benchmark, sensitivity, components, gap decomposition
+uv run eodgdl impute score sector_informality --data data      # -> output/impute/sector_informality/
+uv run eodgdl impute retrain informality --data data           # -> output/impute/informality/
+uv run eodgdl impute evaluate sector_informality --data data   # benchmark, sensitivity, components, gap decomposition
+                                                               # (reads giro's scenarios: needs `retrain giro` first)
 quarto render reports/imputation_informality.qmd
 ```
 
-AMAI's socioeconomic level (NSE) of every dwelling is the chain `nse`: the head's education imputed within the survey,
-complete bathrooms and bedrooms imputed from INEGI's ENIGH 2022 (households in cities of 100,000+), internet, cars and
-the members aged 14+ who worked answered by the survey, AMAI's points and levels carried through 50 multiple
-imputations, and a rank calibration against AMAI's NSE by AGEB (`data/NSE_por_AGEB_AMAI.xlsx`):
+### Socioeconomic level (NSE)
+
+AMAI's socioeconomic level (NSE) of every dwelling is the chain `nse`. The head's education is imputed within the
+survey, and complete bathrooms and bedrooms from INEGI's ENIGH 2022 (households in cities of 100,000+). Internet, cars
+and the members aged 14+ who worked come from the survey's own answers. AMAI's points and levels are carried through
+50 multiple imputations, then rank-calibrated against AMAI's NSE by AGEB (`data/NSE_por_AGEB_AMAI.xlsx`):
 
 ```bash
+uv run eodgdl impute score nse --data data                 # -> output/impute/nse/: prob_nse_<level>, prob_nse_calibrado_<level>, the draws
 for task in educacion_jefe amai_banos amai_dormitorios amai_trabajadores; do uv run eodgdl impute retrain $task --data data; done
-uv run eodgdl impute score nse --data data --retrained output/impute       # prob_nse_<level>, prob_nse_calibrado_<level>, the draws
-uv run eodgdl impute evaluate nse --data data                              # propagation variants, Monte Carlo error, AMAI by AGEB
+uv run eodgdl impute evaluate nse --data data              # propagation variants, Monte Carlo error, AMAI by AGEB
 quarto render reports/imputation_nse.qmd
 ```
 
-The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`) is
-checked against the task on load (scikit-learn version, category levels, features). A retrain writes a new one to
-`output/impute/giro/`; to ship it, copy it to `data/` and update its sha256 in `src/eodgdl/data/registry.txt`. Feature
-frames are cached under the eodgdl cache directory (`--refresh` rebuilds).
+### Retraining and shipping a bundle
+
+A retrain writes the bundle, its scores and every evaluation table to `output/impute/<task>/`. `score <chain>
+--retrained output/impute` scores a chain with those bundles instead of the shipped ones. `evaluate` reads them by
+default (a task with no retrain there falls back to its shipped bundle), along with the retrain's `scenarios.parquet`
+for an upstream's scenarios. To ship a retrained bundle, copy it to `data/`, update its sha256 in `src/eodgdl/data/registry.txt` and
+tag a release (see Data). Feature frames are cached under the eodgdl cache directory (`--refresh` rebuilds).
