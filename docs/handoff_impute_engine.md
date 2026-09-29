@@ -115,6 +115,79 @@ commits ahead of `origin` at the end of session 6 (70eab10, c5f905f, eee00ad, be
 Still waiting on the user from session 6: push `impute-chains`, merge into `main`, whether to release, and option B
 for giro. The deliberately deferred work under "Not done" below is separate and was not asked for.
 
+### Session 7 (2026-09-29): findings, in the order of the focus list
+
+**Step 0 (2bf14e0).** `scripts/impute/parity.py ROOT_A ROOT_B [--models]` and `scripts/impute/rerun.sh ROOT [TASK ...]`.
+Checked on session 6's roots (`output/impute_70eab10` → `output/impute`): 144 of 246 parquets identical, the other 102
+all held-out tables, the JSON differences all held-out entries, the 19 fitted models identical.
+
+**Focus 1: copied worker records in giro's CV folds.** Measured with scratch scripts (the twin pairs rebuilt from the
+shipped trips by the loader's own rule reproduce `hab.diario_repetido` exactly: 1,238 pairs, 1,793 persons, 797 twin
+groups; linking households through them merges 1,501 dwellings into 664 components, the largest of 10).
+
+- *The copies are person records* (a defect in today's evaluation, small). 548 of giro's 26,913 workers are flagged,
+  333 of them with a reported giro. In the 281 twin pairs of two workers, the giro agrees in 98.8% of the 164 pairs
+  where both report it (chance 30.6%), the occupation 98.8%, education 93%, marital status and relationship 94.5%,
+  sex 94%, but the age 12% and the household size 24%. Only 8 pairs have one giro reported and the other not, so a
+  twin is almost never a donor for an imputed worker.
+- *The model memorizes them.* Out-of-fold log loss of the 333 flagged known workers (GB as selected, 10 seeds of
+  5-fold CV over every known worker): 0.726 under household groups, where the twin sits in the training folds 76% of
+  the time, against 0.903 when twins share a fold (households linked by a copied diary kept together). Household
+  grouping makes the CV optimistic by 0.0067 (with education; 0.0057 without; RandomForest 0.0030): 0.0034 from the
+  flagged rows, 0.0014 from the unflagged members of linked households (copies the diary rule cannot see, e.g.
+  workers without trips), the rest within noise. The published held-out split has 50 of its 3,485 workers (1.5% of
+  the weight) with a twin in training: the published held-out log loss (0.8934 with education) is optimistic by some
+  0.003–0.005.
+- *The leak does not drive the selection* (10 seeds over every known worker: GB beats RF by 0.013–0.024 in both arms
+  under both groupings; the one-SE rule picks RF in none). *But the selection is fragile*: on the retrain's own
+  training split (13.9k rows) RF trails GB by 0.0086 on average and falls within one SE in 2 of 10 seeds with
+  household groups, 1 of 10 with twin groups — and that one is seed 42. The paired SE from five folds (four degrees of
+  freedom) ranges from 0.001 to 0.008 across seeds. So both ways of grouping twins tried flip the without-education arm
+  to RandomForest: a fresh split over the components (RF − GB 0.008083 against an SE of 0.008119) and today's split
+  with each linked household moved to its component's first household (0.0035 against 0.0068; 631 rows change fold).
+  The without-education arm scores 4,522 of the 9,484 imputed workers: RF moves the imputed shares by up to 0.54 pp
+  (servicio 35.69% → 35.15%, gobierno 5.86% → 6.17%, comercio 24.68% → 24.96%), 284 arg-max labels, 0.50 at most on
+  one worker's probabilities. The with-education arm keeps GB and its refit is unchanged.
+- *The held-out numbers move by split noise.* One fold's log loss has an SD of 0.018 across random splits; the fresh
+  twin-grouped split gives 0.9171 / 0.9375 (with / without education) against the published 0.8934 / 0.9161, the
+  repaired one 0.8976 / 0.9305.
+- *How the copies train barely matters* (held-out on the twin-grouped split, the published configurations): hybrid log
+  loss 0.9174 (both copies, as today), 0.9204 (half weight each), 0.9166 (one kept); imputed shares within 0.08 pp.
+- *The dwelling tasks are barely touched*: 47 twin pairs are both the heads `eod.dwellings` picks (37 with the
+  education reported, agreeing 97%); 18 of educacion_jefe's 2,818 held-out dwellings are linked to a training dwelling
+  through a copied head.
+
+Options (a decision for the user; the group column would come from the loader, which records each flagged person's
+twin group in `hab`, with `eod.workers` and `eod.dwellings` grouping the households it links): (A) twin-linked groups
+with a fresh split; (B) today's split repaired; (C) keep household groups and document the leak. A and B both move the
+without-education arm to RandomForest under today's selection, so the choice goes with focus 2's question of how
+selection compares configurations (the scoring path, and repeated CV against the five-fold SE's noise).
+
+**Focus 2: missing values across training, selection, evaluation and scoring.**
+
+- *Selecting on the predictor that scores changes one selection* (a defect in today's outputs: educacion_jefe's
+  selection optimizes a predictor the bundle never uses). Every task's grid re-run with each CV fold scored as the
+  bundle scores (fold training shares; fold auxiliary models fitted on the fold's training rows and the rows whose
+  target is unknown; staged boosting scored through the expansion), on today's splits; the `predict_proba` fold losses
+  reproduce the published grid to the bit. educacion_jefe (1,045–1,100 validation rows marginalized per fold, nearly
+  all over income): GradientBoosting 1.3902 → 1.5013, LogisticRegression (C 0.1) 1.3942 → 1.4562, RandomForest → 1.4944,
+  so LR is selected by 0.038 (SE 0.003). Retrained with LR: held-out as the bundle scores 1.4204 (accuracy 44.3%)
+  against GB's published 1.4696 (41.0%); imputed shares licenciatura 16.7% → 19.9%, preparatoria 29.8% → 28.4%,
+  secundaria 27.5% → 26.4%, posgrado 3.4% → 2.6%; the NSE chain moves by at most 0.16 pp before calibration and 0.03 pp
+  after. Unchanged: giro (GB both arms; CV 0.9099 → 0.9113 and 0.9260 → 0.9276, 450–550 marginalized rows per fold),
+  informality (GB both arms; +0.001), amai_banos, amai_dormitorios and amai_trabajadores (no validation row
+  marginalized, identical).
+- *Two income arms for educacion_jefe* (a decision; measured by a full retrain, today's selection): `con_ingreso` GB as
+  today, `sin_ingreso` LR (C 0.1). Hybrid held-out 1.3885, the best of the three, but the arm without income is trained
+  on the refusers too (a third of the training heads) and carries the refusal → licenciatura pattern session 6 chose not
+  to carry: imputed licenciatura 29.8% (16.7% today, 19.9% with LR), posgrado 1.6%. The held-out set rewards it because
+  its refusers carry the same pattern, so it cannot arbitrate (focus 3).
+- *The five-fold SE is noisy* (focus 1): on giro's training split, the one-SE rule with the SE pooled over three
+  repeats of the five-fold CV (the same scale as today's SE, estimated with 12 degrees of freedom instead of 4) never
+  puts RandomForest within one SE of GradientBoosting for the without-education arm (0 of 120 sets of three seeds,
+  either grouping), where a single run does in 1–2 of 10 seeds.
+- Option B for giro (the missing destination and mode as learned categories) is still the user's.
+
 ### Session 6 (2026-09-28): session 5's pending list
 
 The user asked for the numbers and the options of items 1 and 2 and the fixes of items 3–8; later that night they

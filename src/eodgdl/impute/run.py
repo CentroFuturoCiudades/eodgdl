@@ -1,13 +1,14 @@
 """Running a task in its three modes.
 
 - **score** (:func:`score_task`): load the task's bundle, check it, score the source's rows (seconds).
-- **retrain** (:func:`retrain`): grouped-CV selection per arm on the training rows, evaluation on the held-out
-  households (predicted as scoring predicts them, :func:`heldout`), refit on every observed row, auxiliary models,
+- **retrain** (:func:`retrain`): grouped-CV selection per arm on the training rows (each validation fold scored as the
+  bundle scores it, :func:`fold_expander`), evaluation on the held-out households (predicted as scoring predicts them,
+  :func:`heldout`), refit on every observed row, auxiliary models,
   scoring, the covariate-shift and delta scenarios; writes the bundle and every evaluation table
   (:func:`write_retrain`) for a report to read.
 - **compare** (:func:`compare`): feature specifications evaluated cheaply: the published winner's family and
-  hyperparameters fixed, the same grouped folds on the training rows (the held-out fold never touched), each
-  candidate's fold log losses paired against the baseline's.
+  hyperparameters fixed, the same grouped folds on the training rows (the held-out fold never touched, the validation
+  folds scored as the selection scores them), each candidate's fold log losses paired against the baseline's.
 
 A mode that needs a fitted bundle takes it from :func:`eodgdl.impute.bundle.load_bundle`: ``retrained=<dir>`` reads
 the one a retrain wrote under ``<dir>/<task>/`` when there is one, else the installed data file.
@@ -24,11 +25,11 @@ import pandas as pd
 from sklearn.base import clone
 
 from . import evaluate, select
-from .arms import Arm, assign_arms, impute_with_arms, predict_arms, score_arm
+from .arms import Arm, assign_arms, auxiliary_shares, impute_with_arms, predict_arms, score_arm
 from .bundle import as_v2, bundle_arms, check_bundle, load_bundle, make_bundle, save_bundle
 from .features import build_frame, builder_config
 from .levels import count_levels_without_training_support, normalize_sample_weights, prepare_features
-from .marginalize import attach_training_level_shares
+from .marginalize import attach_training_level_shares, compute_training_level_shares, expand_unsupported
 from .models import build_candidates, fit_level_model
 from .sources import Context, get_source
 from .spec import load_task, parse_task
@@ -132,6 +133,26 @@ def refit(model, spec, rows, features, weight, group):
     return attach_training_level_shares(final, X, sample_weights, spec.numeric)
 
 
+def fold_expander(spec, arm, rows, X, sample_weights, others, weight, levels, seed):
+    """``expand(train_index, validation_index)`` for :func:`eodgdl.impute.select.tune`: a CV fold's validation rows
+    (``X``, the arm's prepared features of ``rows``) as the bundle would score them, had it been fitted on the fold's
+    training rows -- expanded over the levels those rows do not support (a missing value included), by P(level | x)
+    from auxiliary models fitted on every row outside the validation fold (the fold's training rows and ``others``, the
+    rows whose target is unknown; the held-out fold is never read), else by the fold's training shares."""
+    subsets = spec.level_subsets or None
+
+    def expand(train_index, validation_index):
+        shares = compute_training_level_shares(X.iloc[train_index], sample_weights.iloc[train_index], spec.numeric)
+        side = pd.concat([rows.iloc[train_index], others], ignore_index=True)
+        auxiliary = {feature: fit_level_model(side, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels, sample_weights=side[weight],
+                                              random_state=seed, missing_label=spec.missing_label) for feature in spec.auxiliary}
+        validation = X.iloc[validation_index].reset_index(drop=True)
+        return expand_unsupported(validation, shares, level_subsets=subsets, conditional_shares=auxiliary_shares(auxiliary, validation, subsets, spec.missing_label),
+                                  missing_label=spec.missing_label)
+
+    return expand
+
+
 def shipped_arm(model, spec, rows, features, weight, group):
     """The arm a bundle ships: :func:`refit`, wrapped in its isotonic recalibration (maps from grouped out-of-fold
     probabilities on the same rows) when the task's ``evaluation.isotonic.ship`` asks for it."""
@@ -149,8 +170,7 @@ def heldout(model, spec, rows, weight, auxiliary=None):
     wrapper, carrying its training level shares) through :func:`~eodgdl.impute.arms.score_arm`, so a missing value and
     a level without training support are averaged over the supported levels, by ``auxiliary``'s P(level | x) where it
     has a model for the feature (``{feature: model}``), else by the training shares. Columns in the model's class
-    order. Model selection still compares ``predict_proba`` on its validation folds, where the missing label is the
-    category the model learned."""
+    order. Model selection scores its validation folds the same way (:func:`fold_expander`)."""
     features = list(model.named_steps["prepare"].kw_args["features"])
     probabilities, _, classes = score_arm(Arm("heldout", model, features, auxiliary=auxiliary or {}), rows, spec.numeric, task_levels(spec),
                                           level_subsets=spec.level_subsets or None, missing_label=spec.missing_label)
@@ -316,6 +336,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     frame, weight, group = source.frame, source.weight, source.group
     rows, rows_weight = target.frame, target.weight
     levels = task_levels(spec)
+    others = frame[frame[spec.unknown_column].astype(bool).to_numpy()]      # the rows whose target is unknown
     cv, ev = spec.selection["cv"], spec.evaluation
     seed, n_splits = cv["seed"], cv["splits"]
     n_bins, positive = ev.get("calibration_bins", 10), ev.get("positive_class")
@@ -330,7 +351,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     test = select_rows(test, drop=cv.get("test_exclude"))
     # every row outside the held-out fold, whatever its target: where the held-out evaluation's auxiliary models are
     # fitted, as the bundle's are on every row
-    training_side = pd.concat([train, frame[frame[spec.unknown_column].astype(bool).to_numpy()]], ignore_index=True)
+    training_side = pd.concat([train, others], ignore_index=True)
     timings["features"] = time.perf_counter() - started
 
     tables, summary = {}, {"task": spec.name, "source": spec.source, "score_source": spec.score_source, "rows": len(rows),
@@ -341,9 +362,10 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     for arm in spec.arms:
         features = list(arm.features)
         started = time.perf_counter()
-        X, y, w, g, _ = training_data(spec, train, features, weight, group)
+        X, y, w, g, arm_rows = training_data(spec, train, features, weight, group)
+        expand = fold_expander(spec, arm, arm_rows, X, w, others, weight, levels, seed)
         candidates = build_candidates(features, spec.numeric, levels, spec.selection["families"], random_state=seed, missing_label=spec.missing_label)
-        tuning, model = select.tune(candidates, X, y, w, g, cv_splits=n_splits, random_state=seed, n_jobs=n_jobs, progress=progress)
+        tuning, model = select.tune(candidates, X, y, w, g, cv_splits=n_splits, random_state=seed, n_jobs=n_jobs, progress=progress, expand=expand)
         timings[f"tune_{arm.name}"] = time.perf_counter() - started
         selected[arm.name] = _selected_row(tuning)
         selected_models[arm.name] = attach_training_level_shares(model, X, w, spec.numeric)   # the held-out rows are scored as scoring scores
@@ -362,7 +384,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
             # each selected configuration cross-validated with another group (e.g. ENOE's sampling unit)
             alternative = train[~train[spec.unknown_column].astype(bool)][ev["robustness_groups"]].astype("string").reset_index(drop=True)
             robust = [fit for fold in select.grouped_splits(X, y, alternative, cv_splits=n_splits, random_state=seed)
-                      for fit in select.fit_fold(model, {}, None, X, y, w, *fold)]
+                      for fit in select.fit_fold(model, {}, None, X, y, w, *fold, expansion=expand(*fold))]
             tables[f"robustness_cv__{arm.name}"] = pd.DataFrame({"fold": range(n_splits), "household_grouped": selected[arm.name]["fold_log_losses"],
                                                                  f"{ev['robustness_groups']}_grouped": [fit["log_loss"] for fit in robust]})
         for name, component in components.items():
@@ -504,7 +526,8 @@ def compare(task, candidates, seeds=(42,), bundle=None, retrained=None, context=
     {"features": [...], "requires": [...]}}}``, new ``features.groups`` or ``builders``; an arm entry replaces the
     whole arm). Each arm keeps the family and hyperparameters of the bundle's winner (``bundle``, else
     :func:`~eodgdl.impute.bundle.load_bundle` with ``retrained``); the folds are the task's grouped folds, reseeded
-    per seed, over the training rows only. Returns ``(folds, paired)``: every fold's loss, and per candidate, arm and
+    per seed, over the training rows only, each validation fold scored as the selection scores it
+    (:func:`fold_expander`). Returns ``(folds, paired)``: every fold's loss, and per candidate, arm and
     seed the mean loss, the mean paired difference to the baseline and its standard error, plus the difference
     averaged over seeds."""
     spec = _spec(task)
@@ -519,16 +542,19 @@ def compare(task, candidates, seeds=(42,), bundle=None, retrained=None, context=
         source = build_frame(candidate, context)
         frame = select_rows(source.frame, keep=candidate.selection.get("population"))
         train, _ = select.split_known(frame, candidate.target, source.group, candidate.unknown_column, n_splits=cv["splits"], test_fold=cv["test_fold"], random_state=cv["seed"])
+        others = frame[frame[candidate.unknown_column].astype(bool).to_numpy()]
         levels = task_levels(candidate)
         for arm in candidate.arms:
             winner = winners[arm.name]
             family = dict(candidate.selection["families"][winner["model"]])
             family["params"] = {key.removeprefix("classifier__"): [value] for key, value in winner["best_params"].items()}
             models = build_candidates(list(arm.features), candidate.numeric, levels, {winner["model"]: family}, random_state=cv["seed"], missing_label=candidate.missing_label)
-            X, y, w, g, _ = training_data(candidate, train, list(arm.features), source.weight, source.group)
+            X, y, w, g, arm_rows = training_data(candidate, train, list(arm.features), source.weight, source.group)
+            expand = fold_expander(candidate, arm, arm_rows, X, w, others, source.weight, levels, cv["seed"])
             for seed in seeds:
                 splits = select.grouped_splits(X, y, g, cv_splits=cv["splits"], random_state=seed)
-                [(_, by_fold)] = select.cross_validate_grid(models, X, y, w, splits, n_jobs=n_jobs, progress=progress).items()
+                expansions = [expand(*split) for split in splits]
+                [(_, by_fold)] = select.cross_validate_grid(models, X, y, w, splits, n_jobs=n_jobs, progress=progress, expansions=expansions).items()
                 rows += [{"candidate": name, "arm": arm.name, "seed": seed, "fold": fold, "log_loss": by_fold[fold]["log_loss"], "features": len(arm.features)}
                          for fold in range(len(splits))]
     folds = pd.DataFrame(rows)

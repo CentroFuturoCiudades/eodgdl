@@ -177,6 +177,21 @@ def test_parallel_tuning_equals_serial():
     assert list(runs[0]["fold_log_losses"]) == list(runs[1]["fold_log_losses"])
 
 
+def test_fold_expansions_change_nothing_where_every_level_is_supported():
+    frame = synthetic(n=300)
+    frame["b"] = frame["b"].replace(MISSING, "b0")                 # every fold's training rows hold every level
+    X, y, w = levels.prepare_features(frame, FEATURES, NUMERIC), frame["y"], levels.normalize_sample_weights(frame["w"])
+    families = {"LogisticRegression": {"max_iter": 500, "params": {"C": [1.0]}},
+                "GradientBoosting": {"native_categoricals": True, "early_stopping": False, "params": {"max_iter": [5, 10]}}}
+    candidates = models.build_candidates(FEATURES, NUMERIC, LEVELS, families=families)
+    splits = select.grouped_splits(X, y, frame["g"], cv_splits=3)
+    expansions = [marginalize.expand_unsupported(X.iloc[validation].reset_index(drop=True), marginalize.compute_training_level_shares(X.iloc[train], w.iloc[train], NUMERIC))
+                  for train, validation in splits]
+    assert all(len(expansion.frame) == len(validation) for expansion, (_, validation) in zip(expansions, splits))
+    assert select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False, expansions=expansions) == \
+        select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False)
+
+
 def test_one_se_picks_the_simplest_candidate_within_one_se():
     results = pd.DataFrame({
         "model": ["GradientBoosting", "LogisticRegression", "RandomForest"],
@@ -393,6 +408,42 @@ def test_heldout_rows_are_predicted_as_scoring_predicts_them(fitted, labelled_so
     conditional = {"b": marginalize.predict_level_shares(auxiliary["b"], X)}
     np.testing.assert_array_equal(with_auxiliary, marginalize.predict_proba_marginalizing(fitted, X, conditional_shares=conditional)[0])
     assert not np.allclose(with_auxiliary[X["b"].eq(MISSING).to_numpy()], probabilities[X["b"].eq(MISSING).to_numpy()])
+
+
+def test_selection_scores_each_fold_as_the_bundle_scores(labelled_source, tmp_path):
+    """The grid's CV judges a configuration on a validation fold as a bundle fitted on the fold's training rows would
+    score it: the fold model with its training shares, an unobserved a averaged over P(a | x) from an auxiliary model
+    fitted on every row outside the validation fold."""
+    from sklearn.base import clone
+
+    from eodgdl.impute import run, sources
+    from eodgdl.impute.arms import Arm, score_arm
+    from eodgdl.impute.features import build_frame
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    source = build_frame(spec, sources.Context(cache_dir=tmp_path / "cache"))
+    frame, task_levels = source.frame, run.task_levels(spec)
+    others = frame[frame[spec.unknown_column].astype(bool).to_numpy()]
+    arm = spec.arm("with_b")
+    X, y, w, g, rows = run.training_data(spec, frame, list(arm.features), source.weight, source.group)
+    expand = run.fold_expander(spec, arm, rows, X, w, others, source.weight, task_levels, 42)
+    candidates = models.build_candidates(list(arm.features), spec.numeric, task_levels, {"LogisticRegression": {"max_iter": 500, "params": {"C": [1.0]}}})
+    splits = select.grouped_splits(X, y, g, cv_splits=3)
+    [(_, as_scored)] = select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False, expansions=[expand(*split) for split in splits]).items()
+    [(_, as_is)] = select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False).items()
+    for fold, (train, validation) in enumerate(splits):
+        model = clone(candidates["LogisticRegression"]["model"]).set_params(classifier__C=1.0)
+        model.fit(X.iloc[train], y.iloc[train], classifier__sample_weight=w.iloc[train])
+        marginalize.attach_training_level_shares(model, X.iloc[train], w.iloc[train], spec.numeric)
+        side = pd.concat([rows.iloc[train], others], ignore_index=True)
+        auxiliary = {"a": models.fit_level_model(side, "a", spec.auxiliary_predictors("a", arm.name), spec.numeric, task_levels, sample_weights=side[source.weight])}
+        probabilities, marginalized, classes = score_arm(Arm(arm.name, model, list(arm.features), auxiliary=auxiliary), rows.iloc[validation], spec.numeric, task_levels)
+        expected = select.fold_metrics(y.iloc[validation], w.iloc[validation], classes[probabilities.argmax(axis=1)], probabilities, classes)
+        assert as_scored[fold] == pytest.approx(expected, abs=1e-12)
+        assert marginalized.str.contains("a").any() and marginalized.str.contains("b").any()
+        # read as it is, the missing label is the category the model learned: another predictor
+        assert abs(as_scored[fold]["log_loss"] - as_is[fold]["log_loss"]) > 1e-6
 
 
 def test_delta_adjustment_reaches_its_target_where_probabilities_reach_one():
