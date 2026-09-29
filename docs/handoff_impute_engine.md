@@ -7,6 +7,9 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **Released `v0.5.1`** (2026-09-29): 8d8e7c8 (giro's workers without a work trip take `sin_viaje`, below) and 6d0e9b7
+  (version 0.5.1, `REF = "v0.5.1"`), tagged, pushed and merged into `main`; the mirror check passed again (giro and both
+  chains from the tag equal `output/impute/` exactly).
 - **Released `v0.5.0`** (2026-09-29, the user's request): c89d20b (version 0.5.0, `REF = "v0.5.0"`, `uv lock`), tagged
   `v0.5.0` (lightweight, as before), pushed with `impute-chains`, which is merged into `main` (`--no-ff`) and pushed.
   Session 7's commits: 2bf14e0 (parity tool), 41cd5a7 (selection on the scoring path), 0c0b120 (copied records
