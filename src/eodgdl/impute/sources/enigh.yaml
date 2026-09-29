@@ -1,0 +1,15 @@
+# ENIGH sources, read by eodgdl.impute.sources.enigh. Ported from informal-jobs-model's notebook 07.
+
+enigh.households:
+  # Every ENIGH household of the edition (national, rural included, as informal-jobs-model trained), with its
+  # dwelling's bathrooms, sleeping rooms and tenure, its questionnaire's internet and vehicles, and the members aged
+  # 14+ who worked last month.
+  period: "2022"
+  keys: [folioviv, foliohog]
+  weight: factor
+  group: folioviv            # CV group: the households of a dwelling never straddle two folds
+  worker_min_age: 14
+  worked_code: "1"           # personas.trabajo_mp: worked last month
+  household_columns: [ubica_geo, tam_loc, est_socio, factor, sexo_jefe, edad_jefe, educa_jefe, tot_integ, ing_cor]
+  questionnaire_columns: [conex_inte, num_auto, num_van, num_pickup, num_moto, num_bici]
+  dwelling_columns: [bano_comp, cuart_dorm, tenencia]

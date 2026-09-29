@@ -1,0 +1,63 @@
+# AMAI's socioeconomic level (NSE) of the EOD's dwellings: the head's education (imputed where unknown), the dwelling's
+# complete bathrooms and sleeping rooms (imputed from ENIGH), its internet, cars and members aged 14+ who worked
+# (answered in the EOD); their AMAI points, AMAI's cut into levels, and the rank calibration against AMAI's NSE by
+# AGEB. Ported from informal-jobs-model's notebooks 06-08, which imputed the components independently and cut a hard
+# level from the expected points; here the components are imputed in sequence (bathrooms conditioned on the
+# education, bedrooms on both) and the level's distribution is carried through `draws` multiple imputations.
+
+chain: nse
+mode: sequential
+propagation: draws           # decided 2026-09-28: 50, 200 draws and enumerate agree within 0.05 pp; the plug-in
+draws: 50                    # (informal-jobs-model's expected points cut once) compresses the distribution
+seed: 42
+steps:
+  - educacion_jefe
+  - amai_banos:
+      uses:
+        educacion_jefe: {as: educacion_jefe_puntos}        # the class's AMAI points
+  - amai_dormitorios:
+      uses:
+        educacion_jefe: {as: educacion_jefe_puntos}
+        amai_banos: {as: banos_puntos}                     # the class's AMAI points
+  - derive: amai_puntos
+    tasks: [educacion_jefe, amai_banos, amai_dormitorios]
+    observed:                                             # AMAI points of the dwelling's own answers
+      tiene_internet: {"Sí": 32, "No": 0}
+      n_autos_camionetas: {"0": 0, "1": 22, "2": 43, "3": 43, "4 o más": 43}
+      trabajadores_14: {"0": 0, "1": 15, "2": 31, "3": 46, "4 o más": 61}
+  - derive: nse_nivel
+    from: amai_puntos
+    edges: [-.inf, 48, 95, 116, 141, 168, 202, .inf]       # AMAI's cut points (left-closed)
+    labels: [e, d, d_mas, c_menos, c, c_mas, ab]            # E, D, D+, C-, C, C+, A/B
+    levels: {nse: [e, d, d_mas, c_menos, c, c_mas, ab]}
+  - derive: nse_ageb_calibrado
+    from: amai_puntos
+    level: nse
+    ageb: ageb                                             # the dwelling's 13-character urban AGEB
+    weight: ponderador                                     # the dwelling weight
+    file: NSE_por_AGEB_AMAI.xlsx                           # eodgdl.data catalog
+    file_columns: [entidad, nombre_entidad, municipio, nombre_municipio, localidad, nombre_localidad, ageb,
+                   ab_num_viviendas, c_mas_num_viviendas, c_num_viviendas, c_menos_num_viviendas, d_mas_num_viviendas,
+                   d_num_viviendas, e_num_viviendas, nivel_predominante, num_viviendas, tamano_localidad]
+    state: Jalisco
+    municipalities: [Guadalajara, Ixtlahuacán de los Membrillos, Juanacatlán, El Salto, Tlajomulco de Zúñiga,
+                     San Pedro Tlaquepaque, Tonalá, Zapopan, Zapotlanejo]
+    counts: {e: e_num_viviendas, d: d_num_viviendas, d_mas: d_mas_num_viviendas, c_menos: c_menos_num_viviendas,
+             c: c_num_viviendas, c_mas: c_mas_num_viviendas, ab: ab_num_viviendas}
+    levels: {nse_calibrado: [e, d, d_mas, c_menos, c, c_mas, ab]}
+
+# Diagnostics (eodgdl impute evaluate nse; eodgdl.impute.diagnostics.evaluate_distribution), read by
+# reports/imputation_nse.qmd.
+evaluation:
+  distribution:
+    columns:
+      nse: [e, d, d_mas, c_menos, c, c_mas, ab]
+      nse_calibrado: [e, d, d_mas, c_menos, c, c_mas, ab]
+  variants:
+    # informal-jobs-model's approach: the expected points of each component summed and cut (one hard level)
+    expected: {propagation: expected}
+    # exact scenario sums (the rank calibration needs complete datasets, so it is left out)
+    enumerate: {propagation: enumerate, skip: [nse_ageb_calibrado]}
+    draws_200: {draws: 200}
+  reference: {derive: nse_ageb_calibrado}                 # AMAI's NSE by AGEB on the AGEBs the EOD covers
+  observed_check: {task: amai_trabajadores}               # the ENIGH model against the EOD's own count

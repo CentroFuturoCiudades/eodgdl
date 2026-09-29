@@ -10,7 +10,7 @@ import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SOURCE_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe")
+SOURCE_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe", "eodgdl.impute.sources.enigh")
 _SOURCES = {}
 
 

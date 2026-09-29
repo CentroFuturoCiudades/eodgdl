@@ -25,8 +25,13 @@ ENDUTIH_CSV = "ENDUTIH_internet_AMG.csv"
 # Fitted giro-imputation bundle (eodgdl.giro; scikit-learn pickle, see the sklearn version in its metadata)
 GIRO_MODEL_JOBLIB = "od_giro_hybrid_model.joblib"
 
+# AMAI's socioeconomic level (NSE) by AGEB, national, as delivered (read by eodgdl.impute.derive.amai for the AGEB
+# rank calibration of the chain `nse`; brought over from informal-jobs-model's data/, 2026-09-03)
+AMAI_NSE_AGEB_XLSX = "NSE_por_AGEB_AMAI.xlsx"
+
 SURVEY_FILES = [VIVIENDAS_CSV, HABITANTES_CSV, VIAJES_CSV]
 ZONE_FILES = [ZONIFICACION_PARQUET]
 CENSUS_FILES = [CONAPO_CSV, VMRC_CSV, ENDUTIH_CSV]
 MODEL_FILES = [GIRO_MODEL_JOBLIB]
-FILES = SURVEY_FILES + ZONE_FILES + CENSUS_FILES + MODEL_FILES
+REFERENCE_FILES = [AMAI_NSE_AGEB_XLSX]
+FILES = SURVEY_FILES + ZONE_FILES + CENSUS_FILES + MODEL_FILES + REFERENCE_FILES

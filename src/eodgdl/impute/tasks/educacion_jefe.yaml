@@ -1,0 +1,65 @@
+# Imputation task: the education of the head of household on AMAI's classes, for the EOD dwellings whose head's
+# education is unknown. Trained and scored on the EOD's own dwellings (source eod.dwellings). Ported from
+# informal-jobs-model's notebook 06, with the dwelling weight (the notebook used the person weight) and the engine's
+# selection. The first step of the chain `nse`.
+
+task: educacion_jefe
+source: eod.dwellings
+bundle: od_educacion_jefe_model.joblib
+
+target:
+  column: educacion_jefe
+  classes: {no_estudio: no_estudio, primaria: primaria, secundaria: secundaria, carrera_tecnica: carrera_tecnica,
+            preparatoria: preparatoria, licenciatura: licenciatura, posgrado: posgrado}
+  scores: {no_estudio: 0, primaria: 11, secundaria: 18, carrera_tecnica: 23, preparatoria: 27, licenciatura: 59, posgrado: 85}   # AMAI points
+
+missing_label: no_especificado
+
+features:
+  builders: [harmonize.eod_viviendas]
+  groups:
+    head: [edad_jefe, sexo_jefe, estado_civil_jefe]
+    dwelling: [personas_en_vivienda, tenencia_vivienda, ingreso_hogar, n_autos_camionetas, tiene_internet]
+    # the head's weekend travel and whether they left home yesterday
+    travel: [weekend_mode_auto_particular, weekend_mode_camion_autobus, weekend_mode_a_pie, salio_casa_ayer,
+             weekend_dest_visitar, weekend_dest_compras_bienes_servicios]
+    place: [centralidad]
+  numeric: [edad_jefe]
+
+levels:
+  declared:
+    weekend_mode_auto_particular: ["Sí", "No"]
+    weekend_mode_camion_autobus: ["Sí", "No"]
+    weekend_mode_a_pie: ["Sí", "No"]
+    weekend_dest_visitar: ["Sí", "No"]
+    weekend_dest_compras_bienes_servicios: ["Sí", "No"]
+  schema_columns: {estado_civil_jefe: estado_civil}
+
+arms:
+  all:
+    features: [head, dwelling, travel, place]
+
+selection:
+  cv: {splits: 5, seed: 42, test_fold: 0}
+  rule: one_se
+  families:
+    LogisticRegression: {max_iter: 2000, params: {C: [0.1, 1.0, 10.0]}}
+    RandomForest:
+      n_estimators: 500
+      n_jobs: -1
+      params: {max_leaf_nodes: [25, 50, 100], max_features: [sqrt, 0.7], min_samples_leaf: [1, 5, 10]}
+    GradientBoosting:
+      native_categoricals: true
+      early_stopping: false
+      params: {max_iter: [50, 100, 200, 400], learning_rate: [0.05, 0.1], max_leaf_nodes: [15, 31], l2_regularization: [0.0, 1.0]}
+
+evaluation:
+  bootstrap: 500
+  calibration_bins: 10
+  profiles: [sexo_jefe, estado_civil_jefe, personas_en_vivienda, ingreso_hogar, n_autos_camionetas, tiene_internet, tenencia_vivienda]
+  isotonic: {ship: false}
+  shift:
+    profile: [edad_jefe, sexo_jefe, estado_civil_jefe, personas_en_vivienda, tenencia_vivienda, ingreso_hogar, n_autos_camionetas, tiene_internet]
+
+outputs:
+  prefix: educacion_jefe

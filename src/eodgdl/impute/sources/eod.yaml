@@ -14,3 +14,18 @@ eod.workers:
 eod.work_trip:
   # Most frequent destination type, destination code / zone and main mode of each person's work trips.
   purpose: Trabajar           # `motivo_viaje` of the trips whose destination describes the workplace
+
+eod.dwellings:
+  # One row per dwelling with its head of household: the reported "Jefe del hogar" (the first, in the survey's order,
+  # where a dwelling holds several households), else its oldest member. Ported from informal-jobs-model's notebook 06.
+  keys: [folio_vivienda]
+  weight: ponderador          # the dwelling weight (viv): the targets are the dwelling's
+  group: folio_vivienda
+  head_relationship: Jefe del hogar
+  # The head's own columns, renamed: sex, age, marital status, education (the education task's target), and the
+  # weekend travel and whether they left home yesterday.
+  head_columns: {sexo_nacimiento: sexo_jefe, edad: edad_jefe, estado_civil: estado_civil_jefe, escolaridad: escolaridad_jefe, salio_casa_ayer: salio_casa_ayer}
+  head_prefixes: [weekend_]
+  # Members aged 14+ who worked last week (AMAI counts those who worked last month).
+  worker_min_age: 14
+  employed_categories: [Tiempo completo, Medio tiempo, Tenía trabajo, pero no trabajó]

@@ -63,13 +63,19 @@ def _map_variable(values, definition, missing_label, name):
 
 
 def _number_variable(values, definition, name):
+    if isinstance(values, pd.DataFrame):          # several columns summed (e.g. cars + vans + pickups)
+        values = values.apply(lambda column: pd.to_numeric(column.astype("string").str.strip(), errors="coerce")).sum(axis=1, min_count=1)
     if "map" in definition:
         codes = values.astype("string").str.strip()
-        assert_mapping_covers(codes, definition["map"], name=name)
+        assert_mapping_covers(codes, definition["map"], definition.get("allowed_unmapped", []), name=name)
         numbers = codes.map(definition["map"])
     else:
         numbers = values
-    numbers = pd.to_numeric(numbers, errors="coerce").astype("Int64")
+    numbers = pd.to_numeric(numbers.astype("string").str.strip() if numbers.dtype == object or pd.api.types.is_string_dtype(numbers) else numbers, errors="coerce")
+    if "divide" in definition:
+        numbers = numbers / definition["divide"]
+    else:
+        numbers = numbers.astype("Int64") if (numbers.dropna() % 1 == 0).all() else numbers
     for code in definition.get("unspecified", []):
         numbers = numbers.mask(numbers == code)
     if "cap" in definition:
@@ -78,8 +84,13 @@ def _number_variable(values, definition, name):
 
 
 def _bins_variable(numbers, cut, missing_label):
+    """Cut a number: common.yaml's left-closed bins (the last open), or inline ``edges`` (``-inf`` / ``inf`` allowed)
+    with ``right: true`` for right-closed intervals."""
     import numpy as np
 
+    if "edges" in cut:
+        edges = [float(edge) for edge in cut["edges"]]
+        return pd.cut(numbers.astype("Float64"), bins=edges, labels=cut["labels"], right=cut.get("right", False)).astype("string").fillna(missing_label)
     bins = list(cut["bins"]) + [np.inf]
     return pd.cut(numbers, bins=bins, labels=cut["labels"], right=False).astype("string").fillna(missing_label)
 
@@ -108,12 +119,21 @@ def apply_variables(frame, variables, common=None, missing_label=None):
     missing_label = missing_label or common["missing_label"]
     out = pd.DataFrame(index=frame.index)
     for name, definition in variables.items():
-        if "rules" in definition:
+        if definition.get("unobserved"):                 # not asked in this source: missing (a chain fills it)
+            out[name] = pd.Series(pd.NA, index=frame.index, dtype="Float64" if definition["unobserved"] == "number" else "string")
+        elif "rules" in definition:
             out[name] = _rules_variable(frame, definition, missing_label, name)
         elif "bins" in definition:
-            out[name] = _bins_variable(out[definition["from"]], common[definition["bins"]], missing_label)
+            cut = definition["bins"] if isinstance(definition["bins"], dict) else common[definition["bins"]]
+            numbers = out[definition["from"]] if definition.get("from") in out else frame[definition["from"]]
+            out[name] = _bins_variable(numbers, cut, missing_label)
         elif "number" in definition:
-            out[name] = _number_variable(frame[definition["column"]], definition["number"], name)
+            source = definition.get("columns", definition.get("column"))
+            if isinstance(source, str):
+                values = out[source] if source in out else frame[source]      # an earlier output, else a source column
+            else:
+                values = frame[list(source)]
+            out[name] = _number_variable(values, definition["number"], name)
         else:
             out[name] = _map_variable(frame[definition["column"]], definition, missing_label, name)
     return out

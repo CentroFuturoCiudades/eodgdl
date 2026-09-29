@@ -205,3 +205,20 @@ def test_given_upstream_outputs_and_scoring_options(chain_source):
     for option in ({"level_subsets": {"x1": ["a0"]}}, {"auxiliary": False}):
         other = run_chain(spec, context=context, bundles=bundles, specs=SPECS, options={"t2": option})
         pd.testing.assert_frame_equal(other.frame, scored.frame)
+
+
+def test_numeric_feature_takes_the_class_score_in_enumerate_and_draws(chain_source):
+    from eodgdl.impute.features import build_frame
+
+    context, bundles = chain_source
+    spec = chain(["t1", {"t2e": {"uses": {"t1": {"as": "v1"}}}}], propagation="enumerate")   # v1 = t1's score (1, 2, 3)
+    result = run_chain(spec, context=context, bundles=bundles, specs=SPECS)
+    frame1, frame2 = build_frame(T1, context).frame, build_frame(T2E, context).frame
+    p1 = score_frame(T1, frame1, bundles["t1"])[T1.probability_columns].to_numpy()
+    expected = sum(p1[:, [i]] * scored_with(T2E, frame2, bundles["t2e"], v1=score) for i, score in enumerate([1.0, 2.0, 3.0]))
+    np.testing.assert_allclose(result.frame[T2E.probability_columns].to_numpy(), expected, rtol=1e-12)
+    assert {"prob_t2e_p_given_v1_1.0", "prob_t2e_q_given_v1_3.0"} <= set(result.frame.columns)
+    doubled = chain(["t1", {"t2e": {"uses": {"t1": {"as": "v1", "transform": {"a": 2, "b": 4, "c": 6}}}}}], propagation="draws", draws=3)
+    assert set(run_chain(doubled, context=context, bundles=bundles, specs=SPECS).completions["t1"].unique()) <= {"a", "b", "c"}
+    with pytest.raises(ValueError, match="need numbers"):
+        chain(["t1", {"t2e": {"uses": {"t1": {"as": "v1", "transform": {"a": "x", "b": "y", "c": "z"}}}}}])

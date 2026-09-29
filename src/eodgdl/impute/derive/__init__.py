@@ -5,13 +5,13 @@ level cut from it, per draw).
 A derive function is registered with :func:`register_derive` in a module listed in ``DERIVE_MODULES``; it takes
 ``(completions, base, config)`` -- the completions table (``row``, ``weight``, each step's value under its task
 prefix, earlier derived columns), the scoring source's frame (``base.iloc[completions["row"]]`` are a completion's
-covariates) and the step's configuration from the chain YAML -- and returns a frame of new columns aligned to
+covariates) and the step's configuration from the chain YAML (plus ``propagation``, the chain's) -- and returns a frame of new columns aligned to
 ``completions``. A categorical column is aggregated into ``prob_<column>_<level>`` (levels from ``config["levels"]``,
 else the values seen), a numeric one into ``<column>_media``."""
 
 import importlib
 
-DERIVE_MODULES = ()
+DERIVE_MODULES = ("eodgdl.impute.derive.amai",)
 _DERIVES = {}
 
 

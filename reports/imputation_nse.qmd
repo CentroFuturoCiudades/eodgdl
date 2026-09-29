@@ -1,0 +1,292 @@
+---
+title: "Socioeconomic level (NSE) imputation"
+subtitle: "How the chain `nse` gives every EOD dwelling a distribution over AMAI's socioeconomic levels: the head's education imputed within the survey, bathrooms and bedrooms imputed from ENIGH, the rest answered, and the level calibrated against AMAI's NSE by AGEB"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import json
+import os
+from pathlib import Path
+
+
+def _find_root() -> Path:
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        if (base / "data" / "IMEPLAN_Base_Viviendas_Master.csv").exists():
+            return base.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl repository.")
+
+
+ROOT = _find_root()
+os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
+OUT = Path(os.environ.get("EODGDL_IMPUTE_DIR", ROOT / "output" / "impute"))
+TASKS = ["educacion_jefe", "amai_banos", "amai_dormitorios", "amai_trabajadores"]
+for task in TASKS:
+    assert (OUT / task / "summary.json").exists(), f"No retrain of {task}: run `uv run eodgdl impute retrain {task} --data data` first."
+assert (OUT / "nse" / "evaluation" / "summary.json").exists(), "No chain evaluation: run `uv run eodgdl impute evaluate nse --data data`."
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+
+from eodgdl.impute.chain import load_chain
+from eodgdl.impute.spec import load_task
+
+CHAIN = load_chain("nse")
+SUMMARY = {task: json.loads((OUT / task / "summary.json").read_text(encoding="utf-8")) for task in TASKS}
+CHAIN_SUMMARY = json.loads((OUT / "nse" / "evaluation" / "summary.json").read_text(encoding="utf-8"))
+LEVELS = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
+LEVEL_LABEL = dict(zip(LEVELS, ["E", "D", "D+", "C-", "C", "C+", "A/B"]))
+ARM_LABEL = {"all": "Single arm", "con_ingreso": "With income", "sin_ingreso": "Without income"}
+
+
+def T(task, name, arm=None):
+    return pd.read_parquet(OUT / task / "evaluation" / (f"{name}__{arm}.parquet" if arm else f"{name}.parquet"))
+
+
+def C(name):
+    return pd.read_parquet(OUT / "nse" / "evaluation" / f"{name}.parquet")
+
+
+def pct(x, digits=1):
+    return f"{100 * x:.{digits}f}%"
+
+
+def fmt(n):
+    return f"{int(n):,}"
+
+
+# Seven ordered levels: a sequential ramp from the validated palette's blue (dataviz skill), light (E) to dark (A/B).
+RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+INK, MUTED, GRID = "#1f1f1f", "#6b6b6b", "#e6e6e6"
+plt.rcParams.update({
+    "figure.dpi": 120, "font.size": 10, "axes.titlesize": 11, "axes.edgecolor": MUTED, "axes.labelcolor": INK,
+    "xtick.color": MUTED, "ytick.color": MUTED, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8, "axes.axisbelow": True, "legend.frameon": False,
+})
+
+distribution = C("distribution")
+shipped_variant = distribution["variant"].iloc[0]
+scores = pd.read_parquet(OUT / "nse" / "scores.parquet") if (OUT / "nse" / "scores.parquet").exists() else None
+for column in ("nse", "nse_calibrado"):
+    part = distribution[(distribution["variant"] == shipped_variant) & (distribution["column"] == column)]
+    assert abs(part["share"].sum() - 1) < 1e-9, column
+```
+
+AMAI's socioeconomic level (NSE) sums the points of six household components and cuts the total into seven levels.
+The components are the head's education, internet, cars, members aged 14+ who worked, complete bathrooms and
+bedrooms. The EOD survey answers three of them for every dwelling: internet, cars, and the workers (counted from its
+roster). It answers the head's education for most dwellings. It does not ask about bathrooms or bedrooms.
+
+The chain `nse` (`src/eodgdl/impute/chains/nse.yaml`) runs these steps:
+
+1. It imputes the head's education where unknown, from the EOD's own dwellings.
+2. It imputes bathrooms from ENIGH 2022, conditioned on the head's education.
+3. It imputes bedrooms from ENIGH, conditioned on the education and the bathrooms.
+4. For each of `{python} CHAIN.draws` seeded draws it sums the points, cuts the level and calibrates it within the
+   dwelling's AGEB against AMAI's NSE by AGEB.
+
+Every dwelling ends with a probability for each level, before and after calibration.
+
+```{python}
+#| label: headline
+shares = distribution[distribution["variant"] == shipped_variant].pivot(index="level", columns="column", values="share").reindex(LEVELS)
+display(Markdown(
+    f"**Weighted distribution of the EOD's dwellings** ({shipped_variant}): "
+    + ", ".join(f"{LEVEL_LABEL[level]} {pct(shares.loc[level, 'nse_calibrado'])}" for level in LEVELS)
+    + " after the AGEB calibration; before it, "
+    + ", ".join(f"{LEVEL_LABEL[level]} {pct(shares.loc[level, 'nse'])}" for level in LEVELS) + "."
+))
+```
+
+# The head's education {#sec-education}
+
+```{python}
+#| label: education
+s = SUMMARY["educacion_jefe"]
+sel = s["arms"]["all"]["selected"]
+params = ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in sel["best_params"].items())
+m = s["arms"]["all"]["test_metrics"]
+u = s["arms"]["all"]["test_uncertainty"]
+display(Markdown(
+    f"The head of each of the {fmt(s['rows'])} dwellings is the reported *Jefe del hogar*, else the oldest member. "
+    f"{fmt(s['known'])} heads report an education that maps to AMAI's classes; {fmt(s['unknown'])} do not "
+    "(missing or *No sabe*). Those are imputed from the head's age, sex and marital status, the dwelling's size, "
+    "tenure, income, cars and internet, the head's weekend travel, and the dwelling's centrality. The model trains "
+    "with the dwelling weight. "
+    f"Selected: **{sel['model']}** ({params}), "
+    f"CV log loss {sel['weighted_log_loss']:.4f}. On held-out households the log loss is {m['weighted_log_loss']:.4f}, "
+    f"{pct(u['relative_improvement_over_marginal'])} below the weighted-marginal baseline, at a weighted accuracy of "
+    f"{pct(m['weighted_accuracy'])}."
+))
+display(T("educacion_jefe", "shares").set_index("class").mul(100).round(2))
+```
+
+# Bathrooms and bedrooms from ENIGH {#sec-enigh}
+
+```{python}
+#| label: enigh
+rows = []
+for task in ("amai_banos", "amai_dormitorios"):
+    for arm, entry in SUMMARY[task]["arms"].items():
+        rows.append({"component": task.removeprefix("amai_"), "arm": ARM_LABEL[arm], "family": entry["selected"]["model"],
+                     "CV log loss": round(entry["selected"]["weighted_log_loss"], 4), "held-out log loss": round(entry["test_metrics"]["weighted_log_loss"], 4),
+                     "improvement over the marginal": round(entry["test_uncertainty"]["relative_improvement_over_marginal"], 4),
+                     "held-out accuracy": round(entry["test_metrics"]["weighted_accuracy"], 4)})
+display(Markdown(
+    f"The two components are trained on the {fmt(SUMMARY['amai_banos']['known'])} ENIGH 2022 households with a known "
+    "bathroom count, and all of them for bedrooms. Their variables are mapped onto the EOD's answers "
+    "(`impute/harmonization/enigh.yaml`): household size, the income bracket, internet, cars (cars, vans and pickups), "
+    "motorbikes, bicycles, tenure, the workers aged 14+, and the head's age, sex and education points. Bedrooms also "
+    "take the bathrooms' points. The EOD's dwellings without an income answer are scored by the arm without income. "
+    "Each model trains with ENIGH's household weight, grouped by dwelling."
+))
+display(pd.DataFrame(rows))
+```
+
+## Which ENIGH households to train on
+
+```{python}
+#| label: tbl-populations
+#| tbl-cap: "Each arm's selected configuration refitted on each population's training households, judged on the same held-out households of cities of 100,000+ (nationally, and in Jalisco)."
+pop = pd.concat([T(task, "populations").assign(component=task.removeprefix("amai_")) for task in ("amai_banos", "amai_dormitorios", "amai_trabajadores")], ignore_index=True)
+pop["arm"] = pop["arm"].map(ARM_LABEL)
+pivot = pop.pivot_table(index=["component", "test", "arm"], columns="population", values="weighted_log_loss").round(4)
+pivot
+```
+
+```{python}
+#| label: populations-text
+best = pop.loc[pop.groupby(["component", "test", "arm"])["weighted_log_loss"].idxmin(), ["component", "test", "arm", "population"]]
+population = SUMMARY["amai_banos"]["training_population"]
+display(Markdown(
+    f"The components train on ENIGH's households in cities of 100,000+ (`selection.population`: {population}; "
+    f"{fmt(SUMMARY['amai_banos']['known'])} households with a known bathroom count out of "
+    f"{fmt(SUMMARY['amai_banos']['source_rows'])}). This was decided 2026-09-28 from this comparison, which every "
+    "retrain repeats. Lowest held-out log loss per component, test population and arm: " + "; ".join(
+    f"{r.component} / {r.test} / {r.arm}: **{r.population}**" for r in best.itertuples()) + "."))
+```
+
+# Members aged 14+ who worked {#sec-workers}
+
+```{python}
+#| label: workers
+check = C("observed_check")
+display(Markdown(
+    "The EOD answers this component itself. Its roster covers every member aged 6 and over, with each one's work "
+    "status last week, and the count is used as is. For comparison, the ENIGH model of this component "
+    "(`amai_trabajadores`) predicts the EOD's dwellings. The difference measures how far an ENIGH-trained component "
+    f"can be from the EOD's own answer (mean log loss against the count: {CHAIN_SUMMARY['observed_check_mean_log_loss']:.3f})."
+))
+display(check.assign(observed_share=lambda d: (d["observed_share"] * 100).round(2), predicted_share=lambda d: (d["predicted_share"] * 100).round(2),
+                     difference_pp=lambda d: d["difference_pp"].round(2)))
+```
+
+# The level {#sec-level}
+
+```{python}
+#| label: fig-distribution
+#| fig-cap: "Weighted distribution of the EOD's dwellings over AMAI's levels, by how the imputations are carried: the chain's draws (sequential multiple imputation), the exact scenario sum (enumerate), and informal-jobs-model's approach (expected points summed and cut)."
+variants = list(dict.fromkeys(distribution["variant"]))
+fig, ax = plt.subplots(figsize=(10, 3.4))
+labels = []
+for i, variant in enumerate(variants):
+    part = distribution[(distribution["variant"] == variant) & (distribution["column"] == "nse")].set_index("level").reindex(LEVELS)["share"] * 100
+    left = 0.0
+    for level, value, color in zip(LEVELS, part, RAMP):
+        ax.barh(i, value, left=left, color=color, edgecolor="white", linewidth=1.5, label=LEVEL_LABEL[level] if i == 0 else None)
+        if value >= 4:
+            ax.text(left + value / 2, i, f"{value:.1f}", ha="center", va="center", fontsize=8, color="white" if level in LEVELS[3:] else INK)
+        left += value
+    labels.append(variant)
+ax.set_yticks(range(len(variants)), labels); ax.invert_yaxis(); ax.set_xlim(0, 100); ax.set_xlabel("weighted share of dwellings (%)")
+ax.grid(axis="y", visible=False); ax.legend(ncol=7, loc="upper center", bbox_to_anchor=(0.5, 1.22), fontsize=8)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-variants
+#| tbl-cap: "Weighted share of each level (%) by propagation, before calibration, and how often a dwelling's most probable level agrees with the chain's draws."
+table = distribution[distribution["column"] == "nse"].pivot(index="variant", columns="level", values="share").reindex(columns=LEVELS).mul(100).round(2)
+table.columns = [LEVEL_LABEL[c] for c in table.columns]
+agreement = C("agreement")
+table["same most probable level"] = agreement[agreement["column"] == "nse"].set_index("variant")["same_most_probable_level"].reindex(table.index).round(3)
+table
+```
+
+```{python}
+#| label: monte-carlo
+mc = C("monte_carlo")
+worst = mc.loc[mc["monte_carlo_se"].idxmax()]
+display(Markdown(
+    f"Across the {CHAIN.draws} draws each level's weighted share varies with a standard deviation of up to "
+    f"{100 * mc['sd_between_draws'].max():.2f} pp. The draw-to-draw spread is the imputation's own uncertainty, which "
+    f"a hard level would hide. The Monte Carlo error of the mean share is at most {100 * worst['monte_carlo_se']:.3f} pp "
+    f"({LEVEL_LABEL[worst['level']]}, `{worst['column']}`)."
+))
+display(mc.assign(**{c: (mc[c] * 100).round(3) for c in ("mean_over_draws", "sd_between_draws", "monte_carlo_se")}))
+```
+
+# Calibration against AMAI's NSE by AGEB {#sec-calibration}
+
+```{python}
+#| label: calibration
+ref = C("reference")
+display(Markdown(
+    "Within each AGEB and each draw, the dwellings are ranked by their points (weighted mid-rank with the dwelling "
+    "weight). Each takes the level of AMAI's cumulative distribution for that AGEB at its rank. The household ordering "
+    "is the model's; the AGEB's mix is AMAI's. On the "
+    f"{fmt(CHAIN_SUMMARY['reference_agebs'])} AGEBs that AMAI's table and the EOD both cover "
+    f"({fmt(CHAIN_SUMMARY['reference_dwellings'])} dwellings), the weighted distributions compare as follows."
+))
+pivot = ref.pivot(index="distribution", columns="level", values="share").reindex(columns=LEVELS).mul(100).round(2)
+pivot.columns = [LEVEL_LABEL[c] for c in pivot.columns]
+display(pivot)
+```
+
+# Differences from informal-jobs-model {#sec-differences}
+
+The pipeline ports informal-jobs-model's notebooks 06–08, with these deliberate changes:
+
+- **The head's education** trains with the dwelling weight (the notebook used the person weight). The model is
+  selected by the engine's grouped CV and one-SE rule rather than the lowest mean over three preset feature sets. The
+  dwelling's centrality stands in for its AGEB, whose 1,700 levels exceed the boosting model's categorical limit.
+- **Workers aged 14+** are counted from the EOD's roster (@sec-workers) instead of imputed from ENIGH.
+- **Vehicles** in ENIGH count cars, vans and pickups (the notebook counted cars only), as the EOD and AMAI do.
+- **Bathrooms and bedrooms** train on ENIGH's large cities rather than the whole country. They take the counted
+  workers as an input, and bedrooms are conditioned on bathrooms (their points) as well as the head's education.
+- **The level** carries its distribution through 50 draws. The notebook cut one hard level from the summed expected
+  points, which @sec-level shows compresses the tails. The AGEB calibration runs within each draw.
+
+# Provenance {#sec-provenance}
+
+```{python}
+#| label: provenance
+lines = [f"- `{task}`: bundle `{SUMMARY[task]['bundle']['file']}`, sha256 `{SUMMARY[task]['bundle']['sha256'][:16]}…`, spec `{SUMMARY[task]['spec_hash'][:12]}…`" for task in TASKS]
+display(Markdown("\n".join(lines) + f"\n\nChain `nse`: {CHAIN.mode}, {CHAIN.propagation}, {CHAIN.draws} draws, seed {CHAIN.seed}. "
+                 f"ENIGH {load_task('amai_banos').raw.get('source')} 2022 through mxcensus; AMAI's NSE by AGEB: `NSE_por_AGEB_AMAI.xlsx` (eodgdl data catalog)."))
+```

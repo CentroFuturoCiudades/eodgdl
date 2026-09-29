@@ -74,6 +74,8 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
     chain = load_chain(chain) if isinstance(chain, str) else chain
     ev = chain.raw.get("evaluation") or {}
     context = context or Context()
+    if "distribution" in ev:
+        return evaluate_distribution(chain, ev, retrained, context)
     task = ev["task"]
     spec = load_task(task)
     step = next(s for s in chain.steps if isinstance(s, TaskStep) and s.task == task)
@@ -194,6 +196,120 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
         tables["raking_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
 
     return tables, summary
+
+
+def _weighted_shares(frame, prefix, levels, weight):
+    return pd.Series({level: float((frame[weight] * frame[f"prob_{prefix}_{level}"]).sum() / frame[weight].sum()) for level in levels})
+
+
+def evaluate_distribution(chain, ev, retrained, context):
+    """Diagnostics of a chain whose output is a derived distribution (e.g. ``nse``): its weighted distribution under
+    the chain's propagation and each ``variants`` entry (a chain setting changed, ``skip`` derive steps dropped), the
+    draws' Monte Carlo error, the ``reference`` distribution by area against the chain's on the areas both cover, and
+    ``observed_check`` (a task's predictions against the value the scored rows report)."""
+    from .chain import DeriveStep, parse_chain
+
+    bundles = {task: _bundle(task, retrained) for task in chain.tasks}
+    spec = load_task(chain.tasks[0])
+    rows_source = build_frame(spec, context, role="score")
+    keys, weight = list(rows_source.keys), ev["distribution"].get("weight", rows_source.weight)
+    base = rows_source.frame
+    columns = dict(ev["distribution"]["columns"])                  # derived column -> levels
+    tables, summary = {}, {"chain": chain.name, "propagation": chain.propagation, "draws": chain.draws}
+
+    variants = {chain.propagation if chain.propagation != "draws" else f"draws ({chain.draws})": chain}
+    for name, change in ev.get("variants", {}).items():
+        raw = {**chain.raw, **{k: v for k, v in change.items() if k != "skip"}}
+        raw["steps"] = [step for step in chain.raw["steps"] if not (isinstance(step, dict) and step.get("derive") in change.get("skip", []))]
+        variants[name] = parse_chain(raw)
+    results, rows = {}, []
+    for name, variant in variants.items():
+        result = run_chain(variant, context=context, bundles=bundles)
+        result.frame = result.frame.merge(base[keys + [weight]], on=keys, how="left", validate="one_to_one")
+        results[name] = result
+        for column, levels in columns.items():
+            if f"prob_{column}_{levels[0]}" not in result.frame:
+                continue
+            shares = _weighted_shares(result.frame, column, levels, weight)
+            rows += [{"variant": name, "column": column, "level": level, "share": share} for level, share in shares.items()]
+        if "amai_puntos_media" in result.frame:
+            summary.setdefault("mean_points", {})[name] = float(np.average(result.frame["amai_puntos_media"].astype(float), weights=result.frame[weight]))
+    tables["distribution"] = pd.DataFrame(rows)
+
+    # Monte Carlo error of the draws: the spread of each draw's weighted distribution
+    draws = results[next(iter(variants))]
+    if chain.propagation == "draws":
+        completions = draws.completions.merge(base[keys + [weight]], on=keys, how="left")
+        errors = []
+        for column, levels in columns.items():
+            if column not in completions:
+                continue
+            per_draw = completions.assign(w=completions[weight]).groupby(["completion", column])["w"].sum().unstack(fill_value=0.0)
+            per_draw = per_draw.div(per_draw.sum(axis=1), axis=0).reindex(columns=levels, fill_value=0.0)
+            errors += [{"column": column, "level": level, "mean_over_draws": per_draw[level].mean(), "sd_between_draws": per_draw[level].std(ddof=1),
+                        "monte_carlo_se": per_draw[level].std(ddof=1) / np.sqrt(len(per_draw))} for level in levels]
+        tables["monte_carlo"] = pd.DataFrame(errors)
+
+    # the most probable level per row: how often the variants disagree with the chain's own propagation
+    agreement = []
+    for column, levels in columns.items():
+        prob = [f"prob_{column}_{level}" for level in levels]
+        if not set(prob) <= set(draws.frame.columns):
+            continue
+        reference = draws.frame[prob].to_numpy().argmax(axis=1)
+        for name, result in results.items():
+            if set(prob) <= set(result.frame.columns):
+                agreement.append({"variant": name, "column": column, "same_most_probable_level": float((result.frame[prob].to_numpy().argmax(axis=1) == reference).mean())})
+    tables["agreement"] = pd.DataFrame(agreement)
+
+    reference = ev.get("reference")
+    if reference:
+        step = next(s for s in chain.steps if isinstance(s, DeriveStep) and s.name == reference["derive"])
+        from .derive.amai import load_nse_ageb
+
+        config = step.config
+        levels = list(config["levels"]["nse_calibrado"])
+        shares = load_nse_ageb(config["file"], config["state"], tuple(config["municipalities"]), tuple(config["file_columns"]),
+                               tuple((level, config["counts"][level]) for level in levels))
+        dwellings = _amai_dwellings(config)
+        frame = draws.frame.merge(base[keys + [config["ageb"]]].rename(columns={config["ageb"]: "ageb"}), on=keys, how="left", validate="one_to_one")
+        common = frame[frame["ageb"].isin(shares.index)]
+        rows = [{"distribution": "AMAI by AGEB", "level": level,
+                 "share": float(np.average(shares.loc[common["ageb"].unique(), level], weights=dwellings.reindex(common["ageb"].unique()).fillna(0)))} for level in levels]
+        for column, label in (("nse", "EOD before calibration"), ("nse_calibrado", "EOD after calibration")):
+            if f"prob_{column}_{levels[0]}" in common:
+                rows += [{"distribution": label, "level": level, "share": value} for level, value in _weighted_shares(common, column, levels, weight).items()]
+        tables["reference"] = pd.DataFrame(rows)
+        summary["reference_agebs"] = int(common["ageb"].nunique())
+        summary["reference_dwellings"] = int(len(common))
+
+    check = ev.get("observed_check")
+    if check:
+        checked = load_task(check["task"])
+        rows_frame = build_frame(checked, context, role="score").frame
+        predicted = predict_rows(checked, _bundle(check["task"], retrained), rows_frame)
+        observed = rows_frame[checked.target_column].astype("string").map(checked.classes)
+        w = rows_frame[weight].astype(float)
+        table = pd.DataFrame({"class": checked.class_slugs,
+                              "observed_share": [float(w[observed == slug].sum() / w.sum()) for slug in checked.class_slugs],
+                              "predicted_share": [float((w * predicted[slug]).sum() / w.sum()) for slug in checked.class_slugs]})
+        table["difference_pp"] = (table["predicted_share"] - table["observed_share"]) * 100
+        tables["observed_check"] = table
+        summary["observed_check_mean_log_loss"] = float(-np.average(np.log(np.clip(predicted.to_numpy()[np.arange(len(observed)), observed.map({s: i for i, s in enumerate(checked.class_slugs)}).to_numpy(int)], 1e-15, 1)), weights=w))
+    return tables, summary
+
+
+def _amai_dwellings(config):
+    """Dwellings per AGEB in AMAI's file (the weight of each AGEB's distribution)."""
+    from eodgdl.data import resolve
+
+    table = pd.read_excel(resolve(config["file"]))
+    table.columns = list(config["file_columns"])
+    table = table.iloc[1:]
+    table = table[table["nombre_entidad"].eq(config["state"]) & table["nombre_municipio"].isin(config["municipalities"])]
+    key = ("14" + pd.to_numeric(table["municipio"]).astype(int).astype(str).str.zfill(3) + pd.to_numeric(table["localidad"]).astype(int).astype(str).str.zfill(4)
+           + table["ageb"].astype(str).str.zfill(4))
+    return pd.Series(pd.to_numeric(table["num_viviendas"], errors="coerce").to_numpy(), index=key.to_numpy())
 
 
 def write_evaluation(tables, summary, out):

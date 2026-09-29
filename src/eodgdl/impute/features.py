@@ -18,7 +18,7 @@ import pandas as pd
 
 from .spec import stable_hash
 
-BUILDER_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe", "eodgdl.giro.features")
+BUILDER_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe", "eodgdl.impute.sources.enigh", "eodgdl.giro.features")
 _BUILDERS = {}
 
 
@@ -126,6 +126,7 @@ def build_frame(spec, context, overrides=None, role="train"):
         frame = pd.concat([frame.drop(columns=sorted(clashes)), columns.drop(columns=keys)], axis=1)
 
     labels = frame[spec.target_column] if spec.target_column in frame.columns or role == "train" else pd.Series(pd.NA, index=frame.index, dtype="string")
+    labels = labels.mask(labels.astype("string") == spec.missing_label)      # a harmonized target's missing label is unobserved
     unknown_labels = set(labels.dropna().unique()) - set(spec.classes)
     assert not unknown_labels, f"{spec.target_column} labels missing from the {spec.name} task's classes: {sorted(unknown_labels)}"
     frame[spec.target] = labels.map(spec.classes).astype("string")

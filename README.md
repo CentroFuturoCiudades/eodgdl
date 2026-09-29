@@ -182,6 +182,18 @@ uv run eodgdl impute evaluate sector_informality --data data                  # 
 quarto render reports/imputation_informality.qmd
 ```
 
+AMAI's socioeconomic level (NSE) of every dwelling is the chain `nse`: the head's education imputed within the survey,
+complete bathrooms and bedrooms imputed from INEGI's ENIGH 2022 (households in cities of 100,000+), internet, cars and
+the members aged 14+ who worked answered by the survey, AMAI's points and levels carried through 50 multiple
+imputations, and a rank calibration against AMAI's NSE by AGEB (`data/NSE_por_AGEB_AMAI.xlsx`):
+
+```bash
+for task in educacion_jefe amai_banos amai_dormitorios amai_trabajadores; do uv run eodgdl impute retrain $task --data data; done
+uv run eodgdl impute score nse --data data --retrained output/impute       # prob_nse_<level>, prob_nse_calibrado_<level>, the draws
+uv run eodgdl impute evaluate nse --data data                              # propagation variants, Monte Carlo error, AMAI by AGEB
+quarto render reports/imputation_nse.qmd
+```
+
 The fitted bundle (`data/od_giro_hybrid_model.joblib`, a scikit-learn pickle — see `metadata["sklearn_version"]`) is
 checked against the task on load (scikit-learn version, category levels, features). A retrain writes a new one to
 `output/impute/giro/`; to ship it, copy it to `data/` and update its sha256 in `src/eodgdl/data/registry.txt`. Feature

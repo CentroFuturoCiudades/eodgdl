@@ -139,6 +139,34 @@ def _within_support(spec, target_rows, source_rows):
     return target_rows
 
 
+def _filter(rows, conditions):
+    """``rows`` whose columns take the listed values (``{column: [values]}``; empty: every row)."""
+    mask = np.ones(len(rows), bool)
+    for column, values in (conditions or {}).items():
+        mask &= rows[column].astype(str).isin([str(value) for value in values]).to_numpy()
+    return rows[mask]
+
+
+def _compare_populations(spec, ev, train, test, selected_models, weight, group, positive, n_bins):
+    """Each arm's selected configuration refitted on the training fold restricted to each ``evaluation.populations``
+    entry, all evaluated on the same held-out rows of each ``evaluation.population_tests`` entry: which training
+    population predicts best where the model is applied."""
+    rows = []
+    for test_name, test_filter in ev.get("population_tests", {"held-out": {}}).items():
+        held_out = _filter(test, test_filter)
+        for population, conditions in ev["populations"].items():
+            training = _filter(train, conditions)
+            for arm in spec.arms:
+                features = list(arm.features)
+                X, y, w, _, _ = training_data(spec, training, features, weight, group)
+                model = clone(selected_models[arm.name]).fit(X, y, classifier__sample_weight=w)
+                metrics = evaluate.evaluate_classifier(model, held_out, features, spec.target, spec.class_slugs, spec.numeric, weight_column=weight,
+                                                       missing_label=spec.missing_label, positive=positive, n_bins=n_bins)[0].iloc[0]
+                rows.append({"test": test_name, "population": population, "arm": arm.name, "training_rows": len(X), "test_rows": len(held_out),
+                             "weighted_log_loss": metrics["weighted_log_loss"], "weighted_accuracy": metrics["weighted_accuracy"]})
+    return pd.DataFrame(rows)
+
+
 def _selected_row(summary):
     row = summary.loc[summary["selected"]].iloc[0]
     return {"model": row["model"], "best_params": dict(row["best_params"]), "weighted_log_loss": float(row["weighted_log_loss"]),
@@ -167,6 +195,9 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     for name, component in components.items():
         frame[component.target] = frame[name].astype("string")
         frame[component.unknown_column] = frame[component.target].isna()
+    full_frame = frame
+    if spec.selection.get("population"):                                  # the training population (e.g. ENIGH's large cities)
+        frame = _filter(full_frame, spec.selection["population"]).reset_index(drop=True)
     known = ~frame[spec.unknown_column].astype(bool).to_numpy()          # training rows with an observed target
     unknown = rows[spec.unknown_column].astype(bool).to_numpy()          # scored rows to impute
     train, test = select.split_known(frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
@@ -175,6 +206,7 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     timings["features"] = time.perf_counter() - started
 
     tables, summary = {}, {"task": spec.name, "source": spec.source, "score_source": spec.score_source, "rows": len(rows),
+                           "training_population": spec.selection.get("population") or "all", "source_rows": len(full_frame),
                            "known": int(known.sum()), "unknown": int(unknown.sum()), "train_rows": len(train), "test_rows": len(test),
                            "train_groups": int(train[group].nunique()), "test_groups": int(test[group].nunique()), "arms": {}}
     arms, selected_models, auxiliary, selected, test_metrics = {}, {}, {}, {}, {}
@@ -243,6 +275,11 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
     component_models = {name: {"classes": dict(component.classes), "positive": ev["components"][name]["positive"],
                                "arms": {arm.name: refit(selected_models[arm.name], component, frame, list(arm.features), weight, group) for arm in spec.arms}}
                         for name, component in components.items()}
+    if ev.get("populations"):
+        # every candidate population is drawn from the unfiltered source, with its own grouped held-out fold
+        full_train, full_test = (train, test) if full_frame is frame else select.split_known(
+            full_frame, spec.target, group, spec.unknown_column, n_splits=n_splits, test_fold=cv["test_fold"], random_state=seed)
+        tables["populations"] = _compare_populations(spec, ev, full_train, full_test, selected_models, weight, group, positive, n_bins)
     if ev.get("target_profile"):
         profile = ev["target_profile"]
         target_rows = rows[unknown & spec.is_missing(rows, profile["missing"]).to_numpy()] if profile.get("missing") else rows[unknown]
@@ -276,7 +313,8 @@ def retrain(task, context=None, n_jobs=-1, progress=True):
                             rows.loc[unknown, shared].assign(__weight=rows.loc[unknown, rows_weight].to_numpy())], ignore_index=True)
     is_imputed = np.r_[np.zeros(int(known.sum()), bool), np.ones(int(unknown.sum()), bool)]
     tables["profiles"] = evaluate.compare_known_unknown_profiles(population, ev["profiles"], is_imputed, weight_column="__weight") if ev.get("profiles") else pd.DataFrame()
-    tables["missingness"] = evaluate.calculate_feature_missingness(population, [f for f in spec.features if f in shared], is_imputed, weight_column="__weight", missing_label=spec.missing_label)
+    if unknown.any():
+        tables["missingness"] = evaluate.calculate_feature_missingness(population, [f for f in spec.features if f in shared], is_imputed, weight_column="__weight", missing_label=spec.missing_label)
     usage = imputed.groupby(f"{spec.prefix}_model_used").agg(sample_rows=(rows_weight, "size"), weighted_population=(rows_weight, "sum")).reset_index()
     usage["weighted_share"] = usage["weighted_population"] / usage["weighted_population"].sum()
     tables["model_usage"] = usage
@@ -382,6 +420,8 @@ def compare(task, candidates, seeds=(42,), bundle=None, context=None, n_jobs=-1,
     rows = []
     for name, candidate in specs.items():
         source = build_frame(candidate, context)
+        if candidate.selection.get("population"):
+            source.frame = _filter(source.frame, candidate.selection["population"]).reset_index(drop=True)
         train, _ = select.split_known(source.frame, candidate.target, source.group, candidate.unknown_column, n_splits=cv["splits"], test_fold=cv["test_fold"], random_state=cv["seed"])
         levels = task_levels(candidate)
         for arm in candidate.arms:

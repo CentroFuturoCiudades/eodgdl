@@ -21,11 +21,26 @@ levels:
   informalidad: [informal, formal]
   informalidad_sector: ["si", "no"]
   informalidad_desprotegida: ["si", "no"]
+  # AMAI's socioeconomic level (NSE) and its components, on the EOD's labels (ENIGH is mapped onto them)
+  educacion_jefe: [no_estudio, primaria, secundaria, carrera_tecnica, preparatoria, licenciatura, posgrado]
+  ingreso_hogar: ["Sin ingresos", "Hasta $1,500", "$1,501 y $3,000", "$3,001 y $7,000", "$7,001 y $10,000", "$10,001 y $15,000", "$15,001 y $25,000", "Más de $25,001"]
+  tenencia_vivienda: [Rentada, Prestada, Propia, Hipotecada, Otros]
+  n_autos_camionetas: ["0", "1", "2", "3", "4 o más"]
+  n_motos: ["0", "1", "2", "3", "4 o más"]
+  n_bicicletas: ["0", "1", "2", "3", "4 o más"]
+  tiene_internet: ["Sí", "No"]
+  personas_en_vivienda: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10 y +"]
+  sexo_jefe: [Hombres, Mujeres]
+  trabajadores_14: ["0", "1", "2", "3", "4 o más"]
+  banos: ["0", "1", "2 o más"]
+  dormitorios: ["1", "2", "3", "4 o más"]
 
 # Cut points: left-closed bins, the last one open.
 age:
   bins: [0, 3, 5, 6, 8, 12, 15, 18, 25, 50, 60, 65]
   labels: ["0_2", "3_4", "5", "6_7", "8_11", "12_14", "15_17", "18_24", "25_49", "50_59", "60_64", "65_y_mas"]
+# Counts cut to the AMAI and EOD categories (left-closed edges)
+count_0_4: {edges: [0, 1, 2, 3, 4, .inf], labels: ["0", "1", "2", "3", "4 o más"]}
 household_size:
   cap: 10                # the count is capped here in both surveys (the EOD answer stops at "10 y +")
   # Collapsed at 7+: the ENOE roster count and the EOD self-report diverge 5x above 8 persons.

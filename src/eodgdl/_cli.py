@@ -379,7 +379,8 @@ def _impute(args) -> int:
 
         tables, summary = evaluate_chain(args.chain, retrained=args.retrained, context=context)
         out = write_evaluation(tables, summary, args.out or f"{args.retrained}/{args.chain}")
-        print(tables["headline"].round(4).to_string(index=False))
+        shown = tables["headline"] if "headline" in tables else tables["distribution"].pivot_table(index=["variant", "column"], columns="level", values="share")
+        print(shown.round(4).to_string())
         print(f"wrote {len(tables)} tables to {out}")
         return 0
 

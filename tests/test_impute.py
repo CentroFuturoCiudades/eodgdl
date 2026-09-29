@@ -450,3 +450,16 @@ def _with_parts(original, context, config):
     frame["psu"] = (np.arange(len(frame)) // 9).astype(str)
     frame["part"] = pd.Series(np.where(frame["c"] > 0, "hi", "lo"), index=frame.index).where(frame["label"].notna())
     return result
+
+
+def test_training_population_filters_the_training_rows(labelled_source, tmp_path):
+    from eodgdl.impute import run, sources
+    from eodgdl.impute.spec import parse_task
+
+    raw = {**SYNTHETIC_TASK, "selection": {**SYNTHETIC_TASK["selection"], "population": {"a": ["a0", "a1"]}},
+           "evaluation": {**SYNTHETIC_TASK["evaluation"], "populations": {"all": {}, "a0": {"a": ["a0"]}}, "population_tests": {"a1": {"a": ["a1"]}}}}
+    result = run.retrain(parse_task(raw), context=sources.Context(cache_dir=tmp_path), n_jobs=1, progress=False)
+    assert result.summary["source_rows"] == 450 and result.summary["known"] < 360
+    assert result.summary["train_rows"] + result.summary["test_rows"] == result.summary["known"]
+    populations = result.tables["populations"]
+    assert set(populations["population"]) == {"all", "a0"} and (populations.groupby("population")["training_rows"].first()["all"] > populations.groupby("population")["training_rows"].first()["a0"])

@@ -9,7 +9,8 @@ conditioning on the upstream imputation.
 upstream imputations along with ``propagation``:
 
 - ``enumerate``: exact. Every row is expanded over the classes of each step it needs later (weights P(class | x, the
-  scenario so far)); P(y | x) = Σ_s P(s | x) P(y | x, s).
+  scenario so far)); P(y | x) = Σ_s P(s | x) P(y | x, s). A categorical downstream feature takes the class (or its
+  ``transform``); a numeric one takes a number per class (a numeric ``transform``, else the upstream's target score).
 - ``draws``: ``draws`` seeded multiple imputations: y₁ ~ P(y₁ | x), then y₂ ~ P(y₂ | x, y₁), ...; each step's marginal
   is the mean over draws of its conditional probabilities (not the share of draws), and derive steps run per draw.
 - ``expected``: the upstream's expected score (its task declares ``target.scores``) is plugged in as a numeric feature;
@@ -104,7 +105,7 @@ def parse_chain(raw, load=load_task):
             uses = []
             for upstream, how in ((options or {}).get("uses") or {}).items():
                 how = how or {}
-                uses.append(Uses(upstream, how.get("as", upstream), tuple((str(k), str(v)) for k, v in (how.get("transform") or {}).items())))
+                uses.append(Uses(upstream, how.get("as", upstream), tuple((str(k), v if isinstance(v, (int, float)) else str(v)) for k, v in (how.get("transform") or {}).items())))
             steps.append(TaskStep(task, uses))
         if isinstance(steps[-1], TaskStep):
             step = steps[-1]
@@ -120,9 +121,12 @@ def parse_chain(raw, load=load_task):
                     _check(use.feature in spec.numeric, f"{name}: {step.task}.{use.feature} must be numeric to take {use.task}'s expected score")
                     _check(not use.transform, f"{name}: a transform does not apply to an expected score")
                 else:
-                    _check(use.feature not in spec.numeric, f"{name}: {step.task}.{use.feature} must be categorical to take {use.task}'s classes")
                     if use.transform:
                         _check({k for k, _ in use.transform} == set(upstream.class_slugs), f"{name}: the transform of {use.task} must map every class slug")
+                    if use.feature in spec.numeric:   # a class's number: the transform's, else the upstream's target score
+                        numbers = [v for _, v in use.transform] if use.transform else list(upstream.scores.values())
+                        _check(numbers and all(isinstance(v, (int, float)) for v in numbers),
+                               f"{name}: {step.task}.{use.feature} is numeric: {use.task}'s classes need numbers (a numeric transform or target scores)")
             seen.append(step.task)
     _check(any(isinstance(step, TaskStep) for step in steps), f"{name}: no task steps")
     return ChainSpec(name, mode, propagation, int(raw.get("draws", 50)), int(raw.get("seed", 42)), steps, raw)
@@ -151,8 +155,14 @@ class ChainResult:
     provenance: dict
 
 
-def _level_map(use):
-    return dict(use.transform) if use.transform else None
+def _level_map(use, upstream=None, numeric=False):
+    """The value each upstream class gives the downstream feature: the transform's, the upstream's score for a numeric
+    feature without one, else the class itself (None)."""
+    if use.transform:
+        return dict(use.transform)
+    if numeric:
+        return dict(upstream.scores)
+    return None
 
 
 def _sample(probabilities, classes, rng):
@@ -203,6 +213,8 @@ def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=N
         if isinstance(step, TaskStep) and chain.propagation != "expected":
             declared = task_levels(specs[step.task])
             for use in step.uses:
+                if use.feature in specs[step.task].numeric:
+                    continue
                 values = set(dict(use.transform).values()) if use.transform else set(specs[use.task].class_slugs)
                 _check(values <= set(declared[use.feature]), f"{chain.name}: {use.task} fills {step.task}.{use.feature} with levels it does not declare: {sorted(values - set(declared[use.feature]))}")
     base = frames[chain.tasks[0]]
@@ -224,7 +236,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=N
     for step in chain.steps:
         if isinstance(step, DeriveStep):
             function = (derive_functions or {}).get(step.name) or get_derive(step.name)
-            values = function(completions, base, step.config)
+            values = function(completions, base, {**step.config, "propagation": chain.propagation})
             for column in values.columns:
                 completions[column] = values[column].to_numpy()
                 aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), n_rows, step.config.get("levels", {}).get(column))
@@ -258,13 +270,14 @@ def run_chain(chain, context=None, tables=None, bundles=None, derive_functions=N
             for use in step.uses:
                 upstream = specs[use.task]
                 values = completions[upstream.prefix]
-                level_map = _level_map(use)
+                level_map = _level_map(use, upstream, use.feature in spec.numeric) if chain.propagation != "expected" else None
                 filled[use.feature] = values.map(level_map).to_numpy() if level_map else values.to_numpy()
             combos = filled.drop_duplicates().reset_index(drop=True)
             if chain.propagation == "enumerate" and len(step.uses) == 1:
                 # every row at every level of the feature, so the conditionals P(y | x, level) are complete
                 use = step.uses[0]
-                levels = sorted(set(dict(use.transform).values())) if use.transform else list(specs[use.task].class_slugs)
+                level_map = _level_map(use, specs[use.task], use.feature in spec.numeric)
+                levels = sorted(set(level_map.values())) if level_map else list(specs[use.task].class_slugs)
                 grid = pd.DataFrame({"row": np.repeat(np.arange(n_rows), len(levels)), use.feature: np.tile(np.asarray(levels, dtype=object), n_rows)})
                 combos = pd.concat([combos, grid]).drop_duplicates().reset_index(drop=True)
             expanded = frame.iloc[combos["row"].to_numpy()].reset_index(drop=True)
