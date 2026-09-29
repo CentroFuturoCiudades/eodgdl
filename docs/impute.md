@@ -46,12 +46,14 @@ scoring time.
 (giro: with education, else without; the AMAI tasks: with income, else without). The arm's model predicts
 `P(class | x)`. Where a feature's value has no training support (a level the training rows never hold) or is missing,
 the prediction is **averaged over the supported levels** (`marginalize.py`): with the training shares, or with a
-row-specific `P(level | x)` from an **auxiliary model** where the task declares one (giro's work destination, for
-workers without a work trip; informality's place of work). All combinations are scored in one batched call.
+row-specific `P(level | x)` from an **auxiliary model** where the task declares one (informality's place of work, for
+the EOD workers without a work trip: ENOE knows no such state). All combinations are scored in one batched call.
 
 A missing value is never read as a category, even where the model saw it as one in training: non-response carries
 fieldwork patterns (the income refusals, `reports/imputation_nse.qmd` #sec-income) that should not steer an
-imputation. The outputs are `prob_<prefix>_<class>` (rows sum to one; observed rows are one-hot), the arg-max as a
+imputation. What is a state rather than a missing answer gets a level of its own instead: a giro worker who made no
+work trip on the survey day takes `sin_viaje` for the destination and mode (the builder's `no_trip`, the task's
+`levels.extra`), learned from the reported workers who made none. The outputs are `prob_<prefix>_<class>` (rows sum to one; observed rows are one-hot), the arg-max as a
 convenience, its probability, the arm used, the marginalized features, and for ordinal targets the expected score.
 
 ## Training: `run.retrain`
@@ -133,7 +135,8 @@ render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imput
 
 | decision | evidence |
 |---|---|
-| Missing values are averaged over their observed levels, never read as a learned category | income refusal pattern: `imputation_nse.qmd` #sec-income; giro's missing work trip: handoff §0 session 6 |
+| Missing values are averaged over their observed levels, never read as a learned category | income refusal pattern: `imputation_nse.qmd` #sec-income |
+| No work trip is a state: giro's destination and mode take `sin_viaje` | `tasks/giro.yaml` levels.extra; `imputation_giro.qmd` #sec-arms |
 | Selection on CV folds scored as the bundle scores | handoff §0 session 7, focus 2 |
 | CV groups: the household; copied worker records straddle folds, documented | `imputation_giro.qmd` #sec-selection |
 | One-SE rule on one five-fold run (ROPE and repeated runs measured, not adopted) | handoff §0 session 7 |

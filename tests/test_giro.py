@@ -63,7 +63,8 @@ BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
 def test_scoring_reproduces_the_reference():
     # 384 workers of outputs/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
     # installed bundle's scores (regenerated 2026-09-29 for the bundle that reads the interview month, which the
-    # fixture gained): the engine scores them exactly so.
+    # fixture gained, and again for the level sin_viaje its 131 workers without a work trip took): the engine scores
+    # them exactly so.
     from eodgdl.impute.run import score_frame
 
     fixture = pd.read_parquet(FIXTURE)

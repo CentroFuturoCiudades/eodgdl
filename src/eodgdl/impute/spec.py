@@ -52,6 +52,7 @@ class TaskSpec:
     groups: dict
     numeric: list
     declared_levels: dict
+    extra_levels: dict             # feature -> levels appended to its schema levels (e.g. a builder's own)
     schema_columns: dict
     arms: list                     # [ArmSpec], in dispatch order
     auxiliary: dict                # feature -> {"exclude": [...]}
@@ -130,14 +131,15 @@ class TaskSpec:
 
     def category_levels(self, schema_levels):
         """Declared levels of every categorical feature, the missing label last. ``schema_levels(column)`` gives the
-        source's levels for a feature not declared here (under ``schema_columns`` or its own name)."""
+        source's levels for a feature not declared here (under ``schema_columns`` or its own name), with the task's
+        ``levels.extra`` for it appended."""
         levels = {}
         for feature in self.features:
             if feature in self.numeric:
                 continue
             values = self.declared_levels.get(feature)
             if values is None:
-                values = schema_levels(self.schema_columns.get(feature, feature))
+                values = list(schema_levels(self.schema_columns.get(feature, feature))) + list(self.extra_levels.get(feature, []))
             levels[feature] = [str(value) for value in values] + [self.missing_label]
         return levels
 
@@ -182,6 +184,7 @@ def parse_task(raw):
         missing_values={feature: list(values) for feature, values in raw.get("missing_values", {}).items()},
         builders=({source: list(names) for source, names in features["builders"].items()} if isinstance(features.get("builders"), dict) else list(features.get("builders", []))), groups=groups, numeric=list(features.get("numeric", [])),
         declared_levels={feature: list(values) for feature, values in levels.get("declared", {}).items()},
+        extra_levels={feature: list(values) for feature, values in levels.get("extra", {}).items()},
         schema_columns=dict(levels.get("schema_columns", {})), arms=[], auxiliary=dict(raw.get("auxiliary", {})),
         selection=dict(raw.get("selection", {})), evaluation=dict(raw.get("evaluation", {})),
         builder_config=dict(raw.get("builders", {})), bundle_file=raw.get("bundle"),
@@ -202,6 +205,9 @@ def parse_task(raw):
         _check(feature in spec.features and feature not in spec.numeric, f"{name}: level subset for {feature!r}, not a categorical feature of the task")
     for feature in spec.declared_levels:
         _check(feature in spec.features, f"{name}: levels declared for {feature!r}, which no arm uses")
+    for feature in spec.extra_levels:
+        _check(feature in spec.features and feature not in spec.numeric and feature not in spec.declared_levels,
+               f"{name}: extra levels for {feature!r}, not a categorical feature whose levels come from the schema")
     for builder in spec.builder_config:
         _check(builder in spec.all_builders, f"{name}: configuration for builder {builder!r}, which the task does not use")
     if isinstance(spec.builders, dict):

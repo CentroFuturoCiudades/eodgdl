@@ -95,11 +95,16 @@ def work_trip_destination(trips, purpose, keys=("folio_vivienda", "folio_habitan
 
 @register_builder("eod.work_trip", config=load_config()["eod.work_trip"], versions=_survey_versions)
 def work_trip(frame, context, config, spec):
-    """``destino_trabajo``, ``destino_cvegeo``, ``destino_zona`` and ``modo_trabajo`` of each row's work trips (NA
-    without a work trip on the survey day)."""
+    """``destino_trabajo``, ``destino_cvegeo``, ``destino_zona`` and ``modo_trabajo`` of each row's work trips. Without a
+    work trip on the survey day they are NA, but for ``destino_trabajo`` and ``modo_trabajo`` when the configuration
+    names a ``no_trip`` level: not having made one is then a state the model reads, not a missing value."""
     keys = ["folio_vivienda", "folio_habitante"]
     destination = work_trip_destination(context.eod().trips, config["purpose"], keys)
-    return frame[keys].merge(destination, on=keys, how="left", validate="one_to_one").drop(columns=keys)
+    columns = frame[keys].merge(destination, on=keys, how="left", validate="one_to_one").drop(columns=keys)
+    if config.get("no_trip"):
+        for column in ("destino_trabajo", "modo_trabajo"):
+            columns[column] = columns[column].astype("string").fillna(config["no_trip"])
+    return columns
 
 
 # the workers' variables on the common levels (they replace the survey's own ocupacion, escolaridad, municipio,

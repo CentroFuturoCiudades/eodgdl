@@ -286,6 +286,11 @@ def test_spec_validation():
         parse_task({**base, "target": {"column": "y", "classes": {"A": "a", "B": "a"}}})
     assert parse_task(base).scoring_hash() == spec.scoring_hash()
     assert parse_task({**base, "missing_values": {"u": ["?"]}}).scoring_hash() != spec.scoring_hash()
+    # levels a task adds to a schema column's (a builder's own level), before the missing label
+    extra = parse_task({**base, "levels": {"extra": {"u": ["nuevo"]}}})
+    assert extra.category_levels(lambda column: ["a", "b"])["u"] == ["a", "b", "nuevo", MISSING]
+    with pytest.raises(ValueError, match="extra levels for 'v'"):
+        parse_task({**base, "levels": {"extra": {"v": ["x"]}}})                      # v is numeric
 
 
 SYNTHETIC_TASK = {
@@ -775,6 +780,24 @@ def test_harmonizations_are_builders_keyed_by_the_harmonization_code():
         builder = features.get_builder(name)
         assert builder.replaces and Path(builder.module_file).name == "harmonize.py"
         assert set(builder.versions(None, {})) == {"harmonization", "common"}
+
+
+def test_a_work_trip_level_for_the_workers_without_one(stages):
+    """eod.work_trip leaves the destination and mode of a worker without a work trip missing, unless the task names a
+    level for that state (giro: sin_viaje)."""
+    from eodgdl.impute.sources import Context
+    from eodgdl.impute.sources.eod import load_config, work_trip, workers
+
+    context = Context(tables=stages.revised)
+    config = load_config()
+    frame = workers(context, config["eod.workers"])
+    missing = work_trip(frame, context, config["eod.work_trip"], None)
+    named = work_trip(frame, context, {**config["eod.work_trip"], "no_trip": "sin_viaje"}, None)
+    without = missing["destino_trabajo"].isna()
+    assert without.equals(missing["modo_trabajo"].isna()) and 0.1 < without.mean() < 0.2
+    assert (named.loc[without, ["destino_trabajo", "modo_trabajo"]] == "sin_viaje").all().all()
+    pd.testing.assert_frame_equal(named[~without].astype("string"), missing[~without].astype("string"))
+    assert named.loc[without, "destino_cvegeo"].isna().all()                             # no destination to place
 
 
 def test_amai_points_levels_and_calibration(monkeypatch):
