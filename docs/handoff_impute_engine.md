@@ -7,6 +7,10 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **Paused** (session 8, 2026-09-29): none of the open questions below is needed for the delivery (none moves an
+  imputed value, a bundle or a model input), and the user paused the work; reopen the variance question if a
+  deliverable quotes the reports' intervals. Session 8 added the bootstrap caveat to `docs/impute.md`'s limits and
+  deleted the old comparison roots.
 - **Released `v0.5.1`** (2026-09-29): 8d8e7c8 (giro's workers without a work trip take `sin_viaje`, below) and 6d0e9b7
   (version 0.5.1, `REF = "v0.5.1"`), tagged, pushed and merged into `main`; the mirror check passed again (giro and both
   chains from the tag equal `output/impute/` exactly).
@@ -20,9 +24,9 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   each checksum-verified, and giro's scores and both chains' scores and completions equal `output/impute/`'s exactly.
 - `output/impute/` is session 7's final run (`scripts/impute/rerun.sh`: six retrains with 50 bootstrap bundles each,
   giro and both chains scored, each chain's 50 completed datasets with bootstrap models under
-  `<chain>/multiple_imputation/`, both evaluations with Rubin's rules). Older roots, kept for comparison and to be
-  deleted when done: `output/impute_7f783b3/` (before session 7), `output/impute_41cd5a7/` (after the selection change
-  alone), `output/impute_70eab10/` (before session 6's held-out change), with `output/{figures,reports}_*` alike.
+  `<chain>/multiple_imputation/`, both evaluations with Rubin's rules). The older roots kept for comparison
+  (before session 7, after its selection change, before session 6's held-out change, with their figures and reports)
+  were deleted in session 8; to compare with an earlier state, rerun it from its commit into a new root.
 - `uv run pytest`: 176 passed (~4 min).
 
 `v0.5.0` is **breaking**: `giro.load_model` returns the v2 bundle; `giro.impute_giro`, `bundle.from_legacy_giro`,
@@ -113,6 +117,10 @@ B023 closures bound; `eodgdl.giro` declares `__all__`. `docs/impute.md` written;
 - Why the EOD's heads' education departs from ENIGH's metro distribution at both ends (the question's wording, the
   sample, the capture).
 - The within-imputation variance ignores the survey's strata and design stages (`reports/expansion_factors.qmd`).
+  The technical report's Metodología calls the sample "Aleatorio Estratificado Trietápico": centralidad strata, and its
+  sample replacements are listed by AGEB and block; the survey files carry the AGEB, not the block. The bootstrap
+  bundles resample the training sources' dwellings and households, not their primary sampling units, so the between
+  variance ignores the designs too (ENOE's frame keeps `survey_stratum` and `survey_psu`). Neither is measured.
 - The one-SE rule on one five-fold run can flip near ties (recorded; the user kept it).
 - Copied worker records leave the CV and held-out losses slightly optimistic (documented).
 - `run.retrain` is long; auxiliary models have fixed hyperparameters; SHAP, ROPE and a varying training population in
