@@ -1,12 +1,12 @@
 """Fitted task bundles: one joblib per task with its fitted arms, auxiliary models, category levels and the metadata
-that proves what they were trained on.
+that proves what they were trained on, and a retrain's bootstrap refits of them (:func:`load_bootstrap`).
 
 A bundle (format ``eodgdl.impute.bundle/2``) is a dict: ``task``, ``arms`` ({arm: {"model", "features",
 "requires"}}), ``auxiliary`` ({arm: {feature: model}}), ``classes``, ``category_levels`` and ``metadata`` (spec
 hash, scoring hash, level-contract hash, data and feature versions, sklearn and eodgdl versions, the selection and
 test metrics, upstream bundle hashes). :func:`check_bundle` refuses a bundle whose scikit-learn version, level
-contract or scoring definition differs from the running code and task spec. The giro bundle fitted before the
-engine (``model_with_education`` ... keys) is converted on load (:func:`from_legacy_giro`).
+contract or scoring definition differs from the running code and task spec; :func:`as_v2` refuses any other layout
+(the giro notebook's, ``model_with_education`` ... keys, was converted on load until 2026-09-29).
 
 :func:`load_bundle` finds a task's bundle the same way for every mode: an explicit file, else the one a retrain wrote
 under ``<retrained>/<task>/``, else the installed data file."""
@@ -43,29 +43,12 @@ def make_bundle(spec, arms, auxiliary, category_levels, metadata):
     }
 
 
-def from_legacy_giro(legacy, spec):
-    """The giro bundle as fitted by the retired giro notebook (keys ``model_with_education``,
-    ``features_with_education``, ``destination_models``, ...) as a v2 bundle. Its arm features and category levels
-    are checked against ``spec`` by :func:`check_bundle`; the hashes it lacks are filled from ``spec`` only after
-    those checks pass, and ``metadata["converted_from"]`` says so."""
-    arms, auxiliary = {}, {}
-    for arm in spec.arms:
-        arms[arm.name] = {"model": legacy[f"model_{arm.name}"], "features": list(legacy[f"features_{arm.name}"]), "requires": list(arm.requires)}
-        destination = (legacy.get("destination_models") or {}).get(arm.name)
-        if destination is not None:
-            auxiliary[arm.name] = {"destino_trabajo": destination}
-    metadata = dict(legacy.get("metadata", {}))
-    metadata["converted_from"] = "legacy giro bundle"
-    return {"format": FORMAT, "task": spec.name, "arms": arms, "auxiliary": auxiliary,
-            "classes": {label: slug for slug, label in legacy["giro_labels"].items()}, "category_levels": legacy["category_levels"], "metadata": metadata}
-
-
 def as_v2(bundle, spec):
+    """``bundle`` if it is in the v2 format, else :class:`BundleMismatch` (e.g. a giro bundle from before 0.3.0: retrain
+    it with ``eodgdl impute retrain giro``)."""
     if isinstance(bundle, dict) and bundle.get("format") == FORMAT:
         return bundle
-    if isinstance(bundle, dict) and "model_with_education" in bundle and spec.name == "giro":
-        return from_legacy_giro(bundle, spec)
-    raise BundleMismatch(f"Not a bundle of task {spec.name!r} in a known format")
+    raise BundleMismatch(f"Not a bundle of task {spec.name!r} in the {FORMAT} format")
 
 
 def check_bundle(bundle, spec, category_levels):
@@ -125,10 +108,21 @@ def bundle_path(spec, path=None, retrained=None):
 
 
 def load_bundle(spec, path=None, retrained=None):
-    """The task's bundle (:func:`bundle_path`) as a v2 bundle (a legacy giro bundle converted, :func:`as_v2`)."""
+    """The task's bundle (:func:`bundle_path`), refused unless it is a v2 bundle (:func:`as_v2`)."""
     import joblib
 
     return as_v2(joblib.load(bundle_path(spec, path, retrained)), spec)
+
+
+def load_bootstrap(spec, retrained):
+    """The task's bootstrap bundles under ``<retrained>/<task>/bootstrap/`` (:func:`eodgdl.impute.run.write_bootstrap`),
+    in order, as v2 bundles; an empty list where there are none."""
+    import joblib
+
+    if retrained is None:
+        return []
+    directory = Path(retrained) / spec.name / "bootstrap"
+    return [as_v2(joblib.load(path), spec) for path in sorted(directory.glob(f"{Path(spec.bundle_name).stem}_*.joblib"))]
 
 
 def bundle_arms(bundle, auxiliary=True):
@@ -145,19 +139,3 @@ def save_bundle(bundle, path):
     joblib.dump(bundle, path)
     with open(path, "rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def legacy_view(bundle):
-    """A v2 giro bundle with the keys ``eodgdl.giro.load_model`` has always returned (``model_with_education``,
-    ``features_with_education``, ``destination_models``, ``category_levels``, ``giro_classes``, ``giro_labels``,
-    ``metadata``), sharing the fitted objects."""
-    view = {}
-    for arm, entry in bundle["arms"].items():
-        view[f"model_{arm}"] = entry["model"]
-        view[f"features_{arm}"] = entry["features"]
-    view["category_levels"] = bundle["category_levels"]
-    view["giro_classes"] = list(bundle["classes"].values())
-    view["giro_labels"] = {slug: label for label, slug in bundle["classes"].items()}
-    view["destination_models"] = {arm: models["destino_trabajo"] for arm, models in bundle["auxiliary"].items() if "destino_trabajo" in models} or None
-    view["metadata"] = bundle["metadata"]
-    return view

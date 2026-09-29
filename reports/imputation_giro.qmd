@@ -163,8 +163,45 @@ display(Markdown(
     "have. Education counts as unobserved when it is missing or answered " + ", ".join(f"'{v}'" for v in SPEC.missing_values["escolaridad"]) + ".\n\n" + "\n".join(lines)
     + "\n\nBesides person and dwelling attributes, the arms use the work trip: destination type, mode, weekend work "
     "travel and household vehicles. They also use the destination's ámbito and its DENUE establishment mix, taken from "
-    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder)."
+    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder), and the month of "
+    "the interview (@sec-month)."
 ))
+```
+
+## The interview month {#sec-month}
+
+```{python}
+#| label: month
+from eodgdl.impute.features import build_frame as _build_frame
+from eodgdl.impute.sources import Context as _Context
+
+by_month = _build_frame(SPEC, _Context()).frame
+with_trip = by_month[by_month["destino_trabajo"].notna()]
+month = pd.DataFrame({
+    "workers": by_month.groupby("mes_entrevista").size(),
+    "giro not reported (%)": by_month.groupby("mes_entrevista")["giro_desconocido"].mean() * 100,
+    "work trip to an office (%)": with_trip.groupby("mes_entrevista")["destino_trabajo"].apply(lambda d: (d == "Oficina").mean() * 100),
+}).rename(index={"1": "January", "2": "February", "3": "March", "4": "April"})
+assert list(month.index) == ["January", "February", "March", "April"]
+assert month["giro not reported (%)"].iloc[0] < 10 < 30 < month["giro not reported (%)"].iloc[2:].min()
+assert month.loc["April", "work trip to an office (%)"] < 0.6 * month.loc[["January", "February", "March"], "work trip to an office (%)"].min()
+# the same comparison within the zones surveyed both before April and in it (30+ workers with a work trip on each side),
+# weighted by the workers before April: the drop is not the fieldwork's move to other zones
+zones = with_trip.assign(april=with_trip["mes_entrevista"].eq("4"), office=with_trip["destino_trabajo"].eq("Oficina")).groupby(["centralidad", "april"])["office"].agg(["mean", "size"]).unstack("april")
+zones = zones[(zones[("size", False)] >= 30) & (zones[("size", True)] >= 30)]
+within = {period: float(np.average(zones[("mean", period)], weights=zones[("size", False)])) for period in (False, True)}
+assert len(zones) >= 10 and within[True] < 0.6 * within[False]
+display(Markdown(
+    "The fieldwork ran from January to April 2023, and the answers changed with it. The giro goes unreported by "
+    f"{month['giro not reported (%)'].iloc[0]:.0f}% of January's workers and {month['giro not reported (%)'].iloc[2]:.0f}–"
+    f"{month['giro not reported (%)'].iloc[3]:.0f}% of March's and April's, so the imputed workers are mostly those of the last "
+    "months, and from April a work trip's destination is an office half as often, in the zones surveyed before April as "
+    f"well ({len(zones)} zones: {100 * within[False]:.1f}% before April, {100 * within[True]:.1f}% in it; the capture of the "
+    "place types changed, `reports/loading.qmd` #sec-april). The month is a feature of both arms "
+    "(since 2026-09-29: paired over three seeds of the CV, it lowered the log loss by 0.0013 with education and 0.0020 "
+    "without), so each month's workers are imputed with the relationship its own reported workers show."
+))
+month.round(1)
 ```
 
 ```{python}
@@ -190,9 +227,48 @@ display(Markdown(
     f"never straddle the split. On the training rows, each arm tunes {len(families)} families under a {cv['splits']}-fold "
     f"household-grouped CV with the survey's person weights: " + "; ".join(
         f"**{name}** over " + ", ".join(f"`{k}` ∈ {v}" for k, v in f["params"].items()) for name, f in families.items())
-    + f". That is {total} configurations × {cv['splits']} folds per arm. Within each family, and then across families, "
-    "the simplest configuration whose paired fold difference to the best mean log loss is within one standard error is "
-    "kept."
+    + f". That is {total} configurations × {cv['splits']} folds per arm. Each validation fold is scored as the bundle "
+    "scores an imputed worker (@sec-evaluation), with the fold's training shares and a destination model fitted outside "
+    "the fold, so the CV and the held-out log losses describe the same predictor. Within each family, and then across "
+    "families, the simplest configuration whose paired fold difference to the best mean log loss is within one standard "
+    "error is kept."
+))
+```
+
+```{python}
+#| label: copied-records
+from eodgdl.eod import load_stages, repeated_diary_pairs
+from eodgdl.impute import select as selection
+from eodgdl.impute.features import build_frame
+from eodgdl.impute.sources import Context
+
+KEYS = ["folio_vivienda", "folio_habitante"]
+workers = build_frame(SPEC, Context()).frame.set_index(KEYS)
+shipped = load_stages().shipped
+pairs = repeated_diary_pairs(shipped.trips, shipped.hab, shipped.viv, shipped.legs)
+side = {s: workers.reindex(pd.MultiIndex.from_arrays([pairs[f"folio_vivienda_{s}"], pairs[f"folio_habitante_{s}"]])) for s in ("a", "b")}
+both = side["a"]["giro"].notna().to_numpy() & side["b"]["giro"].notna().to_numpy()      # two workers with a reported giro
+agree = {column: float((side["a"][column].astype(str).to_numpy()[both] == side["b"][column].astype(str).to_numpy()[both]).mean()) for column in ("giro", "ocupacion", "edad")}
+flagged = workers["diario_repetido"].astype(bool) & ~workers["giro_desconocido"].astype(bool)
+train, test = selection.split_known(workers.reset_index(), "giro", "folio_vivienda", "giro_desconocido", n_splits=cv["splits"], test_fold=cv["test_fold"], random_state=cv["seed"])
+in_train = pd.MultiIndex.from_frame(train[KEYS])
+a_in, b_in = (pd.MultiIndex.from_arrays([pairs[f"folio_vivienda_{s}"], pairs[f"folio_habitante_{s}"]]).isin(in_train) for s in ("a", "b"))
+a_test, b_test = (pd.MultiIndex.from_arrays([pairs[f"folio_vivienda_{s}"], pairs[f"folio_habitante_{s}"]]).isin(pd.MultiIndex.from_frame(test[KEYS])) for s in ("a", "b"))
+leaked = pd.concat([pairs.loc[a_test & b_in, ["folio_vivienda_a", "folio_habitante_a"]].set_axis(KEYS, axis=1),
+                    pairs.loc[b_test & a_in, ["folio_vivienda_b", "folio_habitante_b"]].set_axis(KEYS, axis=1)]).drop_duplicates()
+leak_share = test.set_index(KEYS).loc[pd.MultiIndex.from_frame(leaked), "ponderador"].sum() / test["ponderador"].sum()
+assert len(test) == SUMMARY["test_rows"] and agree["giro"] > 0.95 and agree["edad"] < 0.3 and len(leaked) > 0
+display(Markdown(
+    f"Copied worker records do straddle the split. {fmt(flagged.sum())} of the {fmt(known)} workers with a reported giro "
+    "repeat another household's whole diary (`hab.diario_repetido`, `reports/duplicate_diaries.qmd`), and in the "
+    f"{fmt(both.sum())} pairs of two such workers the giro agrees {pct(agree['giro'])} of the time, the occupation "
+    f"{pct(agree['ocupacion'])}, the age {pct(agree['edad'])}: the copies are person records with the age changed, not "
+    f"only trips. {fmt(len(leaked))} held-out workers ({pct(leak_share)} of the held-out weight) have their copy among the "
+    "training workers, and the CV folds split pairs the same way. Measured by repeated CV (2026-09-29, "
+    "`docs/handoff_impute_engine.md` §0, session 7), the model partly memorizes the copies: keeping them in one fold "
+    "makes the CV log loss some 0.006 higher and the held-out log loss some 0.003–0.005 higher, and the families keep "
+    "their order under either grouping. "
+    "The CV groups stay the households (decided 2026-09-29), so the losses below carry that optimism."
 ))
 ```
 
@@ -221,9 +297,11 @@ display(Markdown("Selected, " + "; ".join(parts) + "."))
 
 # Held-out evaluation {#sec-evaluation}
 
-The selected configuration of each arm, trained on the training households, is scored on the held-out households. The
-intervals resample households (500 bootstrap draws). The baseline is the constant predictor that outputs the weighted
-class shares.
+The selected configuration of each arm, trained on the training households, is scored on the held-out households as
+the bundle scores an imputed worker: a missing value is averaged over its observed levels, never read as the category
+the model learned for missing values (a worker without a work trip on the survey day: the destination over the arm's
+auxiliary model, fitted outside the held-out households, the mode over the training shares). The intervals resample
+households (500 bootstrap draws). The baseline is the constant predictor that outputs the weighted class shares.
 
 ```{python}
 #| label: tbl-heldout
@@ -246,6 +324,8 @@ rare = cm["recall"].idxmin()
 dist = T("test_distribution", ARMS[0]).set_index("class")
 hard_gap = (dist["hard_predicted_share"] - dist["observed_share"]).abs().max() * 100
 prob_gap = (dist["probabilistic_predicted_share"] - dist["observed_share"]).abs().max() * 100
+assert prob_gap < hard_gap and cm["recall"].min() < 0.5 * cm["recall"].median()   # one class far behind the others
+assert a["relative_improvement_over_marginal"] > 0 and b["relative_improvement_over_marginal"] > 0   # "below the baseline"
 display(Markdown(
     f"With education, the weighted log loss is {a['weighted_log_loss']:.4f}, {pct(a['relative_improvement_over_marginal'])} below "
     f"the marginal baseline ({a['marginal_log_loss']:.4f}), at a weighted accuracy of {pct(a['weighted_accuracy'])}. Without "
@@ -312,6 +392,8 @@ for arm in ARMS:
         rows.append({"arm": ARM_LABEL[arm], "probabilities": r["probabilities"], "log loss": round(r["weighted_log_loss"], 4),
                      "mean ECE": round(r["mean_ece"], 4), "share-weighted ECE": round(r["share_weighted_ece"], 4)})
 iso = pd.DataFrame(rows)
+trades = iso.pivot(index="arm", columns="probabilities")
+assert (trades[("log loss", "isotonic")] >= trades[("log loss", "selected")]).all() and (trades[("mean ECE", "isotonic")] < trades[("mean ECE", "selected")]).all()
 display(Markdown(
     "One isotonic map per class is learned from out-of-fold probabilities on the training households and applied to the "
     "held-out ones. It is always evaluated and shipped only when the task says so "

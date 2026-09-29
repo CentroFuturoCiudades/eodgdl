@@ -61,3 +61,8 @@ evaluation:
     draws_200: {draws: 200}
   reference: {derive: nse_ageb_calibrado}                 # AMAI's NSE by AGEB on the AGEBs the EOD covers
   observed_check: {task: amai_trabajadores}               # the ENIGH model against the EOD's own count
+  # Rubin's rules over the chain's 50 draws, with the single fit and with a bootstrap model per draw (where the retrains
+  # wrote bootstrap bundles): each level's share before and after the AGEB calibration.
+  multiple_imputation:
+    draws: 50
+    shares: {nse: [], nse_calibrado: []}

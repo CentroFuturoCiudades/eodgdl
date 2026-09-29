@@ -37,12 +37,18 @@ def assign_arms(frame, arms, is_missing):
     return assigned
 
 
+def auxiliary_shares(auxiliary, X, level_subsets=None, missing_label=MISSING_LABEL):
+    """Row-wise P(level | x) of each auxiliary model (``{feature: model}``) for the rows of ``X``, the
+    ``conditional_shares`` of :func:`~eodgdl.impute.marginalize.expand_unsupported` (None without any)."""
+    return {feature: predict_level_shares(model, X, level_subsets=level_subsets, missing_label=missing_label) for feature, model in auxiliary.items()} or None
+
+
 def score_arm(arm, rows, numeric, category_levels, level_subsets=None, missing_label=MISSING_LABEL):
     """Probabilities of ``rows`` under one arm (columns in the model's class order) and the per-row marginalized
     features: ``(probabilities, marginalized, classes)``."""
     X = prepare_features(rows, arm.features, numeric, missing_label)
     assert_known_levels(X, category_levels)
-    conditional = {feature: predict_level_shares(model, X, level_subsets=level_subsets, missing_label=missing_label) for feature, model in arm.auxiliary.items()} or None
+    conditional = auxiliary_shares(arm.auxiliary, X, level_subsets=level_subsets, missing_label=missing_label)
     probabilities, marginalized = predict_proba_marginalizing(arm.model, X, level_subsets=level_subsets, conditional_shares=conditional, missing_label=missing_label)
 
     return probabilities, marginalized, arm.model.named_steps["classifier"].classes_

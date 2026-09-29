@@ -61,8 +61,8 @@ SUMMARY = json.loads((TASK_OUT / "summary.json").read_text(encoding="utf-8"))
 CHAIN_SUMMARY = json.loads((CHAIN_OUT / "evaluation" / "summary.json").read_text(encoding="utf-8"))
 ARMS = [arm.name for arm in SPEC.arms]
 ARM_LABEL = {"with_education": "With education", "without_education": "Without education"}
-SECTOR_LABEL = {"comercio": "Commerce", "gobierno_otro_agricultura": "Government, agriculture, other",
-                "manufactura_construccion": "Manufacturing and construction", "servicios_transporte": "Services and transport"}
+SECTOR_LABEL = {"comercio": "Commerce", "gobierno": "Government",
+                "manufactura_construccion": "Agriculture, manufacturing and construction", "servicios_transporte": "Services and transport"}
 
 
 def T(name, arm=None):
@@ -110,7 +110,11 @@ common levels (`src/eodgdl/impute/harmonization/`). The model's sector input is 
 
 $$P(I \mid x) = \sum_s P(s \mid x)\, P(I \mid x, s)$$
 
-over the four harmonized sectors, with the giro model's probabilities summed into sectors.
+over the four harmonized sectors, with the giro model's probabilities summed into sectors: commerce; services and
+transport (education among them); agriculture, manufacturing and construction (mining and utilities too); and
+government. The EOD's giro has no agricultural answer, so ENOE's agriculture is grouped with manufacturing and the
+EOD's *Gobierno/sector público* meets ENOE's government alone (since 2026-09-29; before, agriculture shared the
+government sector and set its expected informality 3 pp higher, the overall rate unchanged).
 
 This report reads what the last retrain and chain evaluation wrote. It trains nothing. The definitions are in
 `src/eodgdl/impute/tasks/informality.yaml` and `src/eodgdl/impute/chains/sector_informality.yaml`.
@@ -191,8 +195,8 @@ display(Markdown(
     f"{cv['test_fold']} held out; {fmt(SUMMARY['train_rows'])} train). The held-out rows outside the metro area are "
     f"dropped ({fmt(SUMMARY['test_rows'])} remain), so performance is judged where the model is applied. Each arm tunes "
     + "; ".join(f"**{name}**" for name in SPEC.selection["families"])
-    + " under a household-grouped CV with the survey weights. The simplest configuration within one standard error of "
-    "the best is kept."
+    + " under a household-grouped CV with the survey weights, each validation fold scored as the bundle scores an EOD "
+    "worker (@sec-evaluation). The simplest configuration within one standard error of the best is kept."
 ))
 rows = []
 for arm in ARMS:
@@ -205,11 +209,19 @@ display(pd.DataFrame(rows))
 
 ```{python}
 #| label: tbl-robustness
-#| tbl-cap: "Fold log losses of each selected configuration with households as the CV group and with ENOE's sampling unit (PSU): households of one unit share neighbourhood-level drivers, so the second is the more demanding estimate."
-pd.concat([T("robustness_cv", arm).assign(arm=ARM_LABEL[arm]) for arm in ARMS]).round(4)
+#| tbl-cap: "Fold log losses of each selected configuration with households as the CV group and with ENOE's sampling unit (PSU), whose households share neighbourhood-level drivers: grouping by unit holds out more of what a household's neighbours would reveal."
+robust = pd.concat([T("robustness_cv", arm).assign(arm=ARM_LABEL[arm]) for arm in ARMS])
+gap = robust.groupby("arm")[["household_grouped", "survey_psu_grouped"]].mean().diff(axis=1)["survey_psu_grouped"]
+display(Markdown("Grouping by sampling unit changes the mean fold log loss by " + " and ".join(f"{value:+.4f} ({arm.lower()})" for arm, value in gap.items())
+                 + (": households suffice as the CV group." if gap.abs().max() < 0.005 else ".")))
+robust.round(4)
 ```
 
 # Held-out evaluation {#sec-evaluation}
+
+The held-out ENOE workers are scored as the bundle scores an EOD worker: a value missing in ENOE is averaged over its
+observed levels (the place of work over the arm's auxiliary model, fitted outside the held-out households), never read
+as the category the model learned for missing values.
 
 ```{python}
 #| label: tbl-heldout
@@ -318,6 +330,36 @@ display(Markdown(
 ))
 ```
 
+# Uncertainty {#sec-uncertainty}
+
+```{python}
+#| label: uncertainty
+mi = C("multiple_imputation")
+models = list(dict.fromkeys(mi["models"]))
+rate = mi[(mi["column"] == "informalidad") & (mi["by"] == "all") & (mi["level"] == "informal")].set_index("models")
+proper = "bootstrap models" if "bootstrap models" in models else models[0]
+r = rate.loc[proper]
+lines = (f"Over {int(r['imputations'])} completed datasets of the chain (every worker's sector and informality drawn), the "
+         f"informality rate is {pct(r['estimate'], 2)}, 95% interval {pct(r['ci_low'], 2)} – {pct(r['ci_high'], 2)} ({proper}): "
+         f"a standard error of {100 * r['se_total']:.2f} pp, {100 * r['se_within']:.2f} of it the survey's sampling (dwellings as "
+         f"clusters, no strata) and the rest the imputation, whose share of the variance is {r['fmi']:.2f}.")
+if "bootstrap models" in models and "single fit" in models:
+    s = rate.loc["single fit"]
+    assert rate.loc["bootstrap models", "se_total"] > s["se_total"]
+    lines += (f" Drawing each dataset's models from the tasks' bootstrap refits (`eodgdl impute retrain --bootstrap`) is what "
+              f"carries the models' own uncertainty: with the single fit the standard error would be {100 * s['se_total']:.2f} pp "
+              f"(the imputation's share {s['fmi']:.2f}), the interval too narrow. The chain's scores above are the single fit's "
+              "exact expectation; the completed datasets for a model that needs values are "
+              "`output/impute/sector_informality/multiple_imputation/` (`eodgdl impute score sector_informality --draws 50 --bootstrap`).")
+display(Markdown(lines))
+by = mi[(mi["models"] == proper) & (mi["column"] == "informalidad") & (mi["level"] == "informal") & (mi["by"] != "all")]
+by = by.assign(**{column: (by[column] * 100).round(2) for column in ("estimate", "se_total", "ci_low", "ci_high")}, fmi=by["fmi"].round(2))
+display(by[["by", "group", "estimate", "se_total", "ci_low", "ci_high", "fmi"]].rename(columns={"estimate": "rate (%)", "se_total": "se (pp)", "ci_low": "95% low", "ci_high": "95% high"}))
+giro_shares = mi[(mi["column"] == "giro") & (mi["by"] == "all")].pivot(index="level", columns="models", values="se_total") * 100
+display(Markdown("The giro's shares among all workers carry the same kind of interval; their standard errors (pp) by models:"))
+display(giro_shares.round(3))
+```
+
 # What the covariates identify {#sec-components}
 
 INEGI's informality has two parts. **Informal-sector employment** covers units without registration, paid domestic
@@ -341,6 +383,7 @@ display(C("components").round(4))
 #| label: gap
 gap = C("gap_decomposition")
 gap_diag = C("gap_diagnostics").set_index("metric")["value"]
+assert EXPECTED < bench.loc["all", "observed_rate"]                  # the section's title: the EOD estimate is below ENOE's
 display(Markdown(
     "Direct standardization splits the gap between ENOE's metro benchmark and the EOD estimate into three parts: the "
     "model's own bias on ENOE; the composition effect (the same model on ENOE workers reweighted to the EOD profile, with "

@@ -177,6 +177,21 @@ def test_parallel_tuning_equals_serial():
     assert list(runs[0]["fold_log_losses"]) == list(runs[1]["fold_log_losses"])
 
 
+def test_fold_expansions_change_nothing_where_every_level_is_supported():
+    frame = synthetic(n=300)
+    frame["b"] = frame["b"].replace(MISSING, "b0")                 # every fold's training rows hold every level
+    X, y, w = levels.prepare_features(frame, FEATURES, NUMERIC), frame["y"], levels.normalize_sample_weights(frame["w"])
+    families = {"LogisticRegression": {"max_iter": 500, "params": {"C": [1.0]}},
+                "GradientBoosting": {"native_categoricals": True, "early_stopping": False, "params": {"max_iter": [5, 10]}}}
+    candidates = models.build_candidates(FEATURES, NUMERIC, LEVELS, families=families)
+    splits = select.grouped_splits(X, y, frame["g"], cv_splits=3)
+    expansions = [marginalize.expand_unsupported(X.iloc[validation].reset_index(drop=True), marginalize.compute_training_level_shares(X.iloc[train], w.iloc[train], NUMERIC))
+                  for train, validation in splits]
+    assert all(len(expansion.frame) == len(validation) for expansion, (_, validation) in zip(expansions, splits))
+    assert select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False, expansions=expansions) == \
+        select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False)
+
+
 def test_one_se_picks_the_simplest_candidate_within_one_se():
     results = pd.DataFrame({
         "model": ["GradientBoosting", "LogisticRegression", "RandomForest"],
@@ -229,10 +244,9 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     monkeypatch.setitem(sources._SOURCES, "test.rows", sources.Source("test.rows", build_source, {"keys": ["k"], "weight": "c", "group": "k"},
                                                                     lambda context, config: {"data": "v1"}, lambda column: LEVELS[column][:-1], __file__))
     monkeypatch.setitem(features._BUILDERS, "test.double", features.Builder("test.double", build_columns, {"scale": 2.0}, lambda context, config: {}, __file__))
-    spec = spec_module.parse_task({
-        "task": "t", "source": "test.rows", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
-        "features": {"builders": ["test.double"], "numeric": ["c", "d"]}, "arms": {"only": {"features": ["a", "b", "c", "d", "e"]}},
-    })
+    raw = {"task": "t", "source": "test.rows", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
+           "features": {"builders": ["test.double"], "numeric": ["c", "d"]}, "arms": {"only": {"features": ["a", "b", "c", "d", "e"]}}}
+    spec = spec_module.parse_task(raw)
     context = sources.Context(cache=True, cache_dir=tmp_path)
     first = features.build_frame(spec, context).frame
     again = features.build_frame(spec, context).frame
@@ -244,6 +258,15 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     assert calls == {"source": 1, "builder": 2}                           # new configuration, new key
     features.build_frame(spec, sources.Context(cache=True, cache_dir=tmp_path, refresh=True))
     assert calls["source"] == 2 and calls["builder"] == 3                  # refresh rebuilds
+    # a task with other classes shares the builder's columns, unless the builder reads the classes
+    other = spec_module.parse_task({**raw, "task": "u", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z", "W": "w"}}})
+    features.build_frame(other, context)
+    assert calls == {"source": 2, "builder": 3}
+    monkeypatch.setitem(features._BUILDERS, "test.double", features.Builder("test.double", build_columns, {"scale": 2.0}, lambda context, config: {}, __file__, reads_classes=True))
+    features.build_frame(spec, context)
+    features.build_frame(other, context)
+    assert calls == {"source": 2, "builder": 5}
+    assert features.get_builder("giro.destination").reads_classes and not features.get_builder("harmonize.enigh").reads_classes
 
 
 def test_spec_validation():
@@ -295,7 +318,7 @@ def labelled_source(monkeypatch):
                                                                         lambda context, config: {"data": "v1"}, lambda column: [], __file__))
 
 
-def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path):
+def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path, monkeypatch):
     from eodgdl.impute import bundle as bundles, run, sources
     from eodgdl.impute.spec import parse_task
 
@@ -333,9 +356,98 @@ def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path)
     assert bundles.bundle_path(spec, retrained=tmp_path / "out") == path
     assert bundles.load_bundle(spec, retrained=tmp_path / "out")["metadata"]["spec_hash"] == result.bundle["metadata"]["spec_hash"]
 
+    scenario_bundles, score_frame = {}, run.score_frame
+
+    def recording(spec, frame, bundle, **kwargs):
+        scenario_bundles[bundle["metadata"].get("scenario", "scored")] = bundle
+        return score_frame(spec, frame, bundle, **kwargs)
+
+    monkeypatch.setattr(run, "score_frame", recording)
     shipped = run.retrain(parse_task({**SYNTHETIC_TASK, "evaluation": {**SYNTHETIC_TASK["evaluation"], "isotonic": {"ship": True}}}), context=context, n_jobs=1, progress=False)
     assert type(shipped.bundle["arms"]["with_b"]["model"]).__name__ == "IsotonicCalibrated"
     np.testing.assert_allclose(shipped.scored[spec.probability_columns].sum(axis=1), 1.0)
+    # the shift scenario refits the arms as the bundle ships them
+    assert {type(entry["model"]).__name__ for entry in scenario_bundles["shift_weighted"]["arms"].values()} == {"IsotonicCalibrated"}
+    np.testing.assert_allclose(shipped.scenarios["shift_weighted"][spec.probability_columns].sum(axis=1), 1.0)
+
+
+def test_bootstrap_bundles_refit_the_selected_configurations(labelled_source, tmp_path):
+    """B refits of the bundle's selected configurations and auxiliary models on cluster bootstraps of the training rows:
+    valid bundles, seeded, each its own model; written under <task>/bootstrap/ and read back in order."""
+    from eodgdl.impute import bundle as bundles, run, sources
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    context = sources.Context(cache_dir=tmp_path / "cache")
+    fitted = run.retrain(spec, context=context, n_jobs=1, progress=False).bundle
+    boot = run.bootstrap_bundles(spec, fitted, 3, context=context, n_jobs=1)
+    task_levels = run.task_levels(spec)
+    frame = run.build_frame(spec, context).frame
+    scores = [run.score_frame(spec, frame, bundles.check_bundle(model, spec, task_levels))[spec.probability_columns].to_numpy() for model in [fitted, *boot]]
+    assert [model["metadata"]["bootstrap"] for model in boot] == [0, 1, 2] and set(boot[0]["auxiliary"]["with_b"]) == {"a"}
+    assert all(not np.allclose(scores[0], other) for other in scores[1:]) and not np.allclose(scores[1], scores[2])
+    again = run.bootstrap_bundles(spec, fitted, 2, context=context, n_jobs=1)
+    np.testing.assert_array_equal(run.score_frame(spec, frame, again[1])[spec.probability_columns].to_numpy(), scores[2])   # seeded per refit
+    paths = run.write_bootstrap(spec, boot, tmp_path / "root" / spec.name)
+    assert [path.name for path in paths] == ["synthetic_000.joblib", "synthetic_001.joblib", "synthetic_002.joblib"]
+    read = bundles.load_bootstrap(spec, tmp_path / "root")
+    np.testing.assert_array_equal(run.score_frame(spec, frame, read[2])[spec.probability_columns].to_numpy(), scores[3])
+    assert bundles.load_bootstrap(spec, tmp_path / "elsewhere") == [] and bundles.load_bootstrap(spec, None) == []
+
+
+def test_check_bundle_refuses_what_cannot_score(labelled_source, tmp_path):
+    from eodgdl.impute import bundle as bundles, run, sources
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    fitted = run.retrain(spec, context=sources.Context(cache_dir=tmp_path), n_jobs=1, progress=False).bundle
+    task_levels = run.task_levels(spec)
+    assert bundles.check_bundle(fitted, spec, task_levels) is fitted
+    arms, auxiliary, metadata = fitted["arms"], fitted["auxiliary"], fitted["metadata"]
+    cases = {
+        "bundle of task 'other'": {**fitted, "task": "other"},
+        "fitted with scikit-learn 0.1": {**fitted, "metadata": {**metadata, "sklearn_version": "0.1"}},
+        r"category levels differ from the task's for \['a'\]": {**fitted, "category_levels": {**task_levels, "a": ["a0", MISSING]}},
+        "classes .* differ from the task's": {**fitted, "classes": {"X": "x", "Y": "y"}},
+        r"arms \['without_b', 'with_b'\] differ": {**fitted, "arms": dict(reversed(list(arms.items())))},
+        "arm with_b: features differ from the task's": {**fitted, "arms": {**arms, "with_b": {**arms["with_b"], "features": ["a", "c"]}}},
+        "arm with_b: the fitted pipeline selects other features": {**fitted, "arms": {**arms, "with_b": {**arms["with_b"], "model": arms["without_b"]["model"]}}},
+        "arm with_b: auxiliary model for 'b', which the task does not declare": {**fitted, "auxiliary": {**auxiliary, "with_b": {"b": auxiliary["with_b"]["a"]}}},
+        "arm with_b: the auxiliary a model uses other predictors": {**fitted, "auxiliary": {**auxiliary, "with_b": {"a": auxiliary["without_b"]["a"]}}},
+        "scoring_hash differs from the task's": {**fitted, "metadata": {**metadata, "scoring_hash": "x"}},
+        "level_contract_hash differs from the task's": {**fitted, "metadata": {**metadata, "level_contract_hash": "x"}},
+    }
+    for message, broken in cases.items():
+        with pytest.raises(bundles.BundleMismatch, match=message):
+            bundles.check_bundle(broken, spec, task_levels)
+
+
+def test_bootstrap_samples_draw_whole_clusters():
+    from eodgdl.impute import run
+
+    frame = pd.DataFrame({"g": [1, 1, 2, 3, 3, 3], "x": range(6)})
+    sample = run.bootstrap_sample(frame, "g", np.random.default_rng(0))
+    sizes = frame["g"].value_counts()
+    drawn = sample["g"].value_counts()
+    assert all(drawn[g] % sizes[g] == 0 for g in drawn.index)                    # every drawn cluster brings all its rows
+    assert sum(drawn[g] // sizes[g] for g in drawn.index) == frame["g"].nunique()  # as many clusters as the frame holds
+
+
+def test_rubins_rules_and_cluster_shares():
+    from eodgdl.impute import evaluate
+
+    combined = evaluate.rubin([0.30, 0.32, 0.31, 0.29], [1e-4, 1.1e-4, 0.9e-4, 1e-4])
+    between, within = np.var([0.30, 0.32, 0.31, 0.29], ddof=1), 1e-4
+    total = within + 1.25 * between
+    assert combined["estimate"] == pytest.approx(0.305) and combined["se_total"] == pytest.approx(np.sqrt(total))
+    assert combined["fmi"] == pytest.approx(1.25 * between / total) and combined["df"] == pytest.approx(3 * (1 + within / (1.25 * between)) ** 2)
+    assert combined["ci_low"] < 0.305 < combined["ci_high"]
+    frame = pd.DataFrame({"d": [0] * 4 + [1] * 4, "y": [1, 0, 1, 1, 0, 0, 1, 0], "w": [1.0, 2.0, 1.0, 1.0] * 2, "c": [1, 1, 2, 3] * 2})
+    table = evaluate.cluster_shares(frame, "y", "w", "c", ["d"])
+    share = (1.0 + 1.0 + 1.0) / 5.0
+    z = np.array([1.0 * (1 - share) + 2.0 * (0 - share), 1.0 * (1 - share), 1.0 * (1 - share)])   # completion 0's clusters
+    assert table.loc[0, "share"] == pytest.approx(share) and table.loc[0, "variance"] == pytest.approx(3 / 2 * (z ** 2).sum() / 25)
+    assert table.loc[0, "clusters"] == 3
 
 
 def test_hybrid_heldout_predicts_each_row_with_its_arm():
@@ -349,6 +461,92 @@ def test_hybrid_heldout_predicts_each_row_with_its_arm():
     assert (metrics["rows_with_b"], metrics["rows_without_b"]) == (2, 2)
     # b observed (rows 0, 2): the arm with b; "?" and the missing label (rows 1, 3): the arm without it
     assert metrics["weighted_log_loss"] == pytest.approx(-np.average(np.log([0.8, 0.6, 0.1, 0.2]), weights=[1, 2, 1, 1]))
+
+
+def test_heldout_rows_are_predicted_as_scoring_predicts_them(fitted, labelled_source):
+    from eodgdl.impute import run
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task({"task": "h", "source": "test.labelled", "target": {"column": "label", "classes": {"X": "x", "Y": "y", "Z": "z"}},
+                       "features": {"numeric": NUMERIC}, "levels": {"declared": {"a": LEVELS["a"][:-1], "b": LEVELS["b"][:-1]}},
+                       "arms": {"only": {"features": FEATURES}}})
+    rows = synthetic(n=80, seed=11).assign(h=lambda frame: frame["y"])
+    rows.loc[::5, "b"] = None                                      # unobserved: the missing label
+    rows.loc[::7, "a"] = "a3"                                      # a level without training support
+    X = levels.prepare_features(rows, FEATURES, NUMERIC)
+    averaged = ((X["b"] == MISSING) | (X["a"] == "a3")).to_numpy()
+    y, probabilities, classes, _ = run.heldout(fitted, spec, rows, "w")
+    np.testing.assert_array_equal(probabilities, marginalize.predict_proba_marginalizing(fitted, X)[0])
+    direct = fitted.predict_proba(rows)                            # the missing label as the category the model learned
+    np.testing.assert_allclose(probabilities[~averaged], direct[~averaged], rtol=0, atol=1e-12)
+    assert not np.allclose(probabilities[averaged], direct[averaged])
+    assert classes == list(fitted.named_steps["classifier"].classes_) and y.tolist() == rows["y"].tolist()
+    # with an auxiliary model an unobserved b is averaged over P(b | x), as the bundle's arm scores it
+    auxiliary = {"b": models.fit_level_model(synthetic(), "b", ["a", "c"], NUMERIC, LEVELS)}
+    with_auxiliary = run.heldout(fitted, spec, rows, "w", auxiliary)[1]
+    conditional = {"b": marginalize.predict_level_shares(auxiliary["b"], X)}
+    np.testing.assert_array_equal(with_auxiliary, marginalize.predict_proba_marginalizing(fitted, X, conditional_shares=conditional)[0])
+    assert not np.allclose(with_auxiliary[X["b"].eq(MISSING).to_numpy()], probabilities[X["b"].eq(MISSING).to_numpy()])
+
+
+def test_selection_scores_each_fold_as_the_bundle_scores(labelled_source, tmp_path):
+    """The grid's CV judges a configuration on a validation fold as a bundle fitted on the fold's training rows would
+    score it: the fold model with its training shares, an unobserved a averaged over P(a | x) from an auxiliary model
+    fitted on every row outside the validation fold."""
+    from sklearn.base import clone
+
+    from eodgdl.impute import run, sources
+    from eodgdl.impute.arms import Arm, score_arm
+    from eodgdl.impute.features import build_frame
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    source = build_frame(spec, sources.Context(cache_dir=tmp_path / "cache"))
+    frame, task_levels = source.frame, run.task_levels(spec)
+    others = frame[frame[spec.unknown_column].astype(bool).to_numpy()]
+    arm = spec.arm("with_b")
+    X, y, w, g, rows = run.training_data(spec, frame, list(arm.features), source.weight, source.group)
+    expand = run.fold_expander(spec, arm, rows, X, w, others, source.weight, task_levels, 42)
+    candidates = models.build_candidates(list(arm.features), spec.numeric, task_levels, {"LogisticRegression": {"max_iter": 500, "params": {"C": [1.0]}}})
+    splits = select.grouped_splits(X, y, g, cv_splits=3)
+    [(_, as_scored)] = select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False, expansions=[expand(*split) for split in splits]).items()
+    [(_, as_is)] = select.cross_validate_grid(candidates, X, y, w, splits, n_jobs=1, progress=False).items()
+    for fold, (train, validation) in enumerate(splits):
+        model = clone(candidates["LogisticRegression"]["model"]).set_params(classifier__C=1.0)
+        model.fit(X.iloc[train], y.iloc[train], classifier__sample_weight=w.iloc[train])
+        marginalize.attach_training_level_shares(model, X.iloc[train], w.iloc[train], spec.numeric)
+        side = pd.concat([rows.iloc[train], others], ignore_index=True)
+        auxiliary = {"a": models.fit_level_model(side, "a", spec.auxiliary_predictors("a", arm.name), spec.numeric, task_levels, sample_weights=side[source.weight])}
+        probabilities, marginalized, classes = score_arm(Arm(arm.name, model, list(arm.features), auxiliary=auxiliary), rows.iloc[validation], spec.numeric, task_levels)
+        expected = select.fold_metrics(y.iloc[validation], w.iloc[validation], classes[probabilities.argmax(axis=1)], probabilities, classes)
+        assert as_scored[fold] == pytest.approx(expected, abs=1e-12)
+        assert marginalized.str.contains("a").any() and marginalized.str.contains("b").any()
+        # read as it is, the missing label is the category the model learned: another predictor
+        assert abs(as_scored[fold]["log_loss"] - as_is[fold]["log_loss"]) > 1e-6
+
+
+def test_delta_adjustment_reaches_its_target_where_probabilities_reach_one():
+    from eodgdl.impute import evaluate
+
+    classes, columns = ["a", "b", "c"], ["prob_t_a", "prob_t_b", "prob_t_c"]
+    imputed = pd.DataFrame({"t_fue_imputado": [True, True, True, False], "w": [1.0, 2.0, 1.0, 1.0], "t_final": [None, None, None, "a"],
+                            "prob_t_a": [0.9, 0.5, 0.1, 1.0], "prob_t_b": [0.1, 0.3, 0.6, 0.0], "prob_t_c": [0.0, 0.2, 0.3, 0.0]})   # imputed share of a: 0.5
+
+    def share(frame):
+        rows = frame["t_fue_imputado"]
+        return np.average(frame.loc[rows, "prob_t_a"], weights=frame.loc[rows, "w"])
+
+    # scaling down: the ratio of the target to the current share
+    adjusted, factor = evaluate.adjust_imputed_share(imputed, "t", classes, "a", target_share=0.25, weight_column="w")
+    assert factor == pytest.approx(0.5) and share(adjusted) == pytest.approx(0.25)
+    # scaling up past one (the ratio, 1.6, would leave the share at 0.69): the largest probabilities held at one
+    adjusted, factor = evaluate.adjust_imputed_share(imputed, "t", classes, "a", target_share=0.8, weight_column="w")
+    assert factor == pytest.approx(2.0) and share(adjusted) == pytest.approx(0.8)
+    np.testing.assert_allclose(adjusted.loc[[0, 1, 2], "prob_t_a"], [1.0, 1.0, 0.2])
+    np.testing.assert_allclose(adjusted[columns].sum(axis=1), 1.0)
+    assert (adjusted.loc[[0, 1], ["prob_t_b", "prob_t_c"]] == 0).all().all() and adjusted.loc[3, columns].tolist() == [1.0, 0.0, 0.0]
+    with pytest.raises(ValueError, match="No factor reaches"):      # a quarter of the imputed weight has a positive probability
+        evaluate.adjust_imputed_share(imputed.assign(prob_t_a=[0.9, 0.0, 0.0, 1.0], prob_t_b=[0.1, 0.8, 0.7, 0.0]), "t", classes, "a", target_share=0.5, weight_column="w")
 
 
 def test_compare_pairs_candidates_with_the_baseline(labelled_source, tmp_path):
@@ -577,3 +775,58 @@ def test_harmonizations_are_builders_keyed_by_the_harmonization_code():
         builder = features.get_builder(name)
         assert builder.replaces and Path(builder.module_file).name == "harmonize.py"
         assert set(builder.versions(None, {})) == {"harmonization", "common"}
+
+
+def test_amai_points_levels_and_calibration(monkeypatch):
+    """AMAI's points (the tasks' class scores plus the dwelling's own answers), the cut into levels, and the rank
+    calibration: within an AGEB with AMAI's distribution the dwellings ordered by points take the levels of its
+    cumulative distribution at their weighted mid-rank, ties in a random order per completion; elsewhere the level stays."""
+    from eodgdl.impute.derive import amai
+
+    monkeypatch.setattr(amai, "_task_points", lambda values, task: values.astype(float).to_numpy())       # values are points already
+    base = pd.DataFrame({"internet": ["Sí", "No", "Sí", "No", "Sí", "Sí"], "ageb": ["A", "A", "A", "A", "B", "C"], "w": 1.0})
+    completions = pd.DataFrame({"row": [0, 1, 2, 3, 4, 5], "completion": 0, "weight": 1.0, "educacion": [59.0, 11.0, 27.0, 27.0, 85.0, 0.0]})
+    points = amai.amai_points(completions, base, {"tasks": ["educacion"], "observed": {"internet": {"Sí": 32, "No": 0}}})["amai_puntos"]
+    assert points.tolist() == [91.0, 11.0, 59.0, 27.0, 117.0, 32.0]
+    completions["amai_puntos"] = points.to_numpy()
+    levels = amai.nse_level(completions, base, {"from": "amai_puntos", "edges": [-np.inf, 48, 95, 116, np.inf], "labels": ["e", "d", "d_mas", "c_menos"]})["nse"]
+    assert levels.tolist() == ["d", "e", "d", "e", "c_menos", "e"]
+    completions["nse"] = levels.to_numpy()
+    shares = pd.DataFrame({"e": [0.5, 0.0], "d": [0.0, 1.0], "c_mas": [0.5, 0.0]}, index=["A", "B"])        # AGEB C has no AMAI distribution
+    monkeypatch.setattr(amai, "nse_ageb_shares", lambda config: shares)
+    config = {"from": "amai_puntos", "level": "nse", "ageb": "ageb", "weight": "w", "levels": {"nse_calibrado": ["e", "d", "c_mas"]}, "seed": np.random.SeedSequence(1)}
+    calibrated = amai.nse_ageb_calibrated(completions, base, config)["nse_calibrado"].tolist()
+    # AGEB A by points: 11 (row 1), 27 (row 3), 59 (row 2), 91 (row 0): the lower half E, the upper half C+
+    assert calibrated == ["c_mas", "e", "c_mas", "e", "d", "e"]
+    with pytest.raises(ValueError, match="complete datasets"):
+        amai.nse_ageb_calibrated(completions, base, {**config, "propagation": "enumerate"})
+    # equal points share the level split at random, anew in each completion
+    tied = pd.DataFrame({"row": np.tile([0, 1, 2, 3], 200), "completion": np.repeat(np.arange(200), 4), "weight": 1 / 200, "amai_puntos": 50.0, "nse": "d"})
+    tied_base = base.iloc[:4]
+    split = amai.nse_ageb_calibrated(tied, tied_base, {**config, "seed": np.random.SeedSequence(2)})["nse_calibrado"].to_numpy().reshape(200, 4)
+    assert ((split == "e").sum(axis=1) == 2).all()                                       # AMAI's half and half in every completion
+    assert 0.35 < (split[:, 0] == "e").mean() < 0.65                                      # whichever dwelling comes first
+
+
+def test_eod_sources_on_the_survey(stages):
+    """The EOD's sources on the cleaned survey: the workers with their interview month, one dwelling per row with its
+    head and its members aged 14+ who worked."""
+    from eodgdl.impute.sources import Context
+    from eodgdl.impute.sources.eod import dwellings, load_config, workers
+
+    context = Context(tables=stages.revised)
+    config = load_config()
+    frame = workers(context, config["eod.workers"])
+    hab = stages.revised.hab
+    employed = hab["trabajo_semana_pasada"].isin(config["eod.workers"]["employed_categories"])
+    assert len(frame) == int(employed.sum()) == 26_913 and not frame.duplicated(["folio_vivienda", "folio_habitante"]).any()
+    assert set(frame["mes_entrevista"]) == {"1", "2", "3", "4"} and frame["centralidad"].notna().all()
+    homes = dwellings(context, config["eod.dwellings"])
+    assert len(homes) == len(stages.revised.viv) == 17_901 and homes["folio_vivienda"].is_unique
+    assert set(homes["jefe_fuente"]) == {"observado", "mayor_edad"} and homes["trabajadores_14_n"].ge(0).all()
+    reported = homes["jefe_fuente"].eq("observado")                                   # else the oldest member stands in
+    assert int(reported.sum()) == 16_873 and homes["sexo_jefe"].notna().all()
+    assert homes["trabajadores_14_n"].sum() == int((hab["edad"].ge(14) & employed).sum()) == 26_797
+    # a category the survey does not hold (a label split at its comma, as eod.yaml's flow list did) fails loudly
+    with pytest.raises(ValueError, match=r"not levels of trabajo_semana_pasada: \['Tenía trabajo', 'pero no trabajó'\]"):
+        dwellings(context, {**config["eod.dwellings"], "employed_categories": ["Tiempo completo", "Tenía trabajo", "pero no trabajó"]})

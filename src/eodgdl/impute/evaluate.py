@@ -1,9 +1,10 @@
 """Evaluation of a fitted classifier and of an imputation: held-out metrics with household-bootstrap intervals, the
 weighted-marginal baseline, one-vs-rest reliability, known vs unknown profiles, density-ratio reweighting for
-covariate-shift sensitivity, and the delta adjustment of an imputed share.
+covariate-shift sensitivity, the delta adjustment of an imputed share, and Rubin's rules over completed datasets.
 
 The held-out evaluators take the observed labels, a probability matrix (columns ``classes``, the model's order, as
-``model.predict_proba(rows)`` gives them) and the weights, so a caller predicts once and evaluates many ways."""
+:func:`eodgdl.impute.run.heldout` gives them: the rows predicted as scoring predicts them) and the weights, so a caller
+predicts once and evaluates many ways."""
 
 import numpy as np
 import pandas as pd
@@ -222,6 +223,43 @@ def test_metrics_with_uncertainty(y_true, probabilities, classes, sample_weights
     return summary
 
 
+# Multiple imputation
+def cluster_shares(frame, indicator, weight, cluster, by):
+    """Per group of ``frame`` (``by``: its columns, e.g. the completion and a subgroup): the weighted share
+    Σ w y / Σ w of the 0/1 column ``indicator`` and its linearized variance with the ``cluster`` values as primary units
+    sampled with replacement and no strata, n / (n − 1) Σ_c z_c² / (Σ w)² with z_c = Σ_{i ∈ c} w_i (y_i − share).
+    Returns a frame indexed by ``by`` with ``share``, ``variance`` and ``clusters``."""
+    data = frame[list(by)].copy()
+    data["w"] = frame[weight].to_numpy(float)
+    data["wy"] = data["w"] * frame[indicator].to_numpy(float)
+    data["c"] = frame[cluster].to_numpy()
+    totals = data.groupby(list(by), observed=True)[["w", "wy"]].sum()
+    share = totals["wy"] / totals["w"]
+    data["z"] = data["wy"] - data["w"] * share.reindex(pd.MultiIndex.from_frame(data[list(by)]) if len(by) > 1 else data[by[0]]).to_numpy()
+    z = data.groupby([*by, "c"], observed=True)["z"].sum()
+    n = z.groupby(level=list(range(len(by))), observed=True).size()
+    variance = n / (n - 1) * (z ** 2).groupby(level=list(range(len(by))), observed=True).sum() / totals["w"] ** 2
+    return pd.DataFrame({"share": share, "variance": variance, "clusters": n})
+
+
+def rubin(estimates, variances):
+    """Rubin's rules for one estimate over M completed datasets: the mean of the estimates, the within variance (the
+    mean of their variances), the between variance (the variance of the estimates), the total within + (1 + 1/M)
+    between, the fraction of missing information (1 + 1/M) between / total, and a 95% interval on Rubin's degrees of
+    freedom (M − 1)(1 + 1/r)², r = (1 + 1/M) between / within."""
+    from scipy import stats
+
+    q, u = np.asarray(estimates, dtype=float), np.asarray(variances, dtype=float)
+    m = len(q)
+    mean, within, between = q.mean(), u.mean(), q.var(ddof=1)
+    total = within + (1 + 1 / m) * between
+    r = (1 + 1 / m) * between / within if within > 0 else np.inf
+    df = (m - 1) * (1 + 1 / r) ** 2 if r > 0 else np.inf
+    half = (stats.t.ppf(0.975, df) if np.isfinite(df) else stats.norm.ppf(0.975)) * np.sqrt(total)
+    return {"estimate": mean, "se_within": np.sqrt(within), "se_between": np.sqrt(between), "se_total": np.sqrt(total),
+            "fmi": (1 + 1 / m) * between / total if total > 0 else 0.0, "df": df, "ci_low": mean - half, "ci_high": mean + half, "imputations": m}
+
+
 # Known vs unknown rows
 def compare_known_unknown_profiles(frame, columns, unknown, weight_column="ponderador"):
     """Weighted distribution of ``columns`` among rows with an observed target and rows without (``unknown``)."""
@@ -269,11 +307,35 @@ def validate_probability_rows(frame, columns, tolerance=1e-8):
     return maximum_error
 
 
+def clipped_scale_factor(probabilities, weights, target_share):
+    """The factor f whose scaled probabilities, held at one, reach ``target_share``: Σ w·min(f·p, 1) / Σ w = target.
+    Where no f·p passes one it is the plain ratio of the target to the current share; else the rows held at one are
+    the largest probabilities, as many as the target needs."""
+    p, w = np.asarray(probabilities, dtype=float), np.asarray(weights, dtype=float)
+    factor = target_share / ((w * p).sum() / w.sum())
+    if factor * p.max() <= 1.0:
+        return factor
+    target = target_share * w.sum()
+    if target > w[p > 0].sum():
+        raise ValueError(f"No factor reaches the share {target_share:.4f}: the rows with a positive probability hold {w[p > 0].sum() / w.sum():.4f} of the weight")
+    order = np.argsort(-p, kind="stable")
+    p, w = p[order], w[order]
+    held = np.r_[0.0, np.cumsum(w)[:-1]]                         # k = 0, 1, ...: the weight of the k largest, held at one
+    scaled = np.cumsum((w * p)[::-1])[::-1]                      # and the probability mass of the others
+    with np.errstate(divide="ignore", invalid="ignore"):    # no mass left beyond k (scaled 0): no solution there
+        factors = (target - held) / scaled
+        # k rows at one: the k-th largest reaches one and the next does not pass it
+        fits = (scaled > 0) & (factors * p <= 1.0) & np.r_[True, factors[1:] * p[:-1] >= 1.0]
+    assert fits.any(), "no number of rows held at one reaches the target"
+    return float(factors[np.argmax(fits)])
+
+
 def adjust_imputed_share(imputed, prefix, classes, label, target_share=None, weight_column="ponderador"):
     """Delta adjustment: scale the imputed probability of ``label`` so the weighted imputed share equals
     ``target_share`` (default: its observed share among the rows with an observed target), renormalizing the other
-    classes; the arg-max and confidence follow. Returns ``(adjusted, factor)``. The scaled probability is clipped at
-    one, so the target is not reached where the clip binds."""
+    classes; the arg-max and confidence follow. Returns ``(adjusted, factor)``. A scaled probability that would pass
+    one is held at one and the factor solved so the target is still reached (:func:`clipped_scale_factor`); where none
+    does, the factor is the ratio of the target to the current share."""
     imputed = imputed.copy()
     columns = [f"prob_{prefix}_{c}" for c in classes]
     rows = imputed[f"{prefix}_fue_imputado"].to_numpy()
@@ -283,6 +345,8 @@ def adjust_imputed_share(imputed, prefix, classes, label, target_share=None, wei
         target_share = (weights[~rows] * (imputed.loc[~rows, f"{prefix}_final"] == label).to_numpy(dtype=float)).sum() / weights[~rows].sum()
     current_share = (weights[rows] * imputed.loc[rows, column]).sum() / weights[rows].sum()
     factor = target_share / current_share
+    if (imputed.loc[rows, column] * factor).max() > 1.0:
+        factor = clipped_scale_factor(imputed.loc[rows, column], weights[rows], target_share)
     adjusted = imputed.loc[rows, columns].copy()
     others = [c for c in columns if c != column]
     scaled = (adjusted[column] * factor).clip(upper=1.0)

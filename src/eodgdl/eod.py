@@ -167,6 +167,65 @@ def _diary_signatures(trips: pd.DataFrame, legs: pd.DataFrame | None) -> pd.Data
     )
 
 
+def repeated_diary_pairs(
+    trips: pd.DataFrame,
+    hab: pd.DataFrame,
+    viv: pd.DataFrame,
+    legs: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The pairs of persons whose diaries repeat across two households.
+
+    The rule is :func:`flag_repeated_diaries`'s. One row per pair:
+    ``folio_vivienda_a``, ``folio_habitante_a``, ``folio_vivienda_b``,
+    ``folio_habitante_b`` (the first in the survey's order as ``a``) and
+    ``max_offset``, the largest start-time difference in minutes. A person
+    repeated in several households is in several pairs. Read the survey as
+    shipped (``load_stages().shipped``): the chain rules edit the start times
+    and motives the rule compares.
+    """
+    d = _diary_signatures(trips.sort_index(), legs)
+    person = d.groupby(level=PERSON, sort=False)
+    diary = pd.DataFrame(
+        {
+            "sig": person.sig.agg(" ## ".join),
+            "n": person.size(),
+            "moving": person.moving.any(),
+            "starts": person.start.agg(list),
+        }
+    )
+    diary["ageb"] = viv.ageb.reindex(
+        diary.index.get_level_values("folio_vivienda")
+    ).to_numpy()
+    diary["fecha"] = hab.fecha.reindex(diary.index).to_numpy()
+    diary = diary[(diary.n >= 2) & diary.moving]
+    pairs = []
+    for _, group in diary.groupby(["ageb", "fecha", "sig"], sort=False, observed=True):
+        if group.index.get_level_values("folio_vivienda").nunique() < 2:
+            continue
+        keys = sorted(group.index)
+        starts = dict(
+            zip(group.index, (np.asarray(s, dtype=float) for s in group.starts))
+        )
+        for i, a in enumerate(keys):
+            for b in keys[i + 1 :]:
+                if a[0] == b[0]:
+                    continue
+                offsets = np.abs(starts[a] - starts[b])
+                if (
+                    not np.isnan(offsets).any()
+                    and offsets.max() <= _DIARY_TWIN_MAX_OFFSET
+                ):
+                    pairs.append((*a, *b, float(offsets.max())))
+    columns = [
+        "folio_vivienda_a",
+        "folio_habitante_a",
+        "folio_vivienda_b",
+        "folio_habitante_b",
+        "max_offset",
+    ]
+    return pd.DataFrame(pairs, columns=columns)
+
+
 def flag_repeated_diaries(
     trips: pd.DataFrame,
     hab: pd.DataFrame,
@@ -197,40 +256,16 @@ def flag_repeated_diaries(
 
     ``trips`` may carry the ``traslado*`` columns or, after the legs unpivot,
     be paired with ``legs``. ``viv`` supplies the AGEB and ``hab`` the
-    interview date. Returns a boolean Series over ``hab.index``.
+    interview date. Returns a boolean Series over ``hab.index``; the pairs
+    themselves are :func:`repeated_diary_pairs`.
     """
-    d = _diary_signatures(trips.sort_index(), legs)
-    person = d.groupby(level=PERSON, sort=False)
-    diary = pd.DataFrame(
-        {
-            "sig": person.sig.agg(" ## ".join),
-            "n": person.size(),
-            "moving": person.moving.any(),
-            "starts": person.start.agg(list),
-        }
-    )
-    diary["ageb"] = viv.ageb.reindex(
-        diary.index.get_level_values("folio_vivienda")
-    ).to_numpy()
-    diary["fecha"] = hab.fecha.reindex(diary.index).to_numpy()
-    diary = diary[(diary.n >= 2) & diary.moving]
+    pairs = repeated_diary_pairs(trips, hab, viv, legs)
     flagged = pd.Series(False, index=hab.index, name=DIARY_FLAG)
-    for _, group in diary.groupby(["ageb", "fecha", "sig"], sort=False, observed=True):
-        if group.index.get_level_values("folio_vivienda").nunique() < 2:
-            continue
-        keys = list(group.index)
-        starts = [np.asarray(s, dtype=float) for s in group.starts]
-        for i, a in enumerate(keys):
-            for j, b in enumerate(keys):
-                if a[0] == b[0]:
-                    continue
-                offsets = np.abs(starts[i] - starts[j])
-                if (
-                    not np.isnan(offsets).any()
-                    and offsets.max() <= _DIARY_TWIN_MAX_OFFSET
-                ):
-                    flagged.loc[a] = True
-                    break
+    for side in ("a", "b"):
+        members = pd.MultiIndex.from_arrays(
+            [pairs[f"folio_vivienda_{side}"], pairs[f"folio_habitante_{side}"]]
+        )
+        flagged[hab.index.isin(members)] = True
     return flagged
 
 

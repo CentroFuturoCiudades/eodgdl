@@ -62,18 +62,15 @@ BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
 @pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
 def test_scoring_reproduces_the_reference():
     # 384 workers of outputs/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
-    # installed v2 bundle's scores (v0.3.0, the engine's score_frame): giro's legacy entry points give the same outputs.
+    # installed bundle's scores (regenerated 2026-09-29 for the bundle that reads the interview month, which the
+    # fixture gained): the engine scores them exactly so.
+    from eodgdl.impute.run import score_frame
+
     fixture = pd.read_parquet(FIXTURE)
     expected = fixture.filter(like="expected__").rename(columns=lambda column: column.removeprefix("expected__"))
-    bundle = giro.load_model(BUNDLE)
-    scored = giro.impute_giro(
-        bundle["model_with_education"], bundle["model_without_education"], fixture.drop(columns=expected.columns.map("expected__{}".format)),
-        with_education_features=bundle["features_with_education"], without_education_features=bundle["features_without_education"],
-        destination_models=bundle["destination_models"],
-    )
+    scored = score_frame(giro.TASK, fixture.drop(columns=expected.columns.map("expected__{}".format)), giro.load_model(BUNDLE))
     columns = [column for column in giro.OUTPUT_COLUMNS if column not in giro.KEYS]
-    scored = scored[columns].reset_index(drop=True)
-    pd.testing.assert_frame_equal(scored, expected[columns], check_dtype=False, check_exact=True)
+    pd.testing.assert_frame_equal(scored[columns].reset_index(drop=True), expected[columns], check_dtype=False, check_exact=True)
 
 
 @pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
@@ -84,11 +81,8 @@ def test_bundle_checks_and_v2_round_trip(tmp_path):
     from eodgdl.impute.run import score_frame, task_levels
 
     spec, levels = giro.TASK, task_levels(giro.TASK)
-    legacy = giro.load_model(BUNDLE)                                         # the old keys (legacy_view of the v2 file)
-    v2 = bundles.check_bundle(bundles.as_v2(legacy, spec), spec, levels)    # the legacy layout fits the task spec
-    assert v2["metadata"]["converted_from"] == "legacy giro bundle"
-    assert list(v2["auxiliary"]) == ["with_education", "without_education"]
-
+    v2 = bundles.check_bundle(giro.load_model(BUNDLE), spec, levels)
+    assert v2["format"] == bundles.FORMAT and list(v2["auxiliary"]) == ["with_education", "without_education"]
     for broken, message in (
         ({**v2, "metadata": {**v2["metadata"], "sklearn_version": "0.0"}}, "scikit-learn 0.0"),
         ({**v2, "category_levels": {**levels, "destino_ambito": ["localidad_rural"] + levels["destino_ambito"]}}, r"category levels differ .*destino_ambito"),
@@ -96,22 +90,14 @@ def test_bundle_checks_and_v2_round_trip(tmp_path):
     ):
         with pytest.raises(bundles.BundleMismatch, match=message):
             bundles.check_bundle(broken, spec, levels)
+    # the giro notebook's layout (model_with_education ... keys) is no longer converted
+    with pytest.raises(bundles.BundleMismatch, match="format"):
+        bundles.as_v2({"model_with_education": v2["arms"]["with_education"]["model"]}, spec)
 
     arms = {name: entry["model"] for name, entry in v2["arms"].items()}
-    fresh = bundles.make_bundle(spec, arms, v2["auxiliary"], levels, {"selected": legacy["metadata"]["selected"]})
+    fresh = bundles.make_bundle(spec, arms, v2["auxiliary"], levels, {"selected": v2["metadata"]["selected"]})
     assert fresh["metadata"]["sklearn_version"] == sklearn.__version__
     path = tmp_path / "giro.joblib"
     bundles.save_bundle(fresh, path)
-    view = giro.load_model(path)                                             # old keys, read from a v2 file
-    assert set(view) >= {"model_with_education", "features_without_education", "destination_models", "category_levels", "metadata"}
-    assert view["features_with_education"] == legacy["features_with_education"]
-
-    fixture = pd.read_parquet(FIXTURE)
-    frame = fixture.drop(columns=[column for column in fixture if column.startswith("expected__")])
-    from_legacy = score_frame(spec, frame, legacy)
-    from_v2 = score_frame(spec, frame, bundles.load_bundle(spec, path))
-    pd.testing.assert_frame_equal(from_legacy, from_v2)
-    expected = giro.impute_giro(legacy["model_with_education"], legacy["model_without_education"], frame,
-                                with_education_features=legacy["features_with_education"], without_education_features=legacy["features_without_education"],
-                                destination_models=legacy["destination_models"])
-    pd.testing.assert_frame_equal(from_legacy[giro.OUTPUT_COLUMNS], expected[giro.OUTPUT_COLUMNS])
+    frame = pd.read_parquet(FIXTURE).pipe(lambda fixture: fixture.drop(columns=[column for column in fixture if column.startswith("expected__")]))
+    pd.testing.assert_frame_equal(score_frame(spec, frame, v2), score_frame(spec, frame, giro.load_model(path)))

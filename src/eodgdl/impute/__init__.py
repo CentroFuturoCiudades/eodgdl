@@ -12,7 +12,7 @@ its bundles from ``bundle.load_bundle``: ``retrained=<root>`` reads a retrain's,
 - :mod:`~eodgdl.impute.spec`: task specs and their hashes, the YAML reader
 - :mod:`~eodgdl.impute.sources`, :mod:`~eodgdl.impute.features`: source frames, feature builders, the feature cache
 - :mod:`~eodgdl.impute.harmonize`: value maps that fail on an unmapped code, registered as feature builders
-- :mod:`~eodgdl.impute.bundle`: fitted bundles, where they are read from, their load-time checks, the legacy giro bundle
+- :mod:`~eodgdl.impute.bundle`: fitted bundles, where they are read from, their load-time checks, bootstrap refits
 - :mod:`~eodgdl.impute.run`: a task's modes: ``score_task`` / ``score_frame`` / ``predict_rows``, ``retrain``
   (+ ``write_retrain``), ``compare``
 - :mod:`~eodgdl.impute.chain`, :mod:`~eodgdl.impute.derive`: chains of tasks, parallel or sequential

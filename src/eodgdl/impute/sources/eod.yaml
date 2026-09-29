@@ -10,6 +10,8 @@ eod.workers:
     - Medio tiempo
     - Tenía trabajo, pero no trabajó
   dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]   # of `viv`, those not in `hab`
+  # The source adds `mes_entrevista`, the interview's month: the capture changed through the fieldwork (from April a
+  # work trip's destination is an office half as often, reports/loading.qmd #sec-april) and so did the answers.
 
 eod.work_trip:
   # Most frequent destination type, destination code / zone and main mode of each person's work trips.
@@ -28,4 +30,7 @@ eod.dwellings:
   head_prefixes: [weekend_]
   # Members aged 14+ who worked last week (AMAI counts those who worked last month).
   worker_min_age: 14
-  employed_categories: [Tiempo completo, Medio tiempo, Tenía trabajo, pero no trabajó]
+  employed_categories:        # block style: a flow list splits "Tenía trabajo, pero no trabajó" at its comma (until 2026-09-29)
+    - Tiempo completo
+    - Medio tiempo
+    - Tenía trabajo, pero no trabajó

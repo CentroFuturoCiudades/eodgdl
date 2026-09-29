@@ -1,6 +1,11 @@
 """Model selection: a grid search of every candidate family under household-grouped, stratified CV with weighted
 metrics, and a one-standard-error rule on paired fold differences, within each family and then across families.
 
+A validation fold is scored as the bundle scores its rows when the caller gives each fold's expansion (:func:`tune`'s
+``expand``: the validation rows expanded over the levels the fold's training rows do not support, a missing value
+included, with the fold's training shares or auxiliary models, :func:`eodgdl.impute.marginalize.expand_unsupported`),
+so the selection compares the predictors that score; without one, ``predict_proba`` of the rows as they are.
+
 Every (configuration, fold) fit runs in its own single-threaded worker (``n_jobs``; ``n_jobs=1`` runs them in this
 process one after another), and a boosting grid over ``max_iter`` is fitted once per fold, to its largest value, and
 scored at every stage in the grid: without early stopping the first n iterations of the chain are the model fitted
@@ -86,9 +91,11 @@ def fold_metrics(y, weights, predictions, probabilities, classes):
     }
 
 
-def fit_fold(model, params, stages, X, y, sample_weights, train_index, validation_index):
-    """Fit one configuration on one fold, single-threaded, and score it on the fold's validation rows. With ``stages``
-    (a boosting chain fitted to the largest ``max_iter``), score it at every ``max_iter`` in ``stages`` instead."""
+def fit_fold(model, params, stages, X, y, sample_weights, train_index, validation_index, expansion=None):
+    """Fit one configuration on one fold, single-threaded, and score it on the fold's validation rows: their
+    ``predict_proba``, or with ``expansion`` (those rows expanded as the bundle scores them) the weighted sum over each
+    row's combinations. With ``stages`` (a boosting chain fitted to the largest ``max_iter``), score it at every
+    ``max_iter`` in ``stages`` instead. The prediction is the arg-max of the probabilities."""
     from threadpoolctl import threadpool_limits
 
     with threadpool_limits(limits=1):
@@ -96,14 +103,17 @@ def fit_fold(model, params, stages, X, y, sample_weights, train_index, validatio
         if isinstance(model.named_steps["classifier"], RandomForestClassifier):
             model.set_params(classifier__n_jobs=1)
         model.fit(X.iloc[train_index], y.iloc[train_index], classifier__sample_weight=sample_weights.iloc[train_index])
-        X_validation, y_validation, w_validation = X.iloc[validation_index], y.iloc[validation_index], sample_weights.iloc[validation_index]
+        y_validation, w_validation = y.iloc[validation_index], sample_weights.iloc[validation_index]
+        scored = X.iloc[validation_index] if expansion is None else expansion.frame
         classifier = model.named_steps["classifier"]
         if not stages:
-            return [fold_metrics(y_validation, w_validation, model.predict(X_validation), model.predict_proba(X_validation), classifier.classes_)]
-        transformed = model[:-1].transform(X_validation)
-        staged = zip(classifier.staged_predict(transformed), classifier.staged_predict_proba(transformed))
-        return [fold_metrics(y_validation, w_validation, predictions, probabilities, classifier.classes_)
-                for n, (predictions, probabilities) in enumerate(staged, start=1) if n in stages]
+            probabilities = [model.predict_proba(scored)]
+        else:
+            staged = classifier.staged_predict_proba(model[:-1].transform(scored))
+            probabilities = [stage for n, stage in enumerate(staged, start=1) if n in stages]
+        if expansion is not None:
+            probabilities = [expansion.combine(stage, len(validation_index)) for stage in probabilities]
+        return [fold_metrics(y_validation, w_validation, classifier.classes_[stage.argmax(axis=1)], stage, classifier.classes_) for stage in probabilities]
 
 
 def cv_tasks(candidates):
@@ -128,15 +138,15 @@ def cv_tasks(candidates):
             yield name, members[-1], members
 
 
-def cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=-1, progress=True):
-    """Every configuration of every family scored on every fold. Returns ``{(family, repr(sorted params)): {fold:
-    metrics}}``."""
+def cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=-1, progress=True, expansions=None):
+    """Every configuration of every family scored on every fold (``expansions``: each fold's validation rows as the
+    bundle scores them, :func:`fit_fold`). Returns ``{(family, repr(sorted params)): {fold: metrics}}``."""
     from joblib import Parallel, delayed
     from tqdm.auto import tqdm
 
     tasks = [(name, fit, scored, fold) for name, fit, scored in cv_tasks(candidates) for fold in range(len(splits))]
     jobs = (delayed(fit_fold)(candidates[name]["model"], fit, [params["classifier__max_iter"] for params in scored] if len(scored) > 1 else None,
-                              X, y, sample_weights, *splits[fold]) for name, fit, scored, fold in tasks)
+                              X, y, sample_weights, *splits[fold], expansion=expansions[fold] if expansions else None) for name, fit, scored, fold in tasks)
     scores = {}
     results = Parallel(n_jobs=n_jobs, return_as="generator")(jobs)
     for (name, _, scored, fold), metrics in tqdm(zip(tasks, results), total=len(tasks), desc="grouped CV fits", disable=not progress):
@@ -146,16 +156,19 @@ def cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=-1, pro
     return scores
 
 
-def tune(candidates, X, y, sample_weights, groups, cv_splits=5, random_state=42, n_jobs=-1, progress=True):
+def tune(candidates, X, y, sample_weights, groups, cv_splits=5, random_state=42, n_jobs=-1, progress=True, expand=None):
     """Grid search of every family in ``candidates`` (``{family: {"model": pipeline, "params": grid}}``) under a
     household-grouped stratified CV with weighted metrics; within each family and then across families the simplest
-    configuration within one standard error of the best is selected, and refitted on all rows. Returns ``(summary,
-    model)``: one row per family (its selection, ``selected`` marking the one kept) and the kept configuration fitted;
-    ``summary.attrs["grid_results"]`` holds every configuration."""
+    configuration within one standard error of the best is selected, and refitted on all rows. ``expand(train_index,
+    validation_index)`` gives a fold's validation rows as the bundle scores them (called once per fold, in this
+    process), so every configuration is judged as it would score. Returns ``(summary, model)``: one row per family (its
+    selection, ``selected`` marking the one kept) and the kept configuration fitted; ``summary.attrs["grid_results"]``
+    holds every configuration."""
     X, y = X.reset_index(drop=True), y.reset_index(drop=True)
     sample_weights, groups = sample_weights.reset_index(drop=True), groups.reset_index(drop=True)
     splits = grouped_splits(X, y, groups, cv_splits=cv_splits, random_state=random_state)
-    scores = cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=n_jobs, progress=progress)
+    expansions = [expand(train_index, validation_index) for train_index, validation_index in splits] if expand else None
+    scores = cross_validate_grid(candidates, X, y, sample_weights, splits, n_jobs=n_jobs, progress=progress, expansions=expansions)
 
     model_results, grid_results = [], []
     for model_name, model_config in candidates.items():

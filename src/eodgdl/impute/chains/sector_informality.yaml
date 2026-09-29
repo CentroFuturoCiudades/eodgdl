@@ -12,7 +12,7 @@ steps:
         giro:
           as: sector
           transform: {comercio: comercio, servicio: servicios_transporte, educacion: servicios_transporte,
-                      industria: manufactura_construccion, gobierno: gobierno_otro_agricultura}
+                      industria: manufactura_construccion, gobierno: gobierno}
 
 # Diagnostics (eodgdl impute evaluate sector_informality; eodgdl.impute.diagnostics), read by
 # reports/imputation_informality.qmd.
@@ -28,3 +28,9 @@ evaluation:
   components: [informalidad_sector, informalidad_desprotegida]
   gap_decomposition: [genero, ocupacion, edad_num, escolaridad, municipio, estado_civil, parentesco, tamano_viv_cat, sector]
   raking: [genero, ocupacion, edad_num, escolaridad, municipio, estado_civil, parentesco, tamano_viv_cat, lugar_trabajo]
+  # Rubin's rules over 50 completed datasets (draws of the chain, every value drawn): with the bundles' single fit, and
+  # with a bootstrap model per draw where the retrains wrote bootstrap bundles (`eodgdl impute retrain <task>
+  # --bootstrap 50`). Shares of informality overall, by the drawn giro and by municipality, and of the giro.
+  multiple_imputation:
+    draws: 50
+    shares: {informalidad: [giro, municipio], giro: []}

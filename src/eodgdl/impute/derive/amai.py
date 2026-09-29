@@ -25,7 +25,8 @@ def _task_points(values, task):
 @register_derive("amai_puntos")
 def amai_points(completions, base, config):
     """``amai_puntos``: the points of each task's value (``tasks``) plus those of the dwelling's own answers
-    (``observed``: column -> {answer: points}); missing where an observed answer is missing."""
+    (``observed``: column -> {answer: points}); missing where an observed answer is missing, so the level cut from them
+    is too and the chain stops, naming the dwellings (no EOD dwelling lacks one)."""
     total = np.zeros(len(completions))
     for task in config["tasks"]:
         total += _task_points(completions[task], task)

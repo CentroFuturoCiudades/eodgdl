@@ -18,6 +18,7 @@ from eodgdl.eod import (
     load_eod,
     load_stages,
     rename_imeplan,
+    repeated_diary_pairs,
 )
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 from eodgdl.taz import (
@@ -36,6 +37,7 @@ __all__ = [
     "clean_eod",
     "clean_trip_chains",
     "flag_repeated_diaries",
+    "repeated_diary_pairs",
     # Zone system
     "load_zm_muns",
     "load_taz",

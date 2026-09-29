@@ -15,19 +15,28 @@ Typical use::
 
 giro is the engine's task ``giro`` (``impute/tasks/giro.yaml``; :mod:`eodgdl.impute` scores, retrains and compares it)
 and the first step of the chain ``sector_informality``. This package keeps giro's stable entry points on top of the
-engine: :func:`impute`, :func:`load_model` (the bundle with its old keys), :func:`impute_giro`, the column names
-and giro's feature builders (:func:`build_worker_features`, the DENUE destination mix).
+engine: :func:`impute`, :func:`load_model` (the fitted v2 bundle, :mod:`eodgdl.impute.bundle`), the column names and
+giro's feature builders (:func:`build_worker_features`, the DENUE destination mix). The notebook-era bundle layout and
+its entry points (``impute_giro``, the old keys of ``load_model``) were retired on 2026-09-29.
 """
-
-import pandas as pd
 
 from ._config import (
     DENUE_RELEASE, DENUE_STATE_CODE, DESTINATION_AMBITO_LEVELS, DESTINATION_FEATURES, EMPLOYED_CATEGORIES, GIRO_CLASSES,
     GIRO_LABELS, GIRO_SLUGS, KEYS, MOBILITY_FEATURES, NO_ESPECIFICADO, NUMERIC_FEATURES, ROBUST_SECTOR_FEATURES,
     SECTOR_FEATURES, SHIFT_PROFILE_FEATURES, TASK, build_category_levels, load_config,
 )
-from ._ml import prepare_model_features
 from .features import add_destination_features, build_worker_features, compute_work_trip_destination, zone_units
+
+__all__ = [
+    # the imputation
+    "impute", "load_model", "MODEL_FILE", "OUTPUT_COLUMNS", "PROBABILITY_COLUMNS",
+    # the feature frame
+    "build_worker_features", "add_destination_features", "compute_work_trip_destination", "zone_units",
+    # the task's constants
+    "TASK", "load_config", "build_category_levels", "GIRO_CLASSES", "GIRO_LABELS", "GIRO_SLUGS", "KEYS", "NO_ESPECIFICADO",
+    "EMPLOYED_CATEGORIES", "DESTINATION_FEATURES", "DESTINATION_AMBITO_LEVELS", "MOBILITY_FEATURES", "NUMERIC_FEATURES",
+    "SECTOR_FEATURES", "ROBUST_SECTOR_FEATURES", "SHIFT_PROFILE_FEATURES", "DENUE_RELEASE", "DENUE_STATE_CODE",
+]
 
 MODEL_FILE = TASK.bundle_file
 PROBABILITY_COLUMNS = TASK.probability_columns
@@ -38,13 +47,12 @@ OUTPUT_COLUMNS = KEYS + [
 
 
 def load_model(path=None):
-    """The fitted hybrid bundle as a dict with ``model_with_education``, ``model_without_education``, the feature
-    lists, ``destination_models``, ``category_levels`` and ``metadata`` (:func:`eodgdl.impute.bundle.legacy_view`).
-    Fetched from the data mirror unless ``path`` is given or ``$EODGDL_DATA_DIR`` holds a local copy. Requires the
-    scikit-learn version recorded in ``metadata["sklearn_version"]``."""
-    from eodgdl.impute.bundle import legacy_view, load_bundle
+    """The fitted giro bundle, a v2 bundle (``arms``, ``auxiliary``, ``classes``, ``category_levels``, ``metadata``:
+    :mod:`eodgdl.impute.bundle`), fetched from the data mirror unless ``path`` is given or ``$EODGDL_DATA_DIR`` holds a
+    local copy. Scoring checks it against the task spec and the running scikit-learn (:func:`impute`)."""
+    from eodgdl.impute.bundle import load_bundle
 
-    return legacy_view(load_bundle(TASK, path))
+    return load_bundle(TASK, path)
 
 
 def impute(tables=None, bundle=None, path=None):
@@ -54,22 +62,3 @@ def impute(tables=None, bundle=None, path=None):
     from eodgdl.impute.run import score_task
 
     return score_task(TASK, tables=tables, bundle=bundle, path=path)
-
-
-def impute_giro(model_with_education, model_without_education, od, with_education_features=SECTOR_FEATURES, without_education_features=ROBUST_SECTOR_FEATURES, destination_models=None):
-    """Score every worker of ``od`` (:func:`build_worker_features`) without an observed giro with the model their
-    education supports, from the fitted models of :func:`load_model` (``destination_models``: P(destination | x)
-    for the workers without a work trip). Adds ``giro_observado``, ``giro_imputado``, ``giro_final``,
-    ``giro_fue_imputado``, ``giro_model_used``, ``giro_prediction_confidence``, ``giro_marginalized_features`` and
-    ``prob_giro_<slug>`` (rows sum to one; observed rows get probability one on their giro)."""
-    from eodgdl.impute.arms import Arm, assign_arms, impute_with_arms
-
-    destination_models = destination_models or {}
-    arms = [Arm(name, model, list(features), requires=list(TASK.arm(name).requires),
-                auxiliary={"destino_trabajo": destination_models[name]} if name in destination_models else {})
-            for name, model, features in (("with_education", model_with_education, with_education_features),
-                                          ("without_education", model_without_education, without_education_features))]
-    assigned = assign_arms(od, arms, TASK.is_missing)
-    assigned[~od["giro_desconocido"].astype(bool)] = pd.NA
-
-    return impute_with_arms(od, "giro", GIRO_CLASSES, arms, assigned, "giro", NUMERIC_FEATURES, build_category_levels(), missing_label=NO_ESPECIFICADO)

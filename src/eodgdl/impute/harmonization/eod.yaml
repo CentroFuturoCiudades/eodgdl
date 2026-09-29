@@ -65,7 +65,7 @@ variables:
   sector:
     column: giro_empresa   # reported; the chains fill it from the giro model's probabilities instead
     map: {Comercio: comercio, Servicio: servicios_transporte, Educación: servicios_transporte, Industria: manufactura_construccion,
-          Gobierno/sector público: gobierno_otro_agricultura}
+          Gobierno/sector público: gobierno}
   lugar_trabajo:
     column: destino_trabajo   # destination type of the work trips (eod.work_trip); NA without a work trip
     map:

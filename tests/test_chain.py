@@ -31,7 +31,11 @@ T1 = task("t1", "lab1", {"A": "a", "B": "b", "C": "c"}, ["x1", "x2", "c"], decla
 T2 = task("t2", "lab2", {"P": "p", "Q": "q"}, ["x1", "c", "u1"], declared=LEVELS)
 T3 = task("t3", "lab3", {"M": "m", "N": "n"}, ["x2", "c", "u1", "u2"], declared=LEVELS)
 T2E = task("t2e", "lab2", {"P": "p", "Q": "q"}, ["x1", "c", "v1"], numeric=["v1"], declared=LEVELS)
-SPECS = {spec.name: spec for spec in (T1, T2, T3, T2E)}
+# two arms, and a level of u1 no training row holds (uc)
+T2A = parse_task({"task": "t2a", "source": "test.chain", "target": {"column": "lab2", "classes": {"P": "p", "Q": "q"}}, "features": {"numeric": ["c"]},
+                  "levels": {"declared": {"x1": LEVELS["x1"], "u1": [*LEVELS["u1"], "uc"]}},
+                  "arms": {"with_u1": {"features": ["x1", "c", "u1"], "requires": ["u1"]}, "without_u1": {"features": ["x1", "c"]}}})
+SPECS = {spec.name: spec for spec in (T1, T2, T3, T2E, T2A)}
 
 
 def synthetic_frame(n=900, seed=5):
@@ -68,15 +72,21 @@ def _chain_source(monkeypatch, tmp_path):
     bundles = {}
     for spec in SPECS.values():
         rows = build_frame(spec, context).frame
-        known = rows[~rows[spec.unknown_column]]
-        features = list(spec.arms[0].features)
+        bundles[spec.name] = fit_bundle(spec, rows[~rows[spec.unknown_column]])
+    return context, bundles
+
+
+def fit_bundle(spec, known):
+    """A bundle of ``spec`` fitted on the rows ``known`` (their target observed)."""
+    weights = levels.normalize_sample_weights(known["w"].reset_index(drop=True))
+    fitted = {}
+    for arm in spec.arms:
+        features = list(arm.features)
         X = levels.prepare_features(known, features, spec.numeric)
-        weights = levels.normalize_sample_weights(known["w"].reset_index(drop=True))
         model = models.build_candidates(features, spec.numeric, spec.category_levels(lambda column: []), FAMILY)["GradientBoosting"]["model"]
         model.fit(X, known[spec.target].astype(str), classifier__sample_weight=weights)
-        marginalize.attach_training_level_shares(model, X, weights, spec.numeric)
-        bundles[spec.name] = make_bundle(spec, {"only": model}, {}, spec.category_levels(lambda column: []), {})
-    return context, bundles
+        fitted[arm.name] = marginalize.attach_training_level_shares(model, X, weights, spec.numeric)
+    return make_bundle(spec, fitted, {}, spec.category_levels(lambda column: []), {})
 
 
 def chain(steps, **settings):
@@ -134,6 +144,81 @@ def test_draws_converge_to_enumerate_on_a_three_task_chain(chain_source):
     pd.testing.assert_frame_equal(again.frame, drawn.frame)                                          # seeded
 
 
+def test_bootstrap_models_score_each_draw_with_its_own(chain_source):
+    """uncertainty: bootstrap: draw d is scored with the d-th (modulo B) bootstrap bundle of every task: a first step's
+    marginal is the mean of the models' probabilities, a later step's the mean over draws of its model's conditional
+    given that draw's upstream value; the arms and flags stay the bundles'."""
+    context, bundles = chain_source
+    from eodgdl.impute.features import build_frame
+
+    frames = {name: build_frame(SPECS[name], context).frame for name in ("t1", "t2")}
+    boot = {name: [fit_bundle(SPECS[name], frame[~frame[SPECS[name].unknown_column]].iloc[half::2]) for half in (0, 1)] for name, frame in frames.items()}
+    steps = ["t1", {"t2": {"uses": {"t1": {"as": "u1", "transform": U1}}}}]
+    result = run_chain(chain(steps, propagation="draws", draws=6, seed=1, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap=boot)
+    first = [score_frame(T1, frames["t1"], model)[T1.probability_columns].to_numpy() for model in boot["t1"]]
+    unknown = result.frame["t1_fue_imputado"].to_numpy()
+    np.testing.assert_allclose(result.frame[T1.probability_columns].to_numpy()[unknown], ((first[0] + first[1]) / 2)[unknown], rtol=1e-12)
+    completions = result.completions
+    rows, models = np.repeat(np.arange(len(frames["t2"])), 6), completions["completion"].to_numpy() % 2
+    given = {(m, level): scored_with(T2, frames["t2"], boot["t2"][m], u1=level) for m in (0, 1) for level in ("ua", "ub")}
+    per_draw = np.stack([given[(m, U1[value])][row] for m, value, row in zip(models, completions["t1"], rows)])
+    expected = per_draw.reshape(len(frames["t2"]), 6, -1).mean(axis=1)
+    unknown2 = result.frame["t2_fue_imputado"].to_numpy()
+    np.testing.assert_allclose(result.frame[T2.probability_columns].to_numpy()[unknown2], expected[unknown2], rtol=1e-12)
+    assert {"t1", "t2"} <= set(completions.columns) and result.provenance["bootstrap"] == {"t1": 2, "t2": 2}
+    single = run_chain(chain(steps, propagation="draws", draws=6, seed=1), context=context, bundles=bundles, specs=SPECS)
+    pd.testing.assert_series_equal(result.frame["t1_model_used"], single.frame["t1_model_used"])
+    assert not np.allclose(result.frame[T1.probability_columns], single.frame[T1.probability_columns])
+    # the option needs draws, every task's set, and sets of one size
+    with pytest.raises(ValueError, match="needs propagation: draws"):
+        chain(steps, uncertainty="bootstrap")
+    with pytest.raises(ValueError, match=r"no bootstrap bundles for \['t2'\]"):
+        run_chain(chain(steps, propagation="draws", draws=2, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap={"t1": boot["t1"]})
+    with pytest.raises(ValueError, match="differ in size"):
+        run_chain(chain(steps, propagation="draws", draws=2, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap={"t1": boot["t1"], "t2": boot["t2"][:1]})
+
+
+def test_draws_complete_every_task(chain_source):
+    context, bundles = chain_source
+    result = run_chain(chain(["t1", "t2"], mode="parallel", propagation="draws", draws=3, seed=2), context=context, bundles=bundles, specs=SPECS)
+    assert {"t1", "t2"} <= set(result.completions.columns)      # no later step reads t2, yet each draw completes it
+    assert set(result.completions["t2"]) <= set(T2.class_slugs)
+
+
+def test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios(chain_source):
+    context, bundles = chain_source
+    # t1's class a fills u1 with a level the arm with u1 was trained on, b with one it never saw (marginalized), c with
+    # the missing label (the arm without u1 scores it)
+    transform = {"a": "ua", "b": "uc", "c": levels.MISSING_LABEL}
+    arm_of = {"a": "with_u1", "b": "with_u1", "c": "without_u1"}
+    for settings in ({"propagation": "enumerate"}, {"propagation": "draws", "draws": 30, "seed": 1}):
+        result = run_chain(chain(["t1", {"t2a": {"uses": {"t1": {"as": "u1", "transform": transform}}}}], **settings), context=context, bundles=bundles, specs=SPECS)
+        taken = result.completions.groupby("k", sort=False)["t1"].agg(list)                       # each row's scenarios, in order
+        frame = result.frame.set_index("k")
+        imputed = frame["t2a_fue_imputado"]
+        expected_arms = taken.map(lambda values: "+".join(dict.fromkeys(arm_of[value] for value in values))).where(imputed, "observed")
+        expected_marginalized = taken.map(lambda values: "u1" if "b" in values else "").where(imputed, "")
+        pd.testing.assert_series_equal(frame["t2a_model_used"], expected_arms, check_names=False)
+        pd.testing.assert_series_equal(frame["t2a_marginalized_features"], expected_marginalized, check_names=False)
+        assert frame.loc[imputed, "t2a_model_used"].str.contains("+", regex=False).any()                # rows scored by both arms
+        assert frame.loc[imputed & taken.map(lambda values: set(values) == {"a"}), "t2a_marginalized_features"].eq("").all()
+
+
+def test_a_derived_value_outside_its_levels_names_the_rows(chain_source):
+    context, bundles = chain_source
+
+    def level(completions, base, config):                                    # no level for the row with k = 3
+        values = pd.Series(np.where(completions["t1"].eq("a"), "alto", "bajo"), dtype="string")
+        return pd.DataFrame({"nivel": values.mask(base["k"].to_numpy()[completions["row"].to_numpy()] == 3)})
+
+    steps = ["t1", {"derive": "level", "levels": {"nivel": ["alto", "bajo"]}}]
+    with pytest.raises(ValueError, match=r"test: the derive step 'level' gives nivel values outside its levels \(missing\) in 4 completions \(1 row, e\.g\. k=3\)"):
+        run_chain(chain(steps, propagation="draws", draws=4), context=context, bundles=bundles, specs=SPECS, derive_functions={"level": level})
+    undeclared = lambda completions, base, config: pd.DataFrame({"nivel": pd.Series("medio", index=completions.index, dtype="string")})
+    with pytest.raises(ValueError, match=r"outside its levels \(medio\)"):
+        run_chain(chain(steps, propagation="draws", draws=2), context=context, bundles=bundles, specs=SPECS, derive_functions={"level": undeclared})
+
+
 def test_derive_steps_draw_from_streams_of_their_own(chain_source):
     context, bundles = chain_source
     uniform = lambda column: lambda completions, base, config: pd.DataFrame({column: np.random.default_rng(config["seed"]).random(len(completions))})
@@ -172,6 +257,10 @@ def test_expected_propagation_plugs_in_the_upstream_score(chain_source):
     direct = score_frame(T2E, build_frame(T2E, context).frame.assign(v1=score), bundles["t2e"])[T2E.probability_columns].to_numpy()
     np.testing.assert_allclose(result.frame[T2E.probability_columns].to_numpy(), direct, rtol=1e-12)
     assert (result.frame["t2e_condicionado_en"] == "t1:expected (plug-in)").all()
+    # a derive step reads the same expected score
+    double = lambda completions, base, config: pd.DataFrame({"doble": 2 * completions["t1"].astype(float)})
+    derived = run_chain(chain(["t1", {"derive": "double"}], propagation="expected"), context=context, bundles=bundles, specs=SPECS, derive_functions={"double": double})
+    np.testing.assert_allclose(derived.frame["doble_media"], 2 * score)
 
 
 def test_chain_validation():
@@ -185,6 +274,12 @@ def test_chain_validation():
         chain(["t1", {"t2": {"uses": {"t1": {"as": "u1"}}}}], propagation="expected")
     with pytest.raises(ValueError, match="no feature"):
         chain(["t1", {"t2": {"uses": {"t1": {"as": "zz"}}}}])
+    # expected propagation carries each needed task's expected score: to a downstream feature or to a derive step
+    with pytest.raises(ValueError, match=r"expected score of \['t2'\], which declare no target scores"):
+        chain(["t2", {"t2e": {"uses": {"t2": {"as": "v1"}}}}], propagation="expected")
+    with pytest.raises(ValueError, match=r"expected score of \['t2'\], which declare no target scores"):
+        chain(["t1", "t2", {"derive": "pair"}], mode="parallel", propagation="expected")
+    chain(["t1", {"derive": "points"}, "t2"], propagation="expected")      # t2's value is read by no later step
 
 
 def test_undeclared_levels_fail_and_runs_are_written(chain_source, tmp_path):
@@ -233,3 +328,71 @@ def test_numeric_feature_takes_the_class_score_in_enumerate_and_draws(chain_sour
     assert set(run_chain(doubled, context=context, bundles=bundles, specs=SPECS).completions["t1"].unique()) <= {"a", "b", "c"}
     with pytest.raises(ValueError, match="need numbers"):
         chain(["t1", {"t2e": {"uses": {"t1": {"as": "v1", "transform": {"a": "x", "b": "y", "c": "z"}}}}}])
+
+
+@pytest.fixture
+def diagnostics_on_synthetic_tasks(chain_source, monkeypatch):
+    """eodgdl.impute.diagnostics reading the synthetic tasks and bundles instead of the package's."""
+    from eodgdl.impute import chain as chain_module, diagnostics
+
+    context, bundles = chain_source
+    monkeypatch.setattr(diagnostics, "load_task", SPECS.__getitem__)
+    monkeypatch.setattr(chain_module, "load_task", SPECS.__getitem__)
+    monkeypatch.setattr(diagnostics, "_bundles", lambda tasks, retrained: {task: bundles[task] for task in tasks})
+    return context, bundles, diagnostics
+
+
+def test_diagnostics_of_a_task_chain(diagnostics_on_synthetic_tasks, tmp_path):
+    context, bundles, diagnostics = diagnostics_on_synthetic_tasks
+    from eodgdl.impute.features import build_frame
+
+    evaluation = {"task": "t2", "benchmark": {"by": "x2"}, "by_upstream": True, "without_auxiliary": True, "gap_decomposition": ["x1", "c"],
+                  "raking": ["x1", "c"], "multiple_imputation": {"draws": 6, "shares": {"t2": ["x1", "t1"], "t1": []}}}
+    spec = chain(["t1", {"t2": {"uses": {"t1": {"as": "u1", "transform": U1}}}}], propagation="enumerate", evaluation=evaluation)
+    tables, summary = diagnostics.evaluate_chain(spec, retrained=None, context=context)
+    assert {"headline", "by_upstream", "benchmark", "gap_decomposition", "gap_diagnostics", "raking", "raking_diagnostics", "multiple_imputation"} <= set(tables)
+    frame = run_chain(spec, context=context, bundles=bundles, specs=SPECS).frame
+    w = build_frame(T2, context, role="score").frame["w"].to_numpy()
+    expected = float(np.average(frame["prob_t2_p"], weights=w))
+    assert summary["positive"] == "p" and summary["expected_rate"] == pytest.approx(expected, abs=1e-12)
+    by = tables["by_upstream"]                                   # Σ_s P(s) P(p | x, s) over the levels is the rate itself
+    assert float((by["weighted_population"] * by["expected_rate"]).sum() / by["weighted_population"].sum()) == pytest.approx(expected, abs=1e-12)
+    known = build_frame(T2, context).frame
+    known = known[~known["t2_desconocido"]]
+    benchmark = float(np.average(known["t2"].eq("p"), weights=known["w"]))
+    assert summary["benchmark_rate"] == pytest.approx(benchmark) and set(tables["benchmark"]["group"]) == {"all", "x2 = b0", "x2 = b1"}
+    gap = tables["gap_decomposition"]
+    assert gap["rate"].iloc[0] == pytest.approx(benchmark) and gap["rate"].iloc[-1] == pytest.approx(expected)
+    assert tables["raking"]["rate"].iloc[0] == pytest.approx(expected) and tables["raking"]["rate"].iloc[-1] == pytest.approx(benchmark)
+    assert len(tables["headline"]) == 2                          # the shipped run and the one without auxiliary models
+    mi = tables["multiple_imputation"]
+    assert set(mi["models"]) == {"single fit"} and set(mi["column"]) == {"t1", "t2"}         # no bootstrap bundles under retrained
+    # by a scoring-source column (x1) and by a completed value that is also a source column (t1, drawn in each dataset)
+    assert set(mi.loc[mi["column"] == "t2", "by"]) == {"all", "x1", "t1"} and set(mi["level"]) == {"a", "b", "c", "p", "q"}
+    assert set(mi.loc[mi["by"] == "t1", "group"]) == {"a", "b", "c"}
+    overall = mi[(mi["column"] == "t2") & (mi["by"] == "all") & (mi["level"] == "p")].iloc[0]
+    assert abs(overall["estimate"] - expected) < 4 * overall["se_total"] and overall["imputations"] == 6
+    assert ((mi["ci_low"] <= mi["estimate"]) & (mi["estimate"] <= mi["ci_high"])).all()
+    out = diagnostics.write_evaluation(tables, summary, tmp_path / "t")
+    assert (out / "multiple_imputation.parquet").exists() and (out / "summary.json").exists()
+
+
+def test_diagnostics_of_a_distribution_chain(diagnostics_on_synthetic_tasks, monkeypatch):
+    context, bundles, diagnostics = diagnostics_on_synthetic_tasks
+    from eodgdl.impute import derive
+
+    level = lambda completions, base, config: pd.DataFrame({"nivel": pd.Series(np.where(completions["t1"].eq("a") & completions["t2"].eq("p"), "alto", "bajo"), dtype="string")})
+    monkeypatch.setitem(derive._DERIVES, "nivel", level)
+    evaluation = {"distribution": {"columns": {"nivel": ["alto", "bajo"]}}, "variants": {"enumerate": {"propagation": "enumerate"}},
+                  "multiple_imputation": {"draws": 8, "shares": {"nivel": []}}}
+    spec = chain(["t1", "t2", {"derive": "nivel", "levels": {"nivel": ["alto", "bajo"]}}], mode="parallel", propagation="draws", draws=40, seed=4,
+                 evaluation=evaluation)
+    tables, summary = diagnostics.evaluate_chain(spec, retrained=None, context=context)
+    distribution = tables["distribution"].pivot(index="variant", columns="level", values="share")
+    assert list(distribution.index) == ["draws (40)", "enumerate"] and np.allclose(distribution.sum(axis=1), 1.0)
+    mc = tables["monte_carlo"].set_index("level")
+    assert (mc["monte_carlo_se"] > 0).all() and abs(distribution.loc["draws (40)", "alto"] - distribution.loc["enumerate", "alto"]) < 6 * mc.loc["alto", "sd_between_draws"]
+    assert set(tables["agreement"]["variant"]) == {"draws (40)", "enumerate"}
+    mi = tables["multiple_imputation"].set_index("level")
+    assert set(mi["models"]) == {"single fit"} and mi.loc["alto", "estimate"] + mi.loc["bajo", "estimate"] == pytest.approx(1.0)
+    assert (mi["fmi"].between(0, 1)).all() and summary["draws"] == 40
