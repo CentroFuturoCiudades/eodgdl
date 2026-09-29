@@ -1,18 +1,143 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
-## 0. Status at the end of session 5 (2026-09-28): v0.4.0 released; informal-jobs-model's figures here, the repository archived
+## 0. Status at the end of session 6 (2026-09-28): session 5's review notes resolved; nothing pushed
 
-Read this section first, starting with **Pending for session 6**; §1–§11 below are the original plan (session 1), kept
+Read this section first, starting with **Pending for session 7**; §1–§11 below are the original plan (session 1), kept
 as the record of the design. Then read `CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every
 module as built) and `src/eodgdl/impute/__init__.py`.
 
-### Pending for session 6 (start here)
+### Pending for session 7 (start here)
 
-The user asked (2026-09-28) that session 4's review notes go to a new session. None is a defect in today's outputs;
-they are ordered by how much they matter, with what session 5 measured. Ask the user before pushing, merging or
-releasing, and before any change that moves published outputs (scores, held-out metrics, the reports' numbers).
-Check every change with the parity recipe of "After the release" below: copy `output/impute/` aside, retrain, score
-and evaluate into another root, and compare every parquet exactly.
+Nothing of the review list is left. What waits on the user (ask before any of it):
+
+- **Push `impute-chains`** (70eab10 and session 6's commits are local), **merge into `main`**, and whether to
+  **release**. No data file changed and no score moved; the held-out evaluation now scores as the bundles do (session
+  6, item 1), so the published held-out metrics moved. The installed bundles in `data/` still carry the old held-out
+  metrics in their metadata (`metadata["test_metrics"]`); their predictions equal the retrained ones', so a release
+  would only reinstall them for that metadata (as in session 5, the retrained bundles were not copied to `data/`).
+- **Optional, a modelling decision**: read giro's destination and mode of a worker without a work trip as the category
+  the model learned (session 6, item 1, option B): on the held-out workers without a trip it fits better (log loss
+  −0.04 on them) and the imputed shares move by at most 0.3 pp; it needs a per-feature spec option
+  (`scoring.missing_as_level`, say), a retrain, the bundles reinstalled and a release. Not for educacion_jefe's income
+  (the refusal pattern below).
+- **A survey finding** for any NSE or education work: income refusal and the heads' licenciatura (item 1 below;
+  `reports/imputation_nse.qmd` #sec-income).
+
+Check every change with the parity recipe of "After the release" below.
+
+The deliberately deferred work under "Not done" below is separate and was not asked for.
+
+### Session 6 (2026-09-28): session 5's pending list
+
+The user asked for the numbers and the options of items 1 and 2 and the fixes of items 3–8; later that night they
+delegated items 1 and 2 ("finish all pending items without my input"), keeping pushing, merging and releasing for
+themselves. Session 6 chose option A for item 1 and option (a) for item 2.
+
+1. **Missing values: held-out metrics against scoring. Measured, then option A: the held-out evaluation scores as the
+   bundles do** (be127dc). First measured with a scratch script: each arm's selected configuration refitted on
+   the train split exactly as `select.tune` does (the published `test_metrics__<arm>` and `__hybrid` reproduced
+   exactly), the held-out rows scored through `arms.predict_arms` with the train split's training shares and auxiliary
+   models fitted on every row outside the held-out fold (as the bundle's are fitted on every row; on the known-target
+   train rows instead, the numbers move by < 0.002). Weighted log loss (accuracy):
+
+   | | rows the scoring path marginalizes | `predict_proba` (published) | scoring path | difference, household bootstrap 95% |
+   |---|---|---|---|---|
+   | giro, with education | 633 (17.3%): 561 without a work trip, 91 without education (21 both) | 0.8863 (63.5%) | 0.8934 (62.6%) | +0.0071 (+0.0015, +0.0134) |
+   | giro, without education | 563 (16.3%): 561 without a work trip | 0.9089 (62.0%) | 0.9161 (61.3%) | +0.0072 (+0.0014, +0.0138) |
+   | giro, hybrid (as it scores) | 563 (16.3%) | 0.8873 (63.5%) | 0.8940 (62.6%) | +0.0067 (+0.0009, +0.0132) |
+   | educacion_jefe | 1,384 (42.7%), 1,376 over income | 1.3531 (47.7%) | 1.4696 (41.1%) | +0.1165 (+0.0968, +0.1360) |
+
+   On the rows the scoring path marginalizes the gap is +0.04 for giro (0.986 → 1.027, the marginal baseline 1.246)
+   and +0.27 for educacion_jefe (1.182 → 1.455, the marginal baseline 1.505). giro: on the held-out workers without a
+   work trip (the arm without education) the observed shares are comercio 44.0%, servicio 31.4%; `predict_proba` gives
+   43.3% / 34.3%, the scoring path 35.4% / 42.1% (it averages the destination over P(destination | x), which knows
+   nothing of the missing trip). Among the imputed workers 4.3% lack a work trip, so scoring with the missing label kept
+   for destination and mode moves the imputed shares by at most 0.3 pp (comercio 24.68% → 24.88%). educacion_jefe: on
+   the held-out dwellings the scoring path marginalizes (all but 8 without income) the observed licenciatura share is
+   49.7%; `predict_proba` 47.5%, the scoring path 24.7%. Among the 3,819 imputed dwellings 97% lack income (96% "No
+   quiso responder"), so keeping the missing label would move the imputed education a lot: licenciatura 16.7% → 31.9%,
+   preparatoria 29.8% → 19.8%, posgrado 3.4% → 1.3%, the arg-max of 39% of them, the expected AMAI points 28.8 → 32.5.
+   An auxiliary income model P(income | x) instead of the training shares barely helps (held-out 1.4696 → 1.4667;
+   imputed shares within 0.2 pp).
+
+   **The income refusal looks like a fieldwork pattern**, so the learned "refused → licenciatura" association should
+   not be carried to the dwellings whose head's education is unknown. Among the heads whose education is known,
+   refusal rises from 15% (January) to 28%, 49% and 51% (April). The heads who refused hold a licenciatura in 57% of
+   cases against 16% of those who reported an income, yet a posgrado less often (2.1% against 5.6%), and both gaps hold
+   at every AMAI level of the AGEB (licenciatura 50% against 10% and posgrado 0.6% against 3.9% where AMAI's mean level
+   of the AGEB is below 2.5, D+ and below; 70% against 27% and 5.4% against 10.9% from 4, C and up) and in every
+   municipality: one answer inflated rather than a better-educated group. AMAI's NSE of their AGEBs differs little
+   (mean level 3.36 for the refusers, 3.16 for the reporters), and the unknown-education dwellings live in poorer AGEBs
+   (3.03). The survey records no interviewer, so the pattern cannot be traced further. It also touches the known
+   heads: a third of the education task's training rows are refusers whose reported education may carry it.
+   `reports/imputation_nse.qmd` #sec-income computes all of it at render time.
+
+   The options as put to the user: (A) evaluate through the scoring path, so the published held-out metrics describe
+   the predictor that scores (scores unchanged; the held-out tables and the reports move); (B) let scoring keep the
+   missing label as a category for chosen features (a per-feature spec option; scores change, so a retrain, the
+   bundles reinstalled and a release): defensible for giro's destination and mode, not for educacion_jefe's income;
+   (C) document only. **Chosen: A** (B for giro stays a decision for the user: "Pending" above). `run.heldout` scores
+   a held-out row through `arms.score_arm`: the train split's model carries its training shares (attached after
+   `select.tune`), and each arm's auxiliary models are refitted on every row outside the held-out fold (the training
+   fold and the rows whose target is unknown, as the bundle's are fitted on every row). Every held-out table goes that
+   way: the arms' metrics, intervals, class tables, calibration and the isotonic diagnostic (its maps still learned
+   from out-of-fold `predict_proba`, scored as a shipped isotonic arm would be), the `__hybrid` tables, the label's
+   components, the target profile and the population comparison (training shares only: no task with populations has
+   auxiliary models). Model selection is unchanged: the grouped CV compares `predict_proba` on its validation folds,
+   where the missing label is the category the model learned (so the selections, and with them the bundles and the
+   scores, do not move). The reports say how held-out rows are scored; `reports/imputation_nse.qmd` gains #sec-income.
+   `tests/test_impute.py::test_heldout_rows_are_predicted_as_scoring_predicts_them`.
+
+   Parity (the recipe; a second root against the first, which equals `output/impute/` at 70eab10): of 246 parquets 144
+   are identical, 26 differ by less than 1e-12 and 76 are held-out tables that moved; no other table, score, scenario
+   or chain output moved, every fitted model predicts identically, and the summaries differ only in the arms' held-out
+   entries. The moves: giro's arms 0.8863 → 0.8934 and 0.9089 → 0.9161, the hybrid 0.8873 → 0.8940 (weighted
+   accuracy 63.5% → 62.6%); educacion_jefe 1.3531 → 1.4696 (47.7% → 41.1%), both equal to the scratch measurement's
+   to 1e-16; informality 0.4161 → 0.4161 and 0.4366 → 0.4368, its components' log losses +0.005 (the few ENOE rows
+   without a place of work, now averaged over P(place | x)); the ENIGH tasks by rounding only (relative 1e-15).
+   `output/impute/` now holds this run; the one it replaced is `output/impute_70eab10/` (with `output/figures_70eab10/`
+   and the four impute reports' HTML in `output/reports_70eab10/`). The four impute reports were re-rendered from it.
+2. **`chain._aggregate` stops on a missing derived level: option (a)** (eee00ad). The options as put: (a) keep
+   failing, with an error that names the derive step, the column and the rows; (b) carry a declared missing level
+   through `nse` and `nse_calibrado` (a new all-zero `prob_nse_<missing>` column today; the diagnostics and reports
+   would have to leave it out of the AMAI comparison); (c) impute the answer (tasks for internet and cars trained on
+   ENIGH, like the bathrooms). No EOD dwelling lacks an internet, car or worker answer (17,901 checked), so (a) keeps
+   today's outputs and makes a future missing answer a visible decision: `chain._check_levels` stops the chain where a
+   categorical derived value is missing or outside the step's declared levels, naming the chain, the step, the column,
+   the values, the completions and up to five rows by their keys (the assertion in `_aggregate` is now an internal
+   invariant). `test_a_derived_value_outside_its_levels_names_the_rows`.
+3. **`expected` propagation and a task without `target.scores`** (c5f905f, as items 4–8): `parse_chain` refuses it
+   (every task `_needed` returns must declare scores; the per-`uses` check it replaces was a subset), and `_advance` no
+   longer writes NA. `tests/test_chain.py::test_chain_validation`, and a derive step reading the expected score in
+   `test_expected_propagation_plugs_in_the_upstream_score`.
+4. **The shift scenario ships as the bundle does**: `run.shipped_arm` (a refit, isotonic-wrapped under
+   `evaluation.isotonic.ship`) builds both the bundle's arms and the shift scenario's. The `isotonic: {ship: True}` part
+   of `test_retrain_writes_a_bundle_that_scores_the_same` checks the shift bundle's arms.
+5. **An enumerated or drawn step's `<p>_model_used` and `<p>_marginalized_features`** join the row's scenarios (the
+   value they share, else the union of the names; `chain._joined_over_scenarios`), no longer the first scenario's.
+   `test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios` (a two-arm task whose upstream fills a level
+   without training support in one scenario and the missing label in another).
+6. **The delta scenario reaches its target**: where a scaled probability would pass one it is held at one and the
+   factor solved (`evaluate.clipped_scale_factor`: the largest probabilities at one, as many as the target needs; a
+   target the rows with a positive probability cannot hold raises). Where nothing passes one the factor is the plain
+   ratio, computed as before, so giro's scenario (factor 0.69) is unchanged. The synthetic task's delta scenario in the
+   retrain test does take the new path. `test_delta_adjustment_reaches_its_target_where_probabilities_reach_one`.
+7. **The feature cache keys a builder's columns on the task's classes only when the builder reads them**
+   (`register_builder(..., reads_classes=True)`: `giro.destination` alone), so the three AMAI tasks share ENIGH's
+   harmonized columns. Every cache key moved once (rebuilt on first use); the frames are the same.
+   `test_feature_cache_hits_misses_and_keys`.
+8. **ruff**: `pyproject.toml`'s `ignore` moved to `[tool.ruff.lint]` (the deprecation warning is gone; ruff's findings
+   are the same 12 as before, none in session 6's lines).
+
+`uv run pytest`: 163 passed (~125 s). Items 3–8 changed no output: c5f905f's parity run (the recipe of "After the
+release") found 256 parquet and JSON files equal to `output/impute/`'s (the chains' provenance aside, which records the
+bundles' eodgdl version: 0.4.0 against the 0.3.0 of the bundles the earlier run read), and every fitted model predicting
+identically; items 1 and 2 moved only the held-out tables (item 1).
+
+### Session 5's review notes, as handed to session 6
+
+The list as session 5 wrote it (the user asked, 2026-09-28, that session 4's review notes go to a new session); session
+6 above resolved it. None was a defect in the outputs; ordered by how much they matter, with what session 5 measured.
 
 1. **Missing values: held-out metrics against scoring (a modelling decision for the user).** Every arm is trained
    with the missing label (`no_especificado`) as a category. The held-out evaluation (`run.heldout`, the model's
@@ -123,9 +248,11 @@ The deliberately deferred work under "Not done" below is separate and was not as
 | review and simplification (session 4) | 3539cee | merged into `main` |
 | NSE ties at random, release `v0.4.0` (session 5) | b321096, 2ecfcdd (tag `v0.4.0`) | merged into `main` |
 | informal-jobs-model's figures (`reports/imputation_figures.qmd`), the isotonic and combined held-out tables (session 5) | ce1fedb | merged into `main` at b27a0e6 |
+| session 5's review notes (session 6): 3–8, 2, 1; this handoff | c5f905f, eee00ad, be127dc, then the handoff | `impute-chains`, local (with 70eab10: not pushed) |
 
-`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7 and sessions 4–5, with the `v0.3.0` and `v0.4.0`
-tags on it. It is merged into `main` (`--no-ff`) up to ce1fedb, at b27a0e6. `uv run pytest`: 159 passed, ~110 s.
+`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7 and sessions 4–6, with the `v0.3.0` and `v0.4.0`
+tags on it. It is merged into `main` (`--no-ff`) up to ce1fedb, at b27a0e6; 70eab10 and session 6's commits are local.
+`uv run pytest`: 163 passed, ~125 s.
 
 Parity reached (details in the commit messages):
 - giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
@@ -265,6 +392,11 @@ A full review of `eodgdl.impute` and a refactor for one workflow; every shipped 
 
 ### Practical notes (additions to §11)
 
+- `output/impute_70eab10/`, `output/figures_70eab10/` and `output/reports_70eab10/` (session 6) keep the outputs,
+  figures and impute reports' HTML from before item 1 moved the held-out tables, for a comparison; delete them when
+  done. The four impute reports and `output/figures/` were re-rendered from the new `output/impute/`.
+- A background run that pipes `eodgdl impute retrain` through `grep` exits 0 even when the retrain fails (zsh without
+  `setopt pipefail`): check that every task wrote its bundle, as session 6's runs did.
 - Retrain outputs: `output/impute/<task>/` (bundle, `scores.parquet`, `scenarios.parquet`, `evaluation/*.parquet`,
   `summary.json`); chain runs: `output/impute/<chain>/` (`scores.parquet`, `completions.parquet`, `provenance.json`,
   `evaluation/`). All gitignored.
