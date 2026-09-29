@@ -18,10 +18,10 @@ Read this section first; §1–§11 below are the original plan (session 1), kep
 | 5 ENOE source, YAML harmonization, `informality`, chain `sector_informality` | 82d86f5 | `impute-chains` |
 | 5b diagnostics (`eodgdl impute evaluate`), `reports/imputation_informality.qmd` | bf112ce | `impute-chains` |
 | 6 NSE: `eod.dwellings`, `enigh.households`, four tasks, chain `nse`, AMAI data file, `reports/imputation_nse.qmd` | 7cfef45 | `impute-chains` |
-| 7 release: six bundles installed in `data/`, giro parity fixture from the v2 bundle, docs, `v0.3.0` | see below | `impute-chains`, merged into `main` |
+| 7 release: six bundles installed in `data/`, giro parity fixture from the v2 bundle, docs, `v0.3.0` | 609938f, 48ae9b3 (tag `v0.3.0`) | `impute-chains`, merged into `main` |
 
-`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7; it is merged into `main` (`--no-ff`) after the
-`v0.3.0` tag. `uv run pytest`: 151 passed, ~105 s.
+`impute-chains` branches from `main` at 00bf5f5 and holds phases 4–7, with the `v0.3.0` tag on it. It is merged into `main`
+(`--no-ff`, as 00bf5f5). `uv run pytest`: 151 passed, ~105 s.
 
 Parity reached (details in the commit messages):
 - giro: the engine's scores equal the notebook's reference bit for bit except one row (a numpy row-sum layout
@@ -68,6 +68,9 @@ What it found:
   pickle any more; the legacy bundle is in git (6d1d1d0, sha 227afc71…) if one is wanted.
 - `evaluate sector_informality` reads `<retrained>/giro/scenarios.parquet`, which only a giro retrain writes; the
   README says so.
+- The mirror check passed, with no `EODGDL_DATA_DIR` and an empty cache. `giro.load_model()` and `score` of both
+  chains fetched the survey, the six bundles and the AMAI file from the `v0.3.0` tag, each checksum-verified, and
+  the chains' scores and completions equal the local run's exactly.
 
 The checklist as it was run (the original text, kept for the record):
 
