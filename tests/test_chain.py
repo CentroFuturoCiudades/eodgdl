@@ -72,17 +72,21 @@ def _chain_source(monkeypatch, tmp_path):
     bundles = {}
     for spec in SPECS.values():
         rows = build_frame(spec, context).frame
-        known = rows[~rows[spec.unknown_column]]
-        weights = levels.normalize_sample_weights(known["w"].reset_index(drop=True))
-        fitted = {}
-        for arm in spec.arms:
-            features = list(arm.features)
-            X = levels.prepare_features(known, features, spec.numeric)
-            model = models.build_candidates(features, spec.numeric, spec.category_levels(lambda column: []), FAMILY)["GradientBoosting"]["model"]
-            model.fit(X, known[spec.target].astype(str), classifier__sample_weight=weights)
-            fitted[arm.name] = marginalize.attach_training_level_shares(model, X, weights, spec.numeric)
-        bundles[spec.name] = make_bundle(spec, fitted, {}, spec.category_levels(lambda column: []), {})
+        bundles[spec.name] = fit_bundle(spec, rows[~rows[spec.unknown_column]])
     return context, bundles
+
+
+def fit_bundle(spec, known):
+    """A bundle of ``spec`` fitted on the rows ``known`` (their target observed)."""
+    weights = levels.normalize_sample_weights(known["w"].reset_index(drop=True))
+    fitted = {}
+    for arm in spec.arms:
+        features = list(arm.features)
+        X = levels.prepare_features(known, features, spec.numeric)
+        model = models.build_candidates(features, spec.numeric, spec.category_levels(lambda column: []), FAMILY)["GradientBoosting"]["model"]
+        model.fit(X, known[spec.target].astype(str), classifier__sample_weight=weights)
+        fitted[arm.name] = marginalize.attach_training_level_shares(model, X, weights, spec.numeric)
+    return make_bundle(spec, fitted, {}, spec.category_levels(lambda column: []), {})
 
 
 def chain(steps, **settings):
@@ -138,6 +142,47 @@ def test_draws_converge_to_enumerate_on_a_three_task_chain(chain_source):
     assert len(drawn.completions) == 400 * len(exact) and {"t1", "t2", "weight", "completion"} <= set(drawn.completions.columns)
     again = run_chain(chain(steps, propagation="draws", draws=400, seed=3), context=context, bundles=bundles, specs=SPECS)
     pd.testing.assert_frame_equal(again.frame, drawn.frame)                                          # seeded
+
+
+def test_bootstrap_models_score_each_draw_with_its_own(chain_source):
+    """uncertainty: bootstrap: draw d is scored with the d-th (modulo B) bootstrap bundle of every task: a first step's
+    marginal is the mean of the models' probabilities, a later step's the mean over draws of its model's conditional
+    given that draw's upstream value; the arms and flags stay the bundles'."""
+    context, bundles = chain_source
+    from eodgdl.impute.features import build_frame
+
+    frames = {name: build_frame(SPECS[name], context).frame for name in ("t1", "t2")}
+    boot = {name: [fit_bundle(SPECS[name], frame[~frame[SPECS[name].unknown_column]].iloc[half::2]) for half in (0, 1)] for name, frame in frames.items()}
+    steps = ["t1", {"t2": {"uses": {"t1": {"as": "u1", "transform": U1}}}}]
+    result = run_chain(chain(steps, propagation="draws", draws=6, seed=1, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap=boot)
+    first = [score_frame(T1, frames["t1"], model)[T1.probability_columns].to_numpy() for model in boot["t1"]]
+    unknown = result.frame["t1_fue_imputado"].to_numpy()
+    np.testing.assert_allclose(result.frame[T1.probability_columns].to_numpy()[unknown], ((first[0] + first[1]) / 2)[unknown], rtol=1e-12)
+    completions = result.completions
+    rows, models = np.repeat(np.arange(len(frames["t2"])), 6), completions["completion"].to_numpy() % 2
+    given = {(m, level): scored_with(T2, frames["t2"], boot["t2"][m], u1=level) for m in (0, 1) for level in ("ua", "ub")}
+    per_draw = np.stack([given[(m, U1[value])][row] for m, value, row in zip(models, completions["t1"], rows)])
+    expected = per_draw.reshape(len(frames["t2"]), 6, -1).mean(axis=1)
+    unknown2 = result.frame["t2_fue_imputado"].to_numpy()
+    np.testing.assert_allclose(result.frame[T2.probability_columns].to_numpy()[unknown2], expected[unknown2], rtol=1e-12)
+    assert {"t1", "t2"} <= set(completions.columns) and result.provenance["bootstrap"] == {"t1": 2, "t2": 2}
+    single = run_chain(chain(steps, propagation="draws", draws=6, seed=1), context=context, bundles=bundles, specs=SPECS)
+    pd.testing.assert_series_equal(result.frame["t1_model_used"], single.frame["t1_model_used"])
+    assert not np.allclose(result.frame[T1.probability_columns], single.frame[T1.probability_columns])
+    # the option needs draws, every task's set, and sets of one size
+    with pytest.raises(ValueError, match="needs propagation: draws"):
+        chain(steps, uncertainty="bootstrap")
+    with pytest.raises(ValueError, match=r"no bootstrap bundles for \['t2'\]"):
+        run_chain(chain(steps, propagation="draws", draws=2, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap={"t1": boot["t1"]})
+    with pytest.raises(ValueError, match="differ in size"):
+        run_chain(chain(steps, propagation="draws", draws=2, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap={"t1": boot["t1"], "t2": boot["t2"][:1]})
+
+
+def test_draws_complete_every_task(chain_source):
+    context, bundles = chain_source
+    result = run_chain(chain(["t1", "t2"], mode="parallel", propagation="draws", draws=3, seed=2), context=context, bundles=bundles, specs=SPECS)
+    assert {"t1", "t2"} <= set(result.completions.columns)      # no later step reads t2, yet each draw completes it
+    assert set(result.completions["t2"]) <= set(T2.class_slugs)
 
 
 def test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios(chain_source):

@@ -116,6 +116,12 @@ def main() -> None:
                                                                      + (" (default output/impute; also where the upstream scenarios are read)" if default else ""))
     imp_sub.choices["score"].add_argument("--out", default=None, help="For a task, the parquet of keys and outputs (default: output/impute/<task>_scores.parquet); for a chain, a directory (default: output/impute/<chain>/)")
     imp_sub.choices["retrain"].add_argument("--out", default="output/impute", help="Each task is written to <out>/<task>/, where --retrained <out> finds it (default: output/impute)")
+    imp_sub.choices["retrain"].add_argument("--bootstrap", type=int, default=0, metavar="B",
+                                            help="Also refit the selected configurations on B cluster bootstraps of the training rows (<out>/<task>/bootstrap/), for a chain's uncertainty: bootstrap")
+    imp_sub.choices["score"].add_argument("--draws", type=int, default=None, metavar="M",
+                                          help="For a chain: M multiple imputations (propagation draws), every value drawn; written to <out> (default: output/impute/<chain>/multiple_imputation/)")
+    imp_sub.choices["score"].add_argument("--bootstrap", action="store_true",
+                                          help="For a chain: draw each imputation's models from the tasks' bootstrap bundles under --retrained (uncertainty: bootstrap; needs draws)")
     imp_sub.choices["evaluate"].add_argument("--out", default=None, help="Directory (default: <retrained>/<chain>/); tables go to <out>/evaluation/")
     imp_cmp = imp_sub.choices["compare"]
     imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
@@ -384,12 +390,18 @@ def _impute(args) -> int:
     if is_chain(args.task) and args.impute_cmd in ("score", "retrain"):
         chain = load_chain(args.task)
         if args.impute_cmd == "score":
-            out = Path(args.out or f"output/impute/{chain.name}")
+            default = f"output/impute/{chain.name}"
+            if args.draws or args.bootstrap:
+                from eodgdl.impute.chain import parse_chain
+
+                changed = {**({"propagation": "draws", "draws": args.draws} if args.draws else {}), **({"uncertainty": "bootstrap"} if args.bootstrap else {})}
+                chain, default = parse_chain({**chain.raw, **changed}), f"{default}/multiple_imputation"
+            out = Path(args.out or default)
             result = run_chain(chain, context=context, retrained=args.retrained)
             write_chain(result, out)
             print(f"{chain.name} ({chain.mode}, {chain.propagation}): {len(result.frame):,} rows, {len(result.completions):,} completions; wrote {out}")
         else:
-            for task, (path, digest) in retrain_chain(chain, args.out, context=context, n_jobs=args.jobs).items():
+            for task, (path, digest) in retrain_chain(chain, args.out, context=context, n_jobs=args.jobs, bootstrap=args.bootstrap).items():
                 print(f"{task}: wrote {path} (sha256 {digest})")
         return 0
     spec = load_task(args.task)
@@ -404,6 +416,9 @@ def _impute(args) -> int:
     if args.impute_cmd == "retrain":
         result = run.retrain(spec, context=context, n_jobs=args.jobs)
         path, digest = run.write_retrain(result, Path(args.out) / spec.name)
+        if args.bootstrap:
+            paths = run.write_bootstrap(spec, run.bootstrap_bundles(spec, result.bundle, args.bootstrap, context=context, n_jobs=args.jobs), Path(args.out) / spec.name)
+            print(f"wrote {len(paths)} bootstrap bundles to {paths[0].parent}")
         for arm, entry in result.summary["arms"].items():
             chosen = entry["selected"]
             print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "

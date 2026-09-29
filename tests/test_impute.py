@@ -371,6 +371,58 @@ def test_retrain_writes_a_bundle_that_scores_the_same(labelled_source, tmp_path,
     np.testing.assert_allclose(shipped.scenarios["shift_weighted"][spec.probability_columns].sum(axis=1), 1.0)
 
 
+def test_bootstrap_bundles_refit_the_selected_configurations(labelled_source, tmp_path):
+    """B refits of the bundle's selected configurations and auxiliary models on cluster bootstraps of the training rows:
+    valid bundles, seeded, each its own model; written under <task>/bootstrap/ and read back in order."""
+    from eodgdl.impute import bundle as bundles, run, sources
+    from eodgdl.impute.spec import parse_task
+
+    spec = parse_task(SYNTHETIC_TASK)
+    context = sources.Context(cache_dir=tmp_path / "cache")
+    fitted = run.retrain(spec, context=context, n_jobs=1, progress=False).bundle
+    boot = run.bootstrap_bundles(spec, fitted, 3, context=context, n_jobs=1)
+    task_levels = run.task_levels(spec)
+    frame = run.build_frame(spec, context).frame
+    scores = [run.score_frame(spec, frame, bundles.check_bundle(model, spec, task_levels))[spec.probability_columns].to_numpy() for model in [fitted, *boot]]
+    assert [model["metadata"]["bootstrap"] for model in boot] == [0, 1, 2] and set(boot[0]["auxiliary"]["with_b"]) == {"a"}
+    assert all(not np.allclose(scores[0], other) for other in scores[1:]) and not np.allclose(scores[1], scores[2])
+    again = run.bootstrap_bundles(spec, fitted, 2, context=context, n_jobs=1)
+    np.testing.assert_array_equal(run.score_frame(spec, frame, again[1])[spec.probability_columns].to_numpy(), scores[2])   # seeded per refit
+    paths = run.write_bootstrap(spec, boot, tmp_path / "root" / spec.name)
+    assert [path.name for path in paths] == ["synthetic_000.joblib", "synthetic_001.joblib", "synthetic_002.joblib"]
+    read = bundles.load_bootstrap(spec, tmp_path / "root")
+    np.testing.assert_array_equal(run.score_frame(spec, frame, read[2])[spec.probability_columns].to_numpy(), scores[3])
+    assert bundles.load_bootstrap(spec, tmp_path / "elsewhere") == [] and bundles.load_bootstrap(spec, None) == []
+
+
+def test_bootstrap_samples_draw_whole_clusters():
+    from eodgdl.impute import run
+
+    frame = pd.DataFrame({"g": [1, 1, 2, 3, 3, 3], "x": range(6)})
+    sample = run.bootstrap_sample(frame, "g", np.random.default_rng(0))
+    sizes = frame["g"].value_counts()
+    drawn = sample["g"].value_counts()
+    assert all(drawn[g] % sizes[g] == 0 for g in drawn.index)                    # every drawn cluster brings all its rows
+    assert sum(drawn[g] // sizes[g] for g in drawn.index) == frame["g"].nunique()  # as many clusters as the frame holds
+
+
+def test_rubins_rules_and_cluster_shares():
+    from eodgdl.impute import evaluate
+
+    combined = evaluate.rubin([0.30, 0.32, 0.31, 0.29], [1e-4, 1.1e-4, 0.9e-4, 1e-4])
+    between, within = np.var([0.30, 0.32, 0.31, 0.29], ddof=1), 1e-4
+    total = within + 1.25 * between
+    assert combined["estimate"] == pytest.approx(0.305) and combined["se_total"] == pytest.approx(np.sqrt(total))
+    assert combined["fmi"] == pytest.approx(1.25 * between / total) and combined["df"] == pytest.approx(3 * (1 + within / (1.25 * between)) ** 2)
+    assert combined["ci_low"] < 0.305 < combined["ci_high"]
+    frame = pd.DataFrame({"d": [0] * 4 + [1] * 4, "y": [1, 0, 1, 1, 0, 0, 1, 0], "w": [1.0, 2.0, 1.0, 1.0] * 2, "c": [1, 1, 2, 3] * 2})
+    table = evaluate.cluster_shares(frame, "y", "w", "c", ["d"])
+    share = (1.0 + 1.0 + 1.0) / 5.0
+    z = np.array([1.0 * (1 - share) + 2.0 * (0 - share), 1.0 * (1 - share), 1.0 * (1 - share)])   # completion 0's clusters
+    assert table.loc[0, "share"] == pytest.approx(share) and table.loc[0, "variance"] == pytest.approx(3 / 2 * (z ** 2).sum() / 25)
+    assert table.loc[0, "clusters"] == 3
+
+
 def test_hybrid_heldout_predicts_each_row_with_its_arm():
     from eodgdl.impute import run
     from eodgdl.impute.spec import parse_task

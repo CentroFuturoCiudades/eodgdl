@@ -1,6 +1,6 @@
 """Evaluation of a fitted classifier and of an imputation: held-out metrics with household-bootstrap intervals, the
 weighted-marginal baseline, one-vs-rest reliability, known vs unknown profiles, density-ratio reweighting for
-covariate-shift sensitivity, and the delta adjustment of an imputed share.
+covariate-shift sensitivity, the delta adjustment of an imputed share, and Rubin's rules over completed datasets.
 
 The held-out evaluators take the observed labels, a probability matrix (columns ``classes``, the model's order, as
 :func:`eodgdl.impute.run.heldout` gives them: the rows predicted as scoring predicts them) and the weights, so a caller
@@ -221,6 +221,43 @@ def test_metrics_with_uncertainty(y_true, probabilities, classes, sample_weights
     summary.loc["relative_improvement_over_marginal", "estimate"] = 1 - summary.loc["weighted_log_loss", "estimate"] / summary.loc["marginal_log_loss", "estimate"]
 
     return summary
+
+
+# Multiple imputation
+def cluster_shares(frame, indicator, weight, cluster, by):
+    """Per group of ``frame`` (``by``: its columns, e.g. the completion and a subgroup): the weighted share
+    Σ w y / Σ w of the 0/1 column ``indicator`` and its linearized variance with the ``cluster`` values as primary units
+    sampled with replacement and no strata, n / (n − 1) Σ_c z_c² / (Σ w)² with z_c = Σ_{i ∈ c} w_i (y_i − share).
+    Returns a frame indexed by ``by`` with ``share``, ``variance`` and ``clusters``."""
+    data = frame[list(by)].copy()
+    data["w"] = frame[weight].to_numpy(float)
+    data["wy"] = data["w"] * frame[indicator].to_numpy(float)
+    data["c"] = frame[cluster].to_numpy()
+    totals = data.groupby(list(by), observed=True)[["w", "wy"]].sum()
+    share = totals["wy"] / totals["w"]
+    data["z"] = data["wy"] - data["w"] * share.reindex(pd.MultiIndex.from_frame(data[list(by)]) if len(by) > 1 else data[by[0]]).to_numpy()
+    z = data.groupby([*by, "c"], observed=True)["z"].sum()
+    n = z.groupby(level=list(range(len(by))), observed=True).size()
+    variance = n / (n - 1) * (z ** 2).groupby(level=list(range(len(by))), observed=True).sum() / totals["w"] ** 2
+    return pd.DataFrame({"share": share, "variance": variance, "clusters": n})
+
+
+def rubin(estimates, variances):
+    """Rubin's rules for one estimate over M completed datasets: the mean of the estimates, the within variance (the
+    mean of their variances), the between variance (the variance of the estimates), the total within + (1 + 1/M)
+    between, the fraction of missing information (1 + 1/M) between / total, and a 95% interval on Rubin's degrees of
+    freedom (M − 1)(1 + 1/r)², r = (1 + 1/M) between / within."""
+    from scipy import stats
+
+    q, u = np.asarray(estimates, dtype=float), np.asarray(variances, dtype=float)
+    m = len(q)
+    mean, within, between = q.mean(), u.mean(), q.var(ddof=1)
+    total = within + (1 + 1 / m) * between
+    r = (1 + 1 / m) * between / within if within > 0 else np.inf
+    df = (m - 1) * (1 + 1 / r) ** 2 if r > 0 else np.inf
+    half = (stats.t.ppf(0.975, df) if np.isfinite(df) else stats.norm.ppf(0.975)) * np.sqrt(total)
+    return {"estimate": mean, "se_within": np.sqrt(within), "se_between": np.sqrt(between), "se_total": np.sqrt(total),
+            "fmi": (1 + 1 / m) * between / total if total > 0 else 0.0, "df": df, "ci_low": mean - half, "ci_high": mean + half, "imputations": m}
 
 
 # Known vs unknown rows

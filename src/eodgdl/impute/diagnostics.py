@@ -10,6 +10,8 @@
 - ``gap_decomposition``: direct standardization of the benchmark to the scored rows' profile: observed → predicted
   by the model → both reweighted to the scored profile → the chain's expected rate.
 - ``raking``: the scored rows reweighted to the benchmark's profile.
+- ``multiple_imputation``: Rubin's rules over completed datasets (the chain's draws), with the single fit's models and,
+  when the retrain wrote them, a bootstrap model per draw (:func:`multiple_imputation`), for either kind of chain.
 
 :func:`evaluate_chain` returns the tables; :func:`write_evaluation` writes them for a report.
 """
@@ -21,8 +23,8 @@ import numpy as np
 import pandas as pd
 
 from . import evaluate
-from .bundle import load_bundle, make_bundle
-from .chain import TaskStep, load_chain, run_chain
+from .bundle import load_bootstrap, load_bundle, make_bundle
+from .chain import DeriveStep, TaskStep, load_chain, parse_chain, run_chain
 from .features import build_frame
 from .run import component_spec, predict_rows, select_rows, task_levels, within_support
 from .sources import Context
@@ -174,8 +176,56 @@ def evaluate_chain(chain, retrained="output/impute", context=None):
         tables["raking"] = pd.DataFrame({"rate": {"scored rows, as surveyed": summary["expected_rate"], "scored rows, raked to the benchmark profile": _rate(raked, probability, weight),
                                                   "benchmark observed": summary["benchmark_rate"]}}).rename_axis("population").reset_index()
         tables["raking_diagnostics"] = diagnostics.rename_axis("metric").reset_index(name="value")
+    if ev.get("multiple_imputation"):
+        tables["multiple_imputation"] = multiple_imputation(chain, ev["multiple_imputation"], retrained, context, bundles)
 
     return tables, summary
+
+
+def _levels(chain, column):
+    """The levels of a completed column: a task's class slugs (``column`` its prefix) or a derive step's declared ones."""
+    for task in chain.tasks:
+        spec = load_task(task)
+        if spec.prefix == column:
+            return list(spec.class_slugs)
+    for step in chain.steps:
+        if isinstance(step, DeriveStep) and column in step.config.get("levels", {}):
+            return list(step.config["levels"][column])
+    raise ValueError(f"{chain.name}: no task or derive step gives the column {column!r} levels")
+
+
+def multiple_imputation(chain, config, retrained, context, bundles=None):
+    """Rubin's rules over ``config["draws"]`` completed datasets of ``chain`` (its draws, every value drawn): per
+    ``config["shares"]`` entry (a completed column: {column: [by, ...]}), the weighted share of each level overall and
+    within each ``by`` group (a completed column or a column of the scoring source), each completed dataset's variance
+    by cluster linearization (the scoring source's CV group as the cluster: the dwelling), combined over the datasets.
+    Once with the bundles' single fit (the draws carry the predictive uncertainty alone: improper) and, when every task
+    has bootstrap bundles under ``retrained``, once with a bootstrap model per draw (proper). One row per (models,
+    column, by, group, level)."""
+    draws = int(config.get("draws", chain.draws))
+    raw = {key: value for key, value in chain.raw.items() if key != "uncertainty"}
+    variants = {"single fit": parse_chain({**raw, "propagation": "draws", "draws": draws})}
+    if all(load_bootstrap(load_task(task), retrained) for task in chain.tasks):
+        variants["bootstrap models"] = parse_chain({**raw, "propagation": "draws", "draws": draws, "uncertainty": "bootstrap"})
+    first = load_task(chain.tasks[0])
+    source = build_frame(first, context, role="score")
+    keys, weight, cluster = list(source.keys), source.weight, source.group
+    by_frame = [by for bys in config["shares"].values() for by in bys if by in source.frame.columns and by not in keys]
+    rows = []
+    for name, variant in variants.items():
+        completions = run_chain(variant, context=context, bundles=bundles, retrained=retrained).completions
+        completions = completions.merge(source.frame[keys + sorted({weight, cluster, *by_frame} - set(keys))], on=keys, how="left", validate="many_to_one")
+        for column, bys in config["shares"].items():
+            values = completions[column].astype("string")
+            for level in _levels(chain, column):
+                completions["__y"] = values.eq(level).fillna(False).astype(float)
+                for by in [None, *bys]:
+                    groups = ["completion"] if by is None else ["completion", by]
+                    table = evaluate.cluster_shares(completions, "__y", weight, cluster, groups).reset_index()
+                    for group, part in ([(None, table)] if by is None else table.groupby(by, observed=True)):
+                        rows.append({"models": name, "column": column, "by": by or "all", "group": "all" if by is None else str(group), "level": level,
+                                     **evaluate.rubin(part["share"], part["variance"])})
+    return pd.DataFrame(rows)
 
 
 def _weighted_shares(frame, prefix, levels, weight):
@@ -187,7 +237,6 @@ def evaluate_distribution(chain, ev, retrained, context):
     the chain's propagation and each ``variants`` entry (a chain setting changed, ``skip`` derive steps dropped), the
     draws' Monte Carlo error, the ``reference`` distribution by area against the chain's on the areas both cover, and
     ``observed_check`` (a task's predictions against the value the scored rows report)."""
-    from .chain import DeriveStep, parse_chain
     from .derive import amai
 
     bundles = _bundles(chain.tasks, retrained)
@@ -272,6 +321,8 @@ def evaluate_distribution(chain, ev, retrained, context):
         table["difference_pp"] = (table["predicted_share"] - table["observed_share"]) * 100
         tables["observed_check"] = table
         summary["observed_check_mean_log_loss"] = float(-np.average(np.log(np.clip(predicted.to_numpy()[np.arange(len(observed)), observed.map({s: i for i, s in enumerate(checked.class_slugs)}).to_numpy(int)], 1e-15, 1)), weights=w))
+    if ev.get("multiple_imputation"):
+        tables["multiple_imputation"] = multiple_imputation(chain, ev["multiple_imputation"], retrained, context, bundles)
     return tables, summary
 
 

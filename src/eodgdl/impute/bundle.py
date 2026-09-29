@@ -1,5 +1,5 @@
 """Fitted task bundles: one joblib per task with its fitted arms, auxiliary models, category levels and the metadata
-that proves what they were trained on.
+that proves what they were trained on, and a retrain's bootstrap refits of them (:func:`load_bootstrap`).
 
 A bundle (format ``eodgdl.impute.bundle/2``) is a dict: ``task``, ``arms`` ({arm: {"model", "features",
 "requires"}}), ``auxiliary`` ({arm: {feature: model}}), ``classes``, ``category_levels`` and ``metadata`` (spec
@@ -129,6 +129,17 @@ def load_bundle(spec, path=None, retrained=None):
     import joblib
 
     return as_v2(joblib.load(bundle_path(spec, path, retrained)), spec)
+
+
+def load_bootstrap(spec, retrained):
+    """The task's bootstrap bundles under ``<retrained>/<task>/bootstrap/`` (:func:`eodgdl.impute.run.write_bootstrap`),
+    in order, as v2 bundles; an empty list where there are none."""
+    import joblib
+
+    if retrained is None:
+        return []
+    directory = Path(retrained) / spec.name / "bootstrap"
+    return [as_v2(joblib.load(path), spec) for path in sorted(directory.glob(f"{Path(spec.bundle_name).stem}_*.joblib"))]
 
 
 def bundle_arms(bundle, auxiliary=True):

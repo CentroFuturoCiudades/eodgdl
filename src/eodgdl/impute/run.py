@@ -6,6 +6,9 @@
   :func:`heldout`), refit on every observed row, auxiliary models,
   scoring, the covariate-shift and delta scenarios; writes the bundle and every evaluation table
   (:func:`write_retrain`) for a report to read.
+- **bootstrap** (:func:`bootstrap_bundles` + :func:`write_bootstrap`): refits of a bundle's selected configurations on
+  cluster bootstraps of the training rows, the posterior draws of the models that a chain's ``uncertainty: bootstrap``
+  reads (proper multiple imputation).
 - **compare** (:func:`compare`): feature specifications evaluated cheaply: the published winner's family and
   hyperparameters fixed, the same grouped folds on the training rows (the held-out fold never touched, the validation
   folds scored as the selection scores them), each candidate's fold log losses paired against the baseline's.
@@ -506,6 +509,74 @@ def write_retrain(result, out):
     return bundle_path, digest
 
 
+# Bootstrap
+def winner_candidates(spec, arm, winner, levels, seed):
+    """The candidates dict of :func:`eodgdl.impute.select.cross_validate_grid` with one configuration: ``winner`` (a
+    bundle's ``metadata["selected"][arm]``: its family and ``best_params``) on the arm's features."""
+    family = dict(spec.selection["families"][winner["model"]])
+    family["params"] = {key.removeprefix("classifier__"): [value] for key, value in winner["best_params"].items()}
+    return build_candidates(list(arm.features), spec.numeric, levels, {winner["model"]: family}, random_state=seed, missing_label=spec.missing_label)
+
+
+def bootstrap_sample(frame, group, rng):
+    """A cluster bootstrap of ``frame``: as many of its ``group`` values as it holds, drawn with replacement, each
+    bringing all its rows (a group drawn twice is there twice)."""
+    groups, inverse = np.unique(frame[group].astype(str).to_numpy(), return_inverse=True)
+    order = np.argsort(inverse, kind="stable")
+    starts = np.r_[0, np.cumsum(np.bincount(inverse, minlength=len(groups)))]
+    drawn = rng.integers(0, len(groups), size=len(groups))
+    return frame.iloc[np.concatenate([order[starts[k]:starts[k + 1]] for k in drawn])].reset_index(drop=True)
+
+
+def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m):
+    from threadpoolctl import threadpool_limits
+
+    sample = bootstrap_sample(frame, group, np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(m,))))
+    arms, auxiliary = {}, {}
+    with threadpool_limits(limits=1):
+        for arm in spec.arms:
+            [(family, candidate)] = winner_candidates(spec, arm, selected[arm.name], levels, seed).items()
+            model = clone(candidate["model"]).set_params(**selected[arm.name]["best_params"])
+            if family == "RandomForest":
+                model.set_params(classifier__n_jobs=1)
+            arms[arm.name] = shipped_arm(model, spec, sample, list(arm.features), weight, group)
+            auxiliary[arm.name] = {feature: fit_level_model(sample, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels,
+                                                            sample_weights=sample[weight], random_state=seed, missing_label=spec.missing_label)
+                                   for feature in spec.auxiliary}
+    return make_bundle(spec, arms, auxiliary, levels, {"bootstrap": m, "bootstrap_seed": [seed, m], "selected": selected})
+
+
+def bootstrap_bundles(task, bundle, n, context=None, n_jobs=-1):
+    """``n`` bundles refitted from ``bundle``: each arm's selected configuration (``metadata["selected"]``, no new
+    selection) and its auxiliary models, on a cluster bootstrap of the task's training rows (the training population;
+    the source's CV group as the cluster, its weights kept), the m-th drawn with ``SeedSequence(task seed,
+    spawn_key=(m,))``. They are draws of the fitted models: a chain with ``uncertainty: bootstrap`` scores its m-th
+    draw with the m-th of them, so its multiple imputations carry the models' estimation uncertainty."""
+    from joblib import Parallel, delayed
+
+    spec = _spec(task)
+    context = context or Context()
+    source = build_frame(spec, context)
+    frame = select_rows(source.frame, keep=spec.selection.get("population"))
+    levels, selected, seed = task_levels(spec), bundle["metadata"]["selected"], spec.selection["cv"]["seed"]
+    return Parallel(n_jobs=n_jobs)(delayed(_bootstrap_bundle)(spec, frame, source.weight, source.group, selected, levels, seed, m) for m in range(n))
+
+
+def write_bootstrap(spec, bundles, out):
+    """The bootstrap bundles under ``<out>/bootstrap/`` (``out``: the task's retrain directory, where
+    :func:`eodgdl.impute.bundle.load_bootstrap` finds them with ``retrained=<root>``), numbered from 000, after removing
+    an earlier set. Returns their paths."""
+    directory = Path(out) / "bootstrap"
+    directory.mkdir(parents=True, exist_ok=True)
+    for stale in directory.glob("*.joblib"):
+        stale.unlink()
+    stem = Path(spec.bundle_name).stem
+    paths = [directory / f"{stem}_{m:03d}.joblib" for m in range(len(bundles))]
+    for bundle, path in zip(bundles, paths):
+        save_bundle(bundle, path)
+    return paths
+
+
 # Compare
 def _merge(base, fragment):
     merged = copy.deepcopy(base)
@@ -545,10 +616,7 @@ def compare(task, candidates, seeds=(42,), bundle=None, retrained=None, context=
         others = frame[frame[candidate.unknown_column].astype(bool).to_numpy()]
         levels = task_levels(candidate)
         for arm in candidate.arms:
-            winner = winners[arm.name]
-            family = dict(candidate.selection["families"][winner["model"]])
-            family["params"] = {key.removeprefix("classifier__"): [value] for key, value in winner["best_params"].items()}
-            models = build_candidates(list(arm.features), candidate.numeric, levels, {winner["model"]: family}, random_state=cv["seed"], missing_label=candidate.missing_label)
+            models = winner_candidates(candidate, arm, winners[arm.name], levels, cv["seed"])
             X, y, w, g, arm_rows = training_data(candidate, train, list(arm.features), source.weight, source.group)
             expand = fold_expander(candidate, arm, arm_rows, X, w, others, source.weight, levels, cv["seed"])
             for seed in seeds:

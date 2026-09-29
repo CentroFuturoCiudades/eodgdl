@@ -12,7 +12,10 @@ upstream imputations along with ``propagation``:
   scenario so far)); P(y | x) = Σ_s P(s | x) P(y | x, s). A categorical downstream feature takes the class (or its
   ``transform``); a numeric one takes a number per class (a numeric ``transform``, else the upstream's target score).
 - ``draws``: ``draws`` seeded multiple imputations: y₁ ~ P(y₁ | x), then y₂ ~ P(y₂ | x, y₁), ...; each step's marginal
-  is the mean over draws of its conditional probabilities (not the share of draws), and derive steps run per draw.
+  is the mean over draws of its conditional probabilities (not the share of draws), and derive steps run per draw. Every
+  task's value is drawn, so each draw is a completed dataset (``completions``). With ``uncertainty: bootstrap`` draw d
+  is scored with the d-th (modulo B) of each task's bootstrap bundles (:func:`eodgdl.impute.run.bootstrap_bundles`): a
+  draw of the models, then of their predictions, so the imputations are proper and carry the models' uncertainty.
 - ``expected``: the upstream's expected score is plugged in as a numeric feature (a derive step reads the expected
   scores too, so every task whose value a later step reads declares ``target.scores``); the downstream outputs are
   flagged as plug-in.
@@ -34,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from .arms import set_class_probabilities
-from .bundle import as_v2, load_bundle
+from .bundle import as_v2, load_bootstrap, load_bundle
 from .features import build_frame
 from .run import expected_score_column, output_columns, score_frame, task_levels
 from .sources import Context, get_source
@@ -73,6 +76,7 @@ class ChainSpec:
     seed: int
     steps: list
     raw: dict = field(repr=False)
+    uncertainty: str | None = None   # "bootstrap": each draw scored with a bootstrap refit of every task's models
 
     @property
     def tasks(self):
@@ -129,7 +133,10 @@ def parse_chain(raw, load=load_task):
                                f"{name}: {step.task}.{use.feature} is numeric: {use.task}'s classes need numbers (a numeric transform or target scores)")
             seen.append(step.task)
     _check(any(isinstance(step, TaskStep) for step in steps), f"{name}: no task steps")
-    chain = ChainSpec(name, mode, propagation, int(raw.get("draws", 50)), int(raw.get("seed", 42)), steps, raw)
+    uncertainty = raw.get("uncertainty")
+    _check(uncertainty in (None, "bootstrap"), f"{name}: uncertainty {uncertainty!r} is not 'bootstrap'")
+    _check(uncertainty is None or propagation == "draws", f"{name}: bootstrap uncertainty draws a model per imputation, so it needs propagation: draws")
+    chain = ChainSpec(name, mode, propagation, int(raw.get("draws", 50)), int(raw.get("seed", 42)), steps, raw, uncertainty)
     if propagation == "expected":   # every value a later step reads is an expected score
         needed = _needed(chain)
         unscored = [task for task in chain.tasks if task in needed and not load(task).scores]
@@ -352,7 +359,24 @@ def _derive(step, index, chain, completions, base, keys, derive_functions):
     return derived
 
 
-def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, derive_functions=None, specs=None, upstream_outputs=None, options=None):
+def _bootstrap_conditional(chain, step, spec, frame, models, completions, specs, level_subsets, option):
+    """P(y | x, the completion's upstream values) as the completion's bootstrap bundle gives it: draw d scored with the
+    d-th (modulo B) of ``models``, each distinct (row, upstream values) once per model."""
+    which = completions["completion"].to_numpy() % len(models)
+    conditional = np.empty((len(completions), len(spec.class_slugs)))
+    for m in np.unique(which):
+        bundle = models[m] if option.get("auxiliary") is not False else {**models[m], "auxiliary": {}}
+        rows = which == m
+        if step.uses:
+            conditional[rows] = _conditionals(chain, step, spec, frame, bundle, completions[rows].reset_index(drop=True), specs, level_subsets)[0]
+        else:
+            scored = score_frame(spec, frame, bundle, level_subsets=level_subsets)
+            conditional[rows] = scored[spec.probability_columns].to_numpy()[completions["row"].to_numpy()[rows]]
+    return conditional
+
+
+def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, derive_functions=None, specs=None, upstream_outputs=None, options=None,
+              bootstrap=None):
     """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
     ``bundles`` ({task: bundle}) overrides the tasks' bundles, which are otherwise read by
     :func:`~eodgdl.impute.bundle.load_bundle` (from ``<retrained>/<task>/`` when a retrain wrote one there, else the
@@ -360,7 +384,10 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     task files. For sensitivity runs, ``upstream_outputs`` ({task: frame with the source's keys and the task's output
     columns}) replaces a first-level task's scoring (e.g. a retrain scenario), and ``options`` ({task:
     {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra level subsets, or no auxiliary
-    models (training shares instead). Returns a :class:`ChainResult`."""
+    models (training shares instead). ``bootstrap`` ({task: [bundles]}) gives the bootstrap bundles a chain with
+    ``uncertainty: bootstrap`` scores its draws with (default: :func:`~eodgdl.impute.bundle.load_bootstrap` under
+    ``retrained``); the marginals, arms and flags are the bundles', the draws the bootstrap models'. Returns a
+    :class:`ChainResult`."""
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context(tables=tables)
     specs = {task: (specs or {}).get(task) or load_task(task) for task in chain.tasks}
@@ -372,9 +399,18 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     for task in chain.tasks:
         _check(frames[task][keys].astype(str).equals(frames[chain.tasks[0]][keys].astype(str)), f"{chain.name}: {task}'s rows differ from {chain.tasks[0]}'s")
     _check_uses(chain, specs)
+    if chain.uncertainty == "bootstrap" and bootstrap is None:
+        bootstrap = {task: load_bootstrap(spec, retrained) for task, spec in specs.items()}
+    if bootstrap:
+        _check(chain.propagation == "draws", f"{chain.name}: bootstrap models are drawn per imputation, so they need propagation: draws")
+        missing = [task for task in chain.tasks if not bootstrap.get(task)]
+        _check(not missing, f"{chain.name}: no bootstrap bundles for {missing}: run `eodgdl impute retrain <task> --bootstrap B` and point --retrained at its root")
+        _check(len({len(bootstrap[task]) for task in chain.tasks}) == 1, f"{chain.name}: the tasks' bootstrap sets differ in size")
+        bootstrap = {task: [as_v2(model, specs[task]) for model in bootstrap[task]] for task in chain.tasks}
     provenance = {"chain_hash": chain.hash, "mode": chain.mode, "propagation": chain.propagation, "draws": chain.draws, "seed": chain.seed,
                   "bundles": {task: {key: bundle["metadata"].get(key) for key in ("spec_hash", "scoring_hash", "sklearn_version", "eodgdl_version")}
-                              for task, bundle in bundles.items()}}
+                              for task, bundle in bundles.items()},
+                  **({"uncertainty": "bootstrap", "bootstrap": {task: len(models) for task, models in bootstrap.items()}} if bootstrap else {})}
     base = frames[chain.tasks[0]]
     n_rows = len(base)
 
@@ -407,8 +443,10 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
             conditional = first[spec.probability_columns].to_numpy()[rows]
         else:
             conditional, first, conditionals = _conditionals(chain, step, spec, frame, bundle, completions, specs, subsets)
+        if bootstrap and step.task not in (upstream_outputs or {}):
+            conditional = _bootstrap_conditional(chain, step, spec, frame, bootstrap[step.task], completions, specs, subsets, option)
         outputs[step.task] = {**_marginal_outputs(chain, step, spec, first, conditional, completions).to_dict("series"), **conditionals}
-        if step.task in needed:
+        if step.task in needed or chain.propagation == "draws":      # a draw is a completed dataset: every value drawn
             completions = _advance(completions, spec, conditional, chain.propagation, rng)
 
     frame = base[keys].copy()
@@ -435,11 +473,18 @@ def write_chain(result, out):
     return out
 
 
-def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True):
+def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True, bootstrap=0):
     """Retrain every task of ``chain`` in order (:func:`eodgdl.impute.run.retrain`), each written to ``out/<task>``
-    (where ``retrained=out`` finds it). Returns ``{task: (bundle path, sha256)}``."""
-    from .run import retrain, write_retrain
+    (where ``retrained=out`` finds it), with ``bootstrap`` bootstrap bundles each when asked
+    (:func:`eodgdl.impute.run.bootstrap_bundles`). Returns ``{task: (bundle path, sha256)}``."""
+    from .run import bootstrap_bundles, retrain, write_bootstrap, write_retrain
 
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context()
-    return {task: write_retrain(retrain(task, context=context, n_jobs=n_jobs, progress=progress), Path(out) / task) for task in chain.tasks}
+    written = {}
+    for task in chain.tasks:
+        result = retrain(task, context=context, n_jobs=n_jobs, progress=progress)
+        written[task] = write_retrain(result, Path(out) / task)
+        if bootstrap:
+            write_bootstrap(result.spec, bootstrap_bundles(result.spec, result.bundle, bootstrap, context=context, n_jobs=n_jobs), Path(out) / task)
+    return written
