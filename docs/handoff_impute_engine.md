@@ -1,31 +1,91 @@
 # Handoff: `eodgdl.impute`, one repository for every imputation model on the survey
 
-## 0. Status at the end of session 6 (2026-09-28): session 5's review notes resolved; nothing pushed
+## 0. Status at the end of session 6 (2026-09-28): session 5's review notes resolved; next, a second complete review
 
-Read this section first, starting with **Pending for session 7**; §1–§11 below are the original plan (session 1), kept
+Read this section first, starting with **Session 7: a second complete review**; §1–§11 below are the original plan (session 1), kept
 as the record of the design. Then read `CLAUDE.md` (local, gitignored: its `eodgdl.impute` section describes every
 module as built) and `src/eodgdl/impute/__init__.py`.
 
-### Pending for session 7 (start here)
+### Session 7: a second complete review of `eodgdl.impute` (start here)
 
-Nothing of the review list is left. What waits on the user (ask before any of it):
+The user asked (2026-09-29) for a second complete review, in a new session. Session 4 made the first (a review and a
+refactor for one workflow, "After the release: review and simplification" below); sessions 5 and 6 resolved its notes.
+This one reads the engine as it stands at 7f783b3 with fresh eyes: whether the models, their evaluation and their
+outputs say what the reports say, and what the first review missed. Scope: `src/eodgdl/impute/` (sources,
+harmonizations, tasks, chains, derive steps), `src/eodgdl/giro/`, the `eodgdl impute` CLI, the four
+`reports/imputation_*.qmd` and their tests. The survey loading, the chain rules, `tasha` and `reweight` are out of
+scope except where an impute source reads them.
 
-- **Push `impute-chains`** (70eab10 and session 6's commits are local), **merge into `main`**, and whether to
-  **release**. No data file changed and no score moved; the held-out evaluation now scores as the bundles do (session
-  6, item 1), so the published held-out metrics moved. The installed bundles in `data/` still carry the old held-out
-  metrics in their metadata (`metadata["test_metrics"]`); their predictions equal the retrained ones', so a release
-  would only reinstall them for that metadata (as in session 5, the retrained bundles were not copied to `data/`).
-- **Optional, a modelling decision**: read giro's destination and mode of a worker without a work trip as the category
-  the model learned (session 6, item 1, option B): on the held-out workers without a trip it fits better (log loss
-  −0.04 on them) and the imputed shares move by at most 0.3 pp; it needs a per-feature spec option
-  (`scoring.missing_as_level`, say), a retrain, the bundles reinstalled and a release. Not for educacion_jefe's income
-  (the refusal pattern below).
-- **A survey finding** for any NSE or education work: income refusal and the heads' licenciatura (item 1 below;
-  `reports/imputation_nse.qmd` #sec-income).
+**The user's rules** (standing): ask before pushing, merging or releasing, and before any change that moves published
+outputs (scores, held-out metrics, the reports' numbers): bring the numbers and the options. Fix what moves nothing,
+with tests, and prove it with the parity recipe ("After the release" below). The branch is `impute-chains`, five
+commits ahead of `origin` at the end of session 6 (70eab10, c5f905f, eee00ad, be127dc, 7f783b3; check `git status
+-sb`: the user may have pushed since). `output/impute/` is session 6's run and matches 7f783b3.
 
-Check every change with the parity recipe of "After the release" below.
+**How to run it.**
+- Read this §0, `CLAUDE.md`'s `eodgdl.impute` section and `src/eodgdl/impute/__init__.py`, then the modules in the
+  order data flows: `spec`, `sources/`, `features`, `harmonize` (with `harmonization/*.yaml`), `levels`, `models`,
+  `select`, `marginalize`, `arms`, `bundle`, `run`, `chain`, `derive/`, `diagnostics`; then the task and chain YAMLs;
+  then the reports.
+- Every finding gets the claim, the evidence (file:line, a number from a script) and a class: a defect in today's
+  outputs, a latent defect, a decision for the user, or a cleanup. Record them here, as session 4 did.
+- **Step 0, before changing anything: commit the parity check as a tool.** Session 6 wrote it twice in a scratchpad,
+  now gone: `scripts/impute/parity.py ROOT_A ROOT_B [--models]` comparing every parquet exactly, then within 1e-12,
+  the held-out tables apart (they move whenever the evaluation does), the summaries as dicts (timings, versions, the
+  bundles' sha256 and the chains' recorded eodgdl version aside) and every fitted model (arms, auxiliary, components)
+  by `predict_proba` on its task's frames; and a runner that retrains the six tasks, scores giro and both chains and
+  evaluates the chains into a root, under `set -o pipefail` (piped through `grep`, a failed retrain exits 0).
 
-The deliberately deferred work under "Not done" below is separate and was not asked for.
+**Focus, in the order of what could change a conclusion.**
+
+1. **Copied worker records leak into giro's evaluation** (found 2026-09-29, not fixed). The 1,793 persons of
+   `hab.diario_repetido` form 794 groups of diaries copied across households (`eod.flag_repeated_diaries`; the groups
+   come from `eod._diary_signatures` by AGEB, date and signature). Among giro's 17,429 known workers, 333 are flagged;
+   the 162 pairs of them in different dwellings share the giro 98.8% of the time (chance 30.6%), the sex 94% and the
+   destination zone 100%, the age only 12%: copied worker records, not only copied trips. The CV groups are households,
+   so 53 of the 3,485 held-out workers have their twin in training, and the CV folds split pairs the same way. Measure
+   the effect of grouping twins with each other (a CV group column on `eod.workers`: the twin group where there is
+   one, else the household) on the held-out metrics and the selections, and decide how the copies train (both, one,
+   or half weight each). The dwelling tasks are barely touched: dwellings that share a copied diary agree on the
+   head's education 38% of the time and on income 53%, random dwellings of the same AGEB and date 34% and 50%.
+2. **Missing values across training, selection, evaluation and scoring.** Since be127dc the held-out evaluation scores
+   as the bundles do, but `select.tune`'s grouped CV still compares `predict_proba`, where the missing label is the
+   category the model learned: the selection optimizes another predictor than the one that scores (educacion_jefe's
+   CV log loss 1.390 against its held-out 1.470). Score the CV folds through the scoring path (fold training shares,
+   fold auxiliary models) and see whether a selection changes; if one does it moves bundles and scores (numbers to the
+   user). Income non-response is handled three ways: educacion_jefe averages it over the training shares (one arm),
+   the AMAI tasks score it with an arm trained without income (`sin_ingreso`), giro averages a missing destination
+   over an auxiliary model. Decide whether educacion_jefe should take the AMAI tasks' two arms (`run.compare` measures
+   it). Option B for giro (the no-trip destination and mode as the learned category) stays the user's decision.
+3. **The labels and features the EOD tasks learn from.** A third of educacion_jefe's training heads live in dwellings
+   that refused the income question, whose reported licenciatura looks inflated (session 6, item 1;
+   `reports/imputation_nse.qmd` #sec-income), and the known heads' education enters the AMAI points directly. Measure
+   what training without those labels (or with them down-weighted) does to the imputed education and to the NSE before
+   and after calibration. Re-check the harmonization maps (`harmonization/*.yaml`) against the ENOE, ENIGH and EOD
+   questionnaires: the parity with informal-jobs-model proved the port, not the mappings. Check whether the April
+   capture change (trips 3+, `reports/loading.qmd` #sec-april) reaches a feature (giro's destination is the work
+   trip's).
+4. **What the reports claim.** CV and held-out log losses now describe different predictors (focus 2): read every
+   sentence that compares or interprets them, and every structural claim that no `assert` holds. The chains carry the
+   draws' Monte Carlo error but no model uncertainty (one fitted bundle per task): say so where intervals are shown,
+   or propose a bootstrap of the bundles.
+5. **Tests.** The suite runs 84% of `eodgdl.impute`'s and `eodgdl.giro`'s statements (2026-09-29: `uv run --with
+   coverage python -m coverage run --source=src/eodgdl/impute,src/eodgdl/giro -m pytest`; `uv run --with pytest-cov`
+   fails on a second numpy import). Not run by any test: `diagnostics.py`
+   (212 statements, all of `eodgdl impute evaluate`: only the reports run it), most of `check_bundle`'s refusals
+   (other classes, arms, features, auxiliary predictors; `bundle.py` 88–101), the real-data paths of the sources
+   (`sources/eod.py` 62%, `sources/enigh.py` 36%) and AMAI's file readers (`derive/amai.py` 56–81), and the CLI's
+   `impute` commands. The diagnostics and the bundle guard matter most: a synthetic chain like `tests/test_chain.py`'s
+   can carry an `evaluation:` section.
+6. **Code and docs.** `run.retrain` (144 lines) holds most of the logic; ruff's B023 in `features.build_frame` (a
+   closure over loop variables, called at once: correct but fragile) and in `giro/features.py`; the legacy giro bundle
+   path (`bundle.from_legacy_giro`, `legacy_view`, `giro/_ml.py`) could go in a breaking release; the installed bundles
+   in `data/` carry pre-be127dc held-out metrics in their metadata (reinstall at the next release). This handoff holds
+   850 lines of history, and `CLAUDE.md`'s impute section is 92 dense lines: propose a design document
+   (`docs/impute.md`: what the engine does and why) and keep only the state and pointers here.
+
+Still waiting on the user from session 6: push `impute-chains`, merge into `main`, whether to release, and option B
+for giro. The deliberately deferred work under "Not done" below is separate and was not asked for.
 
 ### Session 6 (2026-09-28): session 5's pending list
 
