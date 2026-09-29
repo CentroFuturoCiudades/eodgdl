@@ -1,0 +1,600 @@
+---
+title: "Informality and NSE figures"
+subtitle: "informal-jobs-model's figures (its notebooks 03, 05, 06 and 08 and their presentation versions), redrawn from the outputs of `eodgdl.impute` and written to `output/figures/` as PDF and PNG"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 2
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import json
+import os
+from pathlib import Path
+
+
+def _find_root() -> Path:
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        if (base / "data" / "IMEPLAN_Base_Viviendas_Master.csv").exists():
+            return base.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl repository.")
+
+
+ROOT = _find_root()
+os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
+OUT = Path(os.environ.get("EODGDL_IMPUTE_DIR", ROOT / "output" / "impute"))
+FIGURES = Path(os.environ.get("EODGDL_FIGURES_DIR", ROOT / "output" / "figures"))
+RETRAIN, SCORE = "uv run eodgdl impute retrain {} --data data", "uv run eodgdl impute score {0} --data data --retrained output/impute` and `uv run eodgdl impute evaluate {0} --data data"
+for path, command in {"informality/evaluation/isotonic_reliability__with_education.parquet": RETRAIN.format("informality"),
+                      "informality/evaluation/reliability__hybrid.parquet": RETRAIN.format("informality"),
+                      "educacion_jefe/scores.parquet": RETRAIN.format("educacion_jefe"),
+                      "sector_informality/evaluation/by_upstream.parquet": SCORE.format("sector_informality"),
+                      "nse/evaluation/reference.parquet": SCORE.format("nse")}.items():
+    assert (OUT / path).exists(), f"No {OUT / path}: run `{command}` first."
+FIGURES.mkdir(parents=True, exist_ok=True)
+
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Patch
+
+from eodgdl.impute.chain import DeriveStep, load_chain
+from eodgdl.impute.derive import amai
+from eodgdl.impute.features import build_frame
+from eodgdl.impute.harmonize import load_harmonization
+from eodgdl.impute.sources import Context
+from eodgdl.impute.spec import load_task
+
+# The validated default categorical palette (dataviz skill), fixed slot order, as the other reports.
+SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+INK, MUTED, GRID, SURFACE = "#1f1f1f", "#6b6b6b", "#e6e6e6", "#ffffff"
+plt.rcParams.update({
+    "figure.dpi": 120, "font.size": 10, "axes.titlesize": 11, "axes.edgecolor": MUTED, "axes.labelcolor": INK,
+    "xtick.color": MUTED, "ytick.color": MUTED, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8, "axes.axisbelow": True, "legend.frameon": False,
+})
+
+
+def pct(x, digits=1):
+    return f"{100 * x:.{digits}f}%"
+
+
+def fmt(n):
+    return f"{int(n):,}"
+
+
+def save(fig, name):
+    """Show the figure and write it as ``output/figures/<name>.pdf`` and a 600-dpi PNG (informal-jobs-model's names)."""
+    fig.savefig(FIGURES / f"{name}.pdf", bbox_inches="tight")
+    fig.savefig(FIGURES / f"{name}.png", dpi=600, bbox_inches="tight")
+    plt.show()
+
+
+def bars(ax, table, colors, labels=True, digits=1, fontsize=7):
+    """Grouped bars: one group per row of ``table``, one bar per column (in ``colors``), a surface gap between
+    neighbours, the value above each bar where ``labels``."""
+    n = table.shape[1]
+    width = 0.8 / n
+    x = np.arange(len(table))
+    for i, (column, color) in enumerate(zip(table.columns, colors)):
+        drawn = ax.bar(x + (i - (n - 1) / 2) * width, table[column].to_numpy(), width, color=color, edgecolor=SURFACE, linewidth=1, label=column)
+        if labels:
+            ax.bar_label(drawn, fmt=f"%.{digits}f", fontsize=fontsize, color=INK, padding=2)
+    ax.set_xticks(x, table.index)
+    ax.grid(axis="x", visible=False)
+    ax.set_ylim(0, table.to_numpy().max() * (1.15 if labels else 1.05))
+
+
+# Spanish labels, as the figures are published (informal-jobs-model's, with its slips fixed)
+TITLES = {"genero": "Género", "ocupacion": "Ocupación", "edad_cat": "Edad", "escolaridad": "Escolaridad", "municipio": "Municipio",
+          "estado_civil": "Estado civil", "parentesco": "Parentesco", "tamano_viv_cat": "Tamaño de vivienda", "sector": "Sector"}
+TICKS = {
+    "genero": {"H": "hombre", "F": "mujer"},
+    "ocupacion": {"sin_pago": "sin pago"},
+    "edad_cat": {"12_14": "12-14", "15_17": "15-17", "18_24": "18-24", "25_49": "25-49", "50_59": "50-59", "60_64": "60-64", "65_y_mas": "65+"},
+    "escolaridad": {"sin_instruccion": "sin\ninstr.", "primaria_o_secundaria": "primaria\nsec.", "carrera_tecnica_o_preparatoria": "técnica\nprepa.",
+                    "licenciatura": "lic.", "postgrado": "posgrado"},
+    "municipio": {"guadalajara": "GDL", "zapopan": "Zapopan", "tlaquepaque": "Tlaquep.", "tlajomulco": "Tlajom.", "tonala": "Tonalá",
+                  "el_salto": "El Salto", "juanacatlan": "Juanac.", "ixtlahuacan_membrillos": "Ixtlah.", "zapotlanejo": "Zapotl."},
+    "estado_civil": {"union_libre": "unión\nlibre"},
+    "parentesco": {"jefe_del_hogar": "jefe\nhogar", "conyuge": "cónyuge", "otro_parentesco": "otro", "sin_parentesco": "sin\nparentesco"},
+    "tamano_viv_cat": {"7_y_mas": "7+"},
+    "sector": {"gobierno_otro_agricultura": "gob., agr.\nu otro", "manufactura_construccion": "manuf. y\nconstr.", "servicios_transporte": "serv. y\ntransp."},
+}
+SECTOR = {"comercio": "Comercio", "gobierno_otro_agricultura": "Gobierno,\nagricultura u otro",
+          "manufactura_construccion": "Manufactura y\nconstrucción", "servicios_transporte": "Servicios y\ntransporte"}
+SECTORS = list(SECTOR)
+
+INFORMALITY = load_task("informality")
+MISSING = INFORMALITY.missing_label
+LEVELS = load_harmonization("common")["levels"]
+CHAIN = load_chain("sector_informality")
+TRANSFORM = dict(CHAIN.raw["steps"][1]["informality"]["uses"]["giro"]["transform"])     # giro class -> sector
+
+
+def rotate(ax, variable):
+    """Slanted ticks for the predictors with many long levels."""
+    if variable in ("municipio", "estado_civil"):
+        ax.tick_params(axis="x", labelrotation=35)
+        for label in ax.get_xticklabels():
+            label.set_horizontalalignment("right"); label.set_rotation_mode("anchor")
+
+
+def tick(variable, level):
+    return "no esp." if level == MISSING else TICKS.get(variable, {}).get(level, level)
+
+
+def weighted_shares(frame, column, weight):
+    totals = frame.groupby(column, observed=True)[weight].sum()
+    return totals / totals.sum()
+
+
+def order(variable, *series):
+    """The variable's harmonized levels that the series hold, then anything else, the missing label last."""
+    seen = set().union(*(set(s.index) for s in series))
+    declared = [level for level in LEVELS.get(variable, []) if level in seen]
+    return declared + sorted(seen - set(declared) - {MISSING}) + ([MISSING] if MISSING in seen else [])
+```
+
+```{python}
+#| label: data
+#| include: false
+
+# ENOE: the informality task's training frame (8 pooled quarters of Jalisco's employed, harmonized, weight / 8). Its
+# metro municipalities are informal-jobs-model's benchmark population, the chain evaluation's too.
+enoe_all = build_frame(INFORMALITY, Context(), role="train").frame
+METRO = sorted(set(enoe_all["municipio"].dropna()) - {"otro", MISSING})
+enoe = enoe_all[enoe_all["municipio"].isin(METRO)].copy()
+enoe["informal"] = (enoe["informalidad"] == "informal").astype(float)
+benchmark = pd.read_parquet(OUT / "sector_informality" / "evaluation" / "benchmark.parquet").set_index("group")
+assert len(enoe) == benchmark.loc["all", "rows"] and np.isclose(np.average(enoe["informal"], weights=enoe["survey_weight"]), benchmark.loc["all", "observed_rate"])
+
+# The EOD's workers as the informality task scores them (harmonized), and those in the municipalities ENOE samples
+workers = build_frame(INFORMALITY, Context(), role="score").frame
+common = workers[workers["municipio"].isin(METRO)]
+
+# The chain sector_informality per worker, with the weight; P(sector | x) collapses the giro classes
+keys = ["folio_vivienda", "folio_habitante"]
+chain = pd.read_parquet(OUT / "sector_informality" / "scores.parquet").merge(workers[keys + ["ponderador", "sector"]], on=keys, validate="one_to_one")
+for sector in SECTORS:
+    chain[f"p_sector_{sector}"] = sum(chain[f"prob_giro_{giro}"] for giro, target in TRANSFORM.items() if target == sector)
+    chain[f"p_informal_{sector}"] = chain[f"p_sector_{sector}"] * chain[f"prob_informalidad_informal_given_sector_{sector}"]
+P = "prob_informalidad_informal"
+np.testing.assert_allclose(chain[[f"p_informal_{s}" for s in SECTORS]].sum(axis=1), chain[P], atol=1e-9)   # P(I) = Σ_s P(s) P(I | s)
+chain["hard_sector"] = np.asarray(SECTORS)[chain[[f"p_sector_{s}" for s in SECTORS]].to_numpy().argmax(axis=1)]
+chain["informal_duro"] = (chain["informalidad_final"] == "informal").astype(float)
+chain["informal_muestreo"] = (np.random.default_rng(42).random(len(chain)) < chain[P]).astype(float)   # one Bernoulli draw per worker
+by_upstream = pd.read_parquet(OUT / "sector_informality" / "evaluation" / "by_upstream.parquet").set_index("sector")
+np.testing.assert_allclose([np.average(chain[f"p_informal_{s}"], weights=chain["ponderador"]) * chain["ponderador"].sum() for s in SECTORS],
+                           by_upstream.loc[SECTORS, "expected_informal_population"], rtol=1e-9)
+
+
+def T(name, arm=None):
+    """A table of the informality retrain."""
+    return pd.read_parquet(OUT / "informality" / "evaluation" / (f"{name}__{arm}.parquet" if arm else f"{name}.parquet"))
+
+
+def informal_curve(name, arm):
+    curve = T(name, arm)
+    return curve[curve["class"] == "informal"]
+
+
+def informal_calibration(name, arm):
+    return T(name, arm).set_index("class").loc["informal"]
+
+
+def r2(curve):
+    """informal-jobs-model's R² of a reliability curve: the bins' observed rates against their mean predictions."""
+    observed, predicted = curve["observed_rate"].to_numpy(), curve["predicted_probability"].to_numpy()
+    return 1 - ((observed - predicted) ** 2).sum() / ((observed - observed.mean()) ** 2).sum()
+```
+
+This report redraws the figures of [informal-jobs-model](https://github.com/CentroFuturoCiudades/informal-jobs-model),
+whose models now live in `eodgdl.impute`, from eodgdl's own outputs: the retrains under `output/impute/<task>/` and the
+chains `sector_informality` and `nse`. Each figure keeps informal-jobs-model's name, content and Spanish labels, in
+the style of eodgdl's reports, and is written to `output/figures/` (or `$EODGDL_FIGURES_DIR`) as PDF and as a
+600-dpi PNG. The populations:
+
+- **ENOE**: the informality task's training frame restricted to the metro municipalities ENOE samples,
+  `{python} fmt(len(enoe))` employed persons of 8 pooled quarters (2022–2023), weighted by the quarterly factor over 8;
+  `{python} pct(benchmark.loc["all", "observed_rate"])` informal. Juanacatlán has no ENOE sample.
+- **OD**: the EOD's `{python} fmt(len(workers))` workers as the informality task scores them, weighted by `ponderador`;
+  the comparisons of @sec-diagnostics keep the `{python} fmt(len(common))` in municipalities ENOE samples.
+
+# ENOE and the EOD before the model {#sec-diagnostics}
+
+```{python}
+#| label: fig-distributions
+#| fig-cap: "Weighted distribution of each predictor among ENOE's and the EOD's workers of the common municipalities (`weighted_distribution_comparison`)."
+VARIABLES = ["genero", "ocupacion", "edad_cat", "escolaridad", "municipio", "estado_civil", "parentesco", "tamano_viv_cat"]
+fig, axes = plt.subplots(2, 4, figsize=(16, 7))
+for ax, variable in zip(axes.flat, VARIABLES):
+    enoe_shares, eod_shares = weighted_shares(enoe, variable, "survey_weight"), weighted_shares(common, variable, "ponderador")
+    levels = order(variable, enoe_shares, eod_shares)
+    table = pd.DataFrame({"ENOE": enoe_shares.reindex(levels, fill_value=0), "OD": eod_shares.reindex(levels, fill_value=0)}) * 100
+    table.index = [tick(variable, level) for level in levels]
+    bars(ax, table, SLOTS[:2], labels=False)
+    ax.set_title(TITLES[variable])
+    ax.tick_params(axis="x", labelsize=8)
+    rotate(ax, variable)
+for ax in axes[:, 0]:
+    ax.set_ylabel("Proporción ponderada [%]")
+fig.legend(*axes[0, 0].get_legend_handles_labels(), loc="lower center", ncol=2, bbox_to_anchor=(0.5, -0.01))
+fig.tight_layout(rect=(0, 0.04, 1, 1))
+save(fig, "weighted_distribution_comparison")
+```
+
+The EOD's `no esp.` bars are answers its questionnaire left blank; ENOE has none but a handful of ages. The harmonized
+levels are the model's: ages in the EOD's bands, households of seven or more together.
+
+```{python}
+#| label: fig-profiles
+#| fig-cap: "ENOE's weighted informality rate by level of each predictor and of the sector, metro workers (`informality_profiles`)."
+PROFILE = VARIABLES + ["sector"]
+fig, axes = plt.subplots(3, 3, figsize=(14, 10))
+for ax, variable in zip(axes.flat, PROFILE):
+    rates = ((enoe["informal"] * enoe["survey_weight"]).groupby(enoe[variable]).sum() / enoe["survey_weight"].groupby(enoe[variable]).sum()).sort_values() * 100
+    ax.bar([tick(variable, level) for level in rates.index], rates.to_numpy(), color=SLOTS[0], edgecolor=SURFACE, linewidth=1, width=0.7)
+    ax.set_title(TITLES[variable])
+    ax.grid(axis="x", visible=False)
+    ax.tick_params(axis="x", labelsize=8)
+    rotate(ax, variable)
+for ax in axes[:, 0]:
+    ax.set_ylabel("Informalidad [%]")
+fig.tight_layout()
+save(fig, "informality_profiles")
+```
+
+```{python}
+#| label: fig-sector-comparison
+#| fig-cap: "Economic sector of the workers whose sector is known: ENOE and the EOD's reported giro, in the model's four classes (`sector_comparison`)."
+known_enoe, known_eod = enoe[enoe["sector"] != MISSING], common[common["sector"] != MISSING]
+assert (known_eod["sector"] == chain.set_index(keys).loc[pd.MultiIndex.from_frame(known_eod[keys]), "giro_observado"].map(TRANSFORM).to_numpy()).all()
+table = pd.DataFrame({"ENOE": weighted_shares(known_enoe, "sector", "survey_weight"), "OD": weighted_shares(known_eod, "sector", "ponderador")}).reindex(SECTORS) * 100
+table.index = [SECTOR[s] for s in SECTORS]
+fig, ax = plt.subplots(figsize=(7.5, 4.5))
+bars(ax, table, SLOTS[:2])
+ax.set_ylabel("Proporción ponderada [%]")
+ax.set_title("Sector económico entre trabajadores con sector conocido")
+ax.legend(loc="upper left")
+fig.tight_layout()
+save(fig, "sector_comparison")
+```
+
+The EOD's sector is its giro answer mapped by the chain's transform (commerce; services and education → services and
+transport; industry → manufacturing and construction; government → government, agriculture or other); ENOE's is its
+SCIAN code harmonized to the same four classes.
+
+# The informality model {#sec-model}
+
+```{python}
+#| label: fig-calibration
+#| fig-cap: "Reliability of P(informal) on the held-out metro households, the selected model and its isotonic recalibration (maps learned from out-of-fold probabilities on the training households), per arm; marker area ∝ workers (`informality_calibration`)."
+ARM_ES = {"with_education": "Con escolaridad", "without_education": "Sin escolaridad"}
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharey=True)
+for ax, arm in zip(axes, ARM_ES):
+    ax.plot([0, 1], [0, 1], ls="--", lw=1, color=MUTED, label="Ideal")
+    for (name, label), color in zip((("reliability", "sin calibrar"), ("isotonic_reliability", "isotónico")), SLOTS):
+        curve = informal_curve(name, arm)
+        summary = informal_calibration(name.replace("reliability", "calibration"), arm)
+        ax.plot(curve["predicted_probability"], curve["observed_rate"], lw=2, color=color, label=f"{label}: ECE = {summary['ece']:.3f}, brecha = {summary['gap_pp']:+.1f} pp")
+        ax.scatter(curve["predicted_probability"], curve["observed_rate"], s=np.clip(curve["sample_workers"] / 4, 10, 200), color=color, edgecolor=SURFACE, linewidth=1.5, zorder=3)
+    ax.set_title(ARM_ES[arm])
+    ax.set_xlabel("Probabilidad predicha")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.legend(loc="upper left", fontsize=8)
+axes[0].set_ylabel("Tasa observada")
+fig.suptitle("Calibración en hogares metropolitanos de prueba: modelo seleccionado vs recalibración isotónica", fontsize=11)
+fig.tight_layout()
+save(fig, "informality_calibration")
+```
+
+```{python}
+#| label: isotonic-note
+iso = {arm: T("isotonic", arm).set_index("probabilities") for arm in ARM_ES}
+display(Markdown(
+    "The isotonic maps do not ship (`evaluation.isotonic.ship: false`): on the held-out households they change the "
+    "weighted log loss from " + " and ".join(f"{iso[arm].loc['selected', 'weighted_log_loss']:.4f} to {iso[arm].loc['isotonic', 'weighted_log_loss']:.4f} ({ARM_ES[arm].lower()})" for arm in ARM_ES) + "."
+))
+```
+
+# ENOE and the EOD after the model {#sec-comparison}
+
+```{python}
+#| label: comparison-tables
+#| include: false
+
+
+def formality(hard):
+    """Formal / informal shares [%]: ENOE, the EOD with ``hard`` (a 0/1 column of the chain frame) and its expectation."""
+    rates = {"ENOE": benchmark.loc["all", "observed_rate"], LABEL[hard]: np.average(chain[hard], weights=chain["ponderador"]),
+             "OD esperado": np.average(chain[P], weights=chain["ponderador"])}
+    return pd.DataFrame({name: [1 - rate, rate] for name, rate in rates.items()}, index=["Formal", "Informal"]) * 100
+
+
+def informal_by_sector(hard):
+    """Shares [%] of informal employment by sector: ENOE's known sectors, the EOD's ``hard`` informal workers by hard
+    sector, and the expected informal population Σ w P(s | x) P(I | x, s)."""
+    enoe_informal = enoe[(enoe["informal"] == 1) & (enoe["sector"] != MISSING)]
+    hard_rows = chain[chain[hard] == 1]
+    table = pd.DataFrame({"ENOE": weighted_shares(enoe_informal, "sector", "survey_weight"),
+                          LABEL[hard]: weighted_shares(hard_rows, "hard_sector", "ponderador"),
+                          "OD esperado": by_upstream["expected_informal_population"] / by_upstream["expected_informal_population"].sum()}).reindex(SECTORS).fillna(0) * 100
+    table.index = [SECTOR[s] for s in SECTORS]
+    return table
+
+
+LABEL = {"informal_muestreo": "OD muestreo", "informal_duro": "OD duro"}
+
+
+def comparison_figure(hard, curves, name):
+    """informal-jobs-model's ENOE vs EOD figure: formality, the calibration curves (``curves``: (table name, arm or
+    None, label, style)), informal employment by sector."""
+    fig = plt.figure(figsize=(11, 8.5))
+    grid = GridSpec(2, 2, figure=fig, height_ratios=[1, 0.95])
+    ax1, ax2, ax3 = fig.add_subplot(grid[0, 0]), fig.add_subplot(grid[0, 1]), fig.add_subplot(grid[1, :])
+    bars(ax1, formality(hard), SLOTS[:3])
+    ax1.set_title("Distribución general de formalidad")
+    ax1.set_ylabel("Proporción ponderada [%]")
+    ax2.plot([0, 1], [0, 1], ls="--", lw=1, color=MUTED, label="Ideal")
+    for table, arm, label, style in curves:           # neutral inks: the bar colours stand for ENOE and the EOD
+        curve = informal_curve(table, arm)
+        ax2.plot(curve["predicted_probability"], curve["observed_rate"], label=label(curve, arm), **style)
+    ax2.set_xlim(0, 1); ax2.set_ylim(0, 1)
+    ax2.set_title("Calibración de probabilidad")
+    ax2.set_xlabel("Probabilidad predicha"); ax2.set_ylabel("Tasa observada")
+    ax2.legend(loc="upper left", fontsize=8)
+    bars(ax3, informal_by_sector(hard), SLOTS[:3])
+    ax3.set_title("Distribución del empleo informal por sector")
+    ax3.set_ylabel("Proporción ponderada [%]")
+    fig.legend(*ax1.get_legend_handles_labels(), loc="lower center", ncol=3, bbox_to_anchor=(0.5, 0.0))
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    save(fig, name)
+
+
+def with_gap(curve, arm):
+    summary = informal_calibration("calibration", arm)
+    return f"{ARM_ES[arm]}: ECE = {summary['ece']:.3f}, brecha = {summary['gap_pp']:+.1f} pp"
+
+
+STYLE = {"with_education": {"color": INK, "lw": 1.5, "marker": "o", "ms": 5},
+         "without_education": {"color": MUTED, "lw": 1.5, "ls": "-.", "marker": "s", "ms": 5}}
+```
+
+```{python}
+#| label: fig-comparison
+#| fig-cap: "ENOE against the EOD after the model: formal and informal shares, the calibration of each arm on the held-out metro households, and informal employment by sector. *OD muestreo* is one draw per worker from P(informal) (seed 42), each worker at its most probable sector; *OD esperado* sums the probabilities over the sectors (`informality_model_enoe_od_comparison`)."
+comparison_figure("informal_muestreo", [("reliability", arm, with_gap, STYLE[arm]) for arm in ARM_ES], "informality_model_enoe_od_comparison")
+```
+
+```{python}
+#| label: comparison-text
+f = formality("informal_muestreo").loc["Informal"]
+display(Markdown(
+    f"The expected informality rate of the EOD's workers is {f['OD esperado']:.1f}% against ENOE's {f['ENOE']:.1f}% in "
+    f"the metro municipalities; one draw per worker gives {f['OD muestreo']:.1f}%. The most probable class alone, "
+    f"*OD duro* below, gives {formality('informal_duro').loc['Informal', 'OD duro']:.1f}%: it shrinks toward the "
+    "majority class, which is why informal-jobs-model's paper figure shows the draw."
+))
+```
+
+The presentation version shows *OD duro*, the most probable class, and adds the arms combined as scoring combines them:
+each held-out row predicted by the arm that would score it (*Híbrido*, `reliability__hybrid`).
+
+```{python}
+#| label: fig-comparison-presentation
+#| fig-cap: "The presentation version: *OD duro* (the most probable class at the most probable sector) instead of the draw, and the calibration curves with their R² and the arms combined (`informality_model_enoe_od_comparison_presentation`)."
+hybrid_rows = T("test_metrics__hybrid").iloc[0]
+with_r2 = lambda label: (lambda curve, arm: f"{label}: R² = {r2(curve):.3f}")
+comparison_figure("informal_duro", [("reliability", "hybrid", with_r2("Híbrido"), {"color": "#c3c2b7", "lw": 5, "solid_capstyle": "round"})]
+                  + [("reliability", arm, with_r2(ARM_ES[arm]), STYLE[arm]) for arm in ARM_ES], "informality_model_enoe_od_comparison_presentation")
+display(Markdown(
+    f"Of the {fmt(hybrid_rows['rows_with_education'] + hybrid_rows['rows_without_education'])} held-out ENOE workers, "
+    f"{fmt(hybrid_rows['rows_without_education'])} lack education, so the combined curve follows the arm with education: "
+    "ENOE almost always records it, unlike the EOD."
+))
+```
+
+```{python}
+#| label: fig-sector-model
+#| fig-cap: "Economic sector of the EOD's workers: as reported (*Original*, with the workers who did not report it) and as the model gives it, Σ w P(sector | x) (*Modelo*) (`sector_original_vs_modelo`)."
+original = weighted_shares(workers, "sector", "ponderador").reindex(SECTORS + [MISSING])
+model = pd.Series({s: np.average(chain[f"p_sector_{s}"], weights=chain["ponderador"]) for s in SECTORS}).reindex(SECTORS + [MISSING]).fillna(0)
+np.testing.assert_allclose(model[SECTORS], by_upstream.loc[SECTORS, "weighted_population"] / by_upstream["weighted_population"].sum())
+table = pd.DataFrame({"Original": original, "Modelo": model}) * 100
+table.index = [SECTOR[s] for s in SECTORS] + ["No\nespecificado"]
+fig, ax = plt.subplots(figsize=(8, 4.5))
+bars(ax, table, SLOTS[:2], fontsize=8)
+ax.set_ylabel("Proporción ponderada [%]")
+ax.set_title("Distribución por sector económico")
+ax.legend(loc="upper left")
+fig.tight_layout()
+save(fig, "sector_original_vs_modelo")
+```
+
+# The head of household's education {#sec-education}
+
+```{python}
+#| label: fig-education
+#| fig-cap: "The head of household's education: its weighted distribution among the heads who report it (*OD observada*) and over every dwelling with the model's probabilities where it is unknown (*OD modelo*), and the AMAI education points, reported and expected (`education_imputation_model_results`)."
+EDUCATION = load_task("educacion_jefe")
+EDU_ES = {"no_estudio": "No\nestudió", "primaria": "Primaria", "secundaria": "Secundaria", "carrera_tecnica": "Carrera\ntécnica",
+          "preparatoria": "Preparatoria", "licenciatura": "Licenciatura", "posgrado": "Posgrado"}
+heads = pd.read_parquet(OUT / "educacion_jefe" / "scores.parquet")
+observed = heads[heads["educacion_jefe_observado"].notna()]
+shares = pd.read_parquet(OUT / "educacion_jefe" / "evaluation" / "shares.parquet").set_index("class")
+table = pd.DataFrame({"OD observada": weighted_shares(observed, "educacion_jefe_observado", "ponderador"),
+                      "OD modelo": pd.Series({c: np.average(heads[f"prob_educacion_jefe_{c}"], weights=heads["ponderador"]) for c in EDUCATION.class_slugs})}).reindex(EDUCATION.class_slugs)
+np.testing.assert_allclose(table.to_numpy(), shares.loc[EDUCATION.class_slugs, ["observed_known", "final"]].to_numpy(), atol=1e-12)
+table = table * 100
+table.index = [EDU_ES[c] for c in EDUCATION.class_slugs]
+fig = plt.figure(figsize=(9, 7))
+grid = GridSpec(2, 2, figure=fig)
+top, left, right = fig.add_subplot(grid[0, :]), fig.add_subplot(grid[1, 0]), fig.add_subplot(grid[1, 1], sharey=None)
+bars(top, table, SLOTS[:2], fontsize=7)
+top.set_title("Distribución del nivel educativo")
+top.set_ylabel("Proporción ponderada [%]")
+top.legend(loc="upper left")
+edges = np.linspace(0, 85, 18)
+points = observed["educacion_jefe_observado"].map(EDUCATION.scores).astype(float)
+for ax, values, weights, color, title, xlabel in (
+        (left, points, observed["ponderador"], SLOTS[0], "Distribución observada\ndel puntaje de escolaridad", "Puntaje AMAI"),
+        (right, heads["educacion_jefe_puntaje_esperado"], heads["ponderador"], SLOTS[1], "Distribución esperada\ndel puntaje de escolaridad", "Puntaje AMAI esperado")):
+    ax.hist(values, bins=edges, weights=weights / weights.sum() * 100, color=color, edgecolor=SURFACE, linewidth=1)
+    ax.set_title(title); ax.set_xlabel(xlabel); ax.set_xlim(0, 85)
+    ax.grid(axis="x", visible=False)
+left.set_ylabel("Proporción ponderada [%]")
+fig.tight_layout()
+save(fig, "education_imputation_model_results")
+```
+
+The heads are the EOD's dwellings, one head per dwelling (the reported head, else the oldest member), weighted by the
+dwelling weight; informal-jobs-model counted every reported head with the person weight, which moves the shares by
+about one point. The expected points of a head with a reported education are its class's points.
+
+# The socioeconomic level {#sec-nse}
+
+```{python}
+#| label: nse-data
+#| include: false
+NSE_LEVELS = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
+NSE_ES = {"e": "E", "d": "D", "d_mas": "D+", "c_menos": "C−", "c": "C", "c_mas": "C+", "ab": "A/B"}
+AMAI_CODE = {"E": "e", "D": "d", "D+": "d_mas", "C-": "c_menos", "C": "c", "C+": "c_mas", "A/B": "ab"}
+# The NSE levels are ordered: one hue, steps 100 → 700 of the dataviz skill's blue ramp (monotone lightness, adjacent
+# ΔL ≥ 0.06). The lightest step recedes toward the surface, as a choropleth's low end may; the legend and the tables
+# below carry the levels too. AGEBs without information take a neutral.
+RAMP = dict(zip(NSE_LEVELS, ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]))
+NO_DATA, NO_DATA_EDGE = "#f0efec", "#d6d5cf"
+
+config = next(step for step in load_chain("nse").steps if isinstance(step, DeriveStep) and step.name == "nse_ageb_calibrado").config
+amai_table = amai.read_amai_ageb(config["file"], config["state"], tuple(config["municipalities"]), tuple(config["file_columns"]))
+amai_level = amai_table.set_index("clave_ageb")["nivel_predominante"].map(AMAI_CODE)
+
+from eodgdl.taz import load_zm_muns
+from mxcensus.data import POOCH
+
+agebs = gpd.read_parquet(POOCH.fetch("mg_a_14.parquet"))
+agebs = agebs[agebs["CVE_MUN"].astype(int).isin(load_zm_muns())].set_index("CVEGEO")     # Marco Geoestadístico 2020, urban AGEBs
+
+dwellings = build_frame(load_task("educacion_jefe"), Context(), role="score").frame[["folio_vivienda", "ageb", "ponderador"]]
+nse = pd.read_parquet(OUT / "nse" / "scores.parquet").merge(dwellings, on="folio_vivienda", validate="one_to_one")
+urban = nse[nse["ageb"].astype(str).str.len() == 13]
+
+
+def predominant(prefix):
+    """Per AGEB, the level with the largest weighted probability mass Σ w P(level) among its dwellings."""
+    mass = urban[[f"{prefix}_{level}" for level in NSE_LEVELS]].mul(urban["ponderador"], axis=0).groupby(urban["ageb"].astype(str)).sum()
+    return pd.Series(np.asarray(NSE_LEVELS)[mass.to_numpy().argmax(axis=1)], index=mass.index)
+
+
+MAPS = {"AMAI por AGEB": amai_level, "OD antes de calibración": predominant("prob_nse"), "OD después de calibración": predominant("prob_nse_calibrado")}
+assert set(MAPS["OD antes de calibración"].index) <= set(agebs.index), "an EOD AGEB without a polygon"
+reference = pd.read_parquet(OUT / "nse" / "evaluation" / "reference.parquet").pivot(index="distribution", columns="level", values="share")
+reference = reference.rename(index={"AMAI by AGEB": "AMAI por AGEB", "EOD before calibration": "OD antes de calibración",
+                                    "EOD after calibration": "OD después de calibración"}).loc[list(MAPS), NSE_LEVELS] * 100
+NSE_SUMMARY = json.loads((OUT / "nse" / "evaluation" / "summary.json").read_text(encoding="utf-8"))
+
+
+def luminance(hex_color):
+    channels = np.array([int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)])
+    channels = np.where(channels <= 0.03928, channels / 12.92, ((channels + 0.055) / 1.055) ** 2.4)
+    return float(channels @ [0.2126, 0.7152, 0.0722])
+
+
+def text_on(fill):
+    """The ink a label on ``fill`` reads best in: the darker text or white, by WCAG contrast."""
+    contrast = lambda a, b: (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    return INK if contrast(luminance(INK), luminance(fill)) >= contrast(1.0, luminance(fill)) else SURFACE
+```
+
+```{python}
+#| label: fig-nse
+#| fig-cap: "The predominant socioeconomic level by AGEB: AMAI's, and the EOD's before and after the chain's calibration (the level with the largest weighted probability mass of the AGEB's dwellings), on the Marco Geoestadístico's urban AGEBs; below, the weighted distributions over the AGEBs both sources cover (`nse_spatial_calibration_results`)."
+fig = plt.figure(figsize=(15, 8.2))
+maps = GridSpec(1, 3, figure=fig, left=0.01, right=0.99, top=0.95, bottom=0.34, wspace=0.02)
+for column, (title, level) in enumerate(MAPS.items()):
+    ax = fig.add_subplot(maps[0, column])
+    shaded = agebs.assign(level=level.reindex(agebs.index))
+    shaded[shaded["level"].isna()].plot(ax=ax, color=NO_DATA, edgecolor=NO_DATA_EDGE, linewidth=0.1)
+    drawn = shaded[shaded["level"].notna()]
+    drawn.plot(ax=ax, color=drawn["level"].map(RAMP), edgecolor=SURFACE, linewidth=0.1)
+    ax.set_title(title, fontsize=12)
+    ax.set_axis_off()
+legend = fig.add_axes([0.05, 0.285, 0.9, 0.04]); legend.set_axis_off()
+legend.legend(handles=[Patch(facecolor=RAMP[level], label=NSE_ES[level]) for level in NSE_LEVELS] + [Patch(facecolor=NO_DATA, edgecolor=NO_DATA_EDGE, label="Sin información")],
+              title="Nivel socioeconómico", loc="center", ncol=8, fontsize=10, title_fontsize=10)
+ax = fig.add_axes([0.13, 0.05, 0.84, 0.19])
+left = np.zeros(len(reference))
+for level in NSE_LEVELS:
+    values = reference[level].to_numpy()
+    ax.barh(np.arange(len(reference)), values, left=left, color=RAMP[level], edgecolor=SURFACE, linewidth=1.5, height=0.7)
+    for row, value in enumerate(values):
+        if value >= 4:
+            ax.text(left[row] + value / 2, row, f"{value:.1f}%", ha="center", va="center", fontsize=9, color=text_on(RAMP[level]))
+    left += values
+ax.set_yticks(np.arange(len(reference)), [name.replace(" de ", "\nde ") for name in reference.index])
+ax.invert_yaxis()
+ax.set_xlim(0, 100)
+ax.set_xlabel("Proporción ponderada de viviendas [%]")
+ax.set_title("Distribución del nivel socioeconómico", fontsize=12)
+ax.grid(False)
+ax.spines["left"].set_visible(False)
+save(fig, "nse_spatial_calibration_results")
+```
+
+```{python}
+#| label: tbl-nse
+#| tbl-cap: "The maps and the bars as numbers: AGEBs by predominant level on each map, and the weighted distributions (%) over the AGEBs both sources cover."
+counts = pd.DataFrame({title: level.reindex(agebs.index).value_counts().reindex(NSE_LEVELS, fill_value=0) for title, level in MAPS.items()}).T
+counts.columns = [NSE_ES[level] for level in NSE_LEVELS]
+counts["Sin información"] = [int(level.reindex(agebs.index).isna().sum()) for level in MAPS.values()]
+shares_table = reference.round(2)
+shares_table.columns = [NSE_ES[level] for level in NSE_LEVELS]
+display(Markdown(f"**AGEBs by predominant level** (of the {fmt(len(agebs))} urban AGEBs of the nine municipalities)"))
+display(counts)
+display(Markdown(f"**Weighted distribution (%)** over the {fmt(NSE_SUMMARY['reference_agebs'])} AGEBs with AMAI's distribution and EOD dwellings ({fmt(NSE_SUMMARY['reference_dwellings'])} dwellings)"))
+display(shares_table)
+```
+
+The EOD's levels are the chain `nse`'s: 50 multiple imputations of the head's education (where unknown), the bathrooms
+and the bedrooms, each summed with the dwelling's own answers into AMAI points and cut into a level; *before
+calibration* is that level's distribution over the draws, *after* is the rank calibration against AMAI's distribution
+by AGEB within each draw (`reports/imputation_nse.qmd`). informal-jobs-model mapped one hard level per dwelling, cut
+from the expected points (which compresses the tails), on AMAI's own AGEB shapefile.
+
+# Differences from informal-jobs-model's figures {#sec-differences}
+
+- **Every number comes from eodgdl's outputs**: the retrains and the chains, not informal-jobs-model's notebooks. The
+  models are the same (parity in `docs/handoff_impute_engine.md`), except where eodgdl changed them deliberately
+  (`reports/imputation_nse.qmd` #sec-differences): the head's education by dwelling, the workers counted rather than
+  imputed, the NSE levels carried through draws.
+- **Hard values are derived where a figure needs one**: *OD muestreo* is a seeded draw from P(informal), *OD duro*
+  the most probable class, and a worker's hard sector its most probable one; the chain itself keeps probabilities.
+- **The calibration curves' isotonic and combined versions** are the retrain's tables `isotonic_reliability__<arm>`
+  and `reliability__hybrid` (informal-jobs-model computed them in its notebook).
+- **The maps** use the Marco Geoestadístico 2020's urban AGEBs of the nine municipalities (informal-jobs-model's
+  shapefile also drew Acatlán de Juárez), and an AGEB's EOD level is the one with the largest weighted probability mass.
+- **Style**: eodgdl's reports' (the dataviz skill's palette, no LaTeX or Montserrat); the labels stay in Spanish. In
+  the ENOE vs EOD figures the calibration curves are drawn in neutral inks, since the bar colours there stand for ENOE
+  and the EOD.
