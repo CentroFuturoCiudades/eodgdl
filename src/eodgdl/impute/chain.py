@@ -189,7 +189,7 @@ def _aggregate(values, weights, rows, n_rows, levels=None):
     out = np.zeros((n_rows, len(levels)))
     index = {level: i for i, level in enumerate(levels)}
     codes = values.astype(str).map(index)
-    assert codes.notna().all(), f"derived values outside the declared levels: {sorted(set(values.astype(str)) - set(levels))}"
+    assert codes.notna().all(), "derived values outside the declared levels (_check_levels stops the chain before)"
     np.add.at(out, (rows, codes.to_numpy(int)), weights)
     return pd.DataFrame(out, columns=levels)
 
@@ -313,11 +313,25 @@ def _advance(completions, spec, conditional, propagation, rng):
     return completions
 
 
-def _derive(step, index, chain, completions, base, derive_functions):
+def _check_levels(chain, step, column, completions, base, keys, levels):
+    """Raise where a categorical derived value is missing or outside the step's declared ``levels`` (any value but a
+    missing one when it declares none), naming the step, the column and the rows (e.g. no NSE level for a dwelling
+    whose points miss an observed answer)."""
+    values = completions[column].astype("string")
+    outside = (values.isna() | (~values.isin([str(level) for level in levels]) if levels else values.isna())).to_numpy(bool)
+    if outside.any():
+        rows = np.unique(completions["row"].to_numpy()[outside])
+        found = ", ".join(sorted({"missing" if pd.isna(value) else str(value) for value in values[outside]}))
+        examples = "; ".join(" ".join(f"{key}={value}" for key, value in record.items()) for record in base[keys].iloc[rows[:5]].to_dict("records"))
+        raise ValueError(f"{chain.name}: the derive step {step.name!r} gives {column} values outside its levels ({found}) in {int(outside.sum())} "
+                         f"completions ({len(rows)} {'row' if len(rows) == 1 else 'rows'}, e.g. {examples})")
+
+
+def _derive(step, index, chain, completions, base, keys, derive_functions):
     """Run a derive step (``index``: its position in the chain) on every completion (its columns added to
     ``completions`` in place) and aggregate each new column per row: ``{prob_<column>_<level> or <column>_media:
-    values}``. The step's ``seed`` is a stream of its own, spawned from the chain's seed by its position, apart from
-    the draws'."""
+    values}``; a categorical value outside its levels stops the chain (:func:`_check_levels`). The step's ``seed`` is a
+    stream of its own, spawned from the chain's seed by its position, apart from the draws'."""
     from .derive import get_derive
 
     function = (derive_functions or {}).get(step.name) or get_derive(step.name)
@@ -326,7 +340,10 @@ def _derive(step, index, chain, completions, base, derive_functions):
     derived = {}
     for column in values.columns:
         completions[column] = values[column].to_numpy()
-        aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), len(base), step.config.get("levels", {}).get(column))
+        levels = step.config.get("levels", {}).get(column)
+        if not pd.api.types.is_numeric_dtype(completions[column]):
+            _check_levels(chain, step, column, completions, base, keys, levels)
+        aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), len(base), levels)
         if isinstance(aggregated, pd.DataFrame):
             for level in aggregated.columns:
                 derived[f"prob_{column}_{level}"] = aggregated[level].to_numpy()
@@ -369,7 +386,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     outputs, derived = {}, {}
     for index, step in enumerate(chain.steps):
         if isinstance(step, DeriveStep):
-            derived.update(_derive(step, index, chain, completions, base, derive_functions))
+            derived.update(_derive(step, index, chain, completions, base, keys, derive_functions))
             continue
 
         spec, frame, bundle = specs[step.task], frames[step.task], bundles[step.task]

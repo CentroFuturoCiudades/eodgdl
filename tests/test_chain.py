@@ -159,6 +159,21 @@ def test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios(chain_s
         assert frame.loc[imputed & taken.map(lambda values: set(values) == {"a"}), "t2a_marginalized_features"].eq("").all()
 
 
+def test_a_derived_value_outside_its_levels_names_the_rows(chain_source):
+    context, bundles = chain_source
+
+    def level(completions, base, config):                                    # no level for the row with k = 3
+        values = pd.Series(np.where(completions["t1"].eq("a"), "alto", "bajo"), dtype="string")
+        return pd.DataFrame({"nivel": values.mask(base["k"].to_numpy()[completions["row"].to_numpy()] == 3)})
+
+    steps = ["t1", {"derive": "level", "levels": {"nivel": ["alto", "bajo"]}}]
+    with pytest.raises(ValueError, match=r"test: the derive step 'level' gives nivel values outside its levels \(missing\) in 4 completions \(1 row, e\.g\. k=3\)"):
+        run_chain(chain(steps, propagation="draws", draws=4), context=context, bundles=bundles, specs=SPECS, derive_functions={"level": level})
+    undeclared = lambda completions, base, config: pd.DataFrame({"nivel": pd.Series("medio", index=completions.index, dtype="string")})
+    with pytest.raises(ValueError, match=r"outside its levels \(medio\)"):
+        run_chain(chain(steps, propagation="draws", draws=2), context=context, bundles=bundles, specs=SPECS, derive_functions={"level": undeclared})
+
+
 def test_derive_steps_draw_from_streams_of_their_own(chain_source):
     context, bundles = chain_source
     uniform = lambda column: lambda completions, base, config: pd.DataFrame({column: np.random.default_rng(config["seed"]).random(len(completions))})
