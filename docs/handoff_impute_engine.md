@@ -7,6 +7,19 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **`v0.6.0`** (session 9, 2026-09-30): giro's destination features are the staff-weighted shares of the 20 SCIAN
+  sectors plus the staff share in large establishments (DENUE 2022-11, each establishment weighted by the midpoint of its
+  `per_ocu` band, 500 for the top one), replacing the five shares of establishments per giro; `denue_scian2` became
+  `denue_sectors` (code -> share column). Measured with `eodgdl impute compare` (three seeds, the bundle's winners; the
+  numbers in `giro.yaml`): sector shares by staff -0.0080 / -0.0064 CV log loss (with / without education), by
+  three-digit subsector -0.0098 / -0.0093 (not taken, the user's choice: 69 more features for about 0.002, small classes'
+  F1 lower); the three missing-value alternatives tried (the booster's NaN branch, the dwelling's AGEB for workers
+  without a work trip, zero establishments) did not help and were removed. Retrained: the same selections, the combined
+  held-out loss 0.8896 -> 0.8783 (with education 0.8894 -> 0.8776, without 0.9061 -> 0.8958), imputed shares within
+  0.5 pp, the informality rate 35.908% -> 35.932%; parity: only giro and `sector_informality` moved. The giro bundle
+  reinstalled, `tests/data/giro_parity.parquet` regenerated. The run is `output/impute_v060/` (`rerun.sh ... giro`, 50
+  bootstrap bundles); `output/impute/` still holds v0.5.1's until the user swaps the roots (`output/impute_v060` ->
+  `output/impute`), and the reports read `output/impute/` (or `EODGDL_IMPUTE_*`).
 - **Paused** (session 8, 2026-09-29): none of the open questions below is needed for the delivery (none moves an
   imputed value, a bundle or a model input), and the user paused the work; reopen the variance question if a
   deliverable quotes the reports' intervals. Session 8 added the bootstrap caveat to `docs/impute.md`'s limits and

@@ -170,8 +170,10 @@ display(Markdown(
     "have. Education counts as unobserved when it is missing or answered " + ", ".join(f"'{v}'" for v in SPEC.missing_values["escolaridad"]) + ".\n\n" + "\n".join(lines)
     + "\n\nBesides person and dwelling attributes, the arms use the work trip: destination type, mode, weekend work "
     "travel and household vehicles. They also use the destination's ámbito and its DENUE establishment mix, taken from "
-    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder), and the month of "
-    "the interview (@sec-month).\n\n"
+    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder): the number of "
+    "establishments and the shares of their staff in large establishments and in each of the 20 SCIAN sectors, the "
+    "staff read as the midpoint of DENUE's size band (since v0.6.0; before, the shares of establishments per giro), and "
+    "the month of the interview (@sec-month).\n\n"
     f"A worker who made no work trip on the survey day ({pct(no_trip_share)} of the reported workers, weighted) "
     "has no destination or mode: both take the level `sin_viaje`, a state the model learns from the reported workers who "
     "made none, not a missing value averaged over destinations as if they had commuted (until 2026-09-29; over every "

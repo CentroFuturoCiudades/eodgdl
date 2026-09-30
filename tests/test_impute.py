@@ -266,7 +266,8 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     features.build_frame(spec, context)
     features.build_frame(other, context)
     assert calls == {"source": 2, "builder": 5}
-    assert features.get_builder("giro.destination").reads_classes and not features.get_builder("harmonize.enigh").reads_classes
+    # no shipped builder reads the classes since giro's destination shares went by SCIAN sector (v0.6.0)
+    assert not features.get_builder("giro.destination").reads_classes and not features.get_builder("harmonize.enigh").reads_classes
 
 
 def test_spec_validation():

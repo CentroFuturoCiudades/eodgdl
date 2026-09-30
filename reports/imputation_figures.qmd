@@ -283,8 +283,9 @@ save(fig, "sector_comparison")
 ```
 
 The EOD's sector is its giro answer mapped by the chain's transform (commerce; services and education → services and
-transport; industry → manufacturing and construction; government → government, agriculture or other); ENOE's is its
-SCIAN code harmonized to the same four classes.
+transport; industry → manufacturing and construction; government → government); ENOE's is its SCIAN code harmonized to
+the same four classes (agriculture, mining and utilities with manufacturing and construction, so the EOD's government
+meets ENOE's government alone).
 
 # The informality model {#sec-model}
 
