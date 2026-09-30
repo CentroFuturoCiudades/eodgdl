@@ -854,3 +854,37 @@ def test_eod_sources_on_the_survey(stages):
     # a category the survey does not hold (a label split at its comma, as eod.yaml's flow list did) fails loudly
     with pytest.raises(ValueError, match=r"not levels of trabajo_semana_pasada: \['Tenía trabajo', 'pero no trabajó'\]"):
         dwellings(context, {**config["eod.dwellings"], "employed_categories": ["Tiempo completo", "Tenía trabajo", "pero no trabajó"]})
+
+
+def test_household_education_is_the_best_other_member():
+    # a worker row reads everyone else in the dwelling aged 15+ whose education is known; a dwelling row, all but its head
+    from types import SimpleNamespace
+
+    from eodgdl.impute.sources import eod as eod_source
+
+    hab = pd.DataFrame({
+        "folio_vivienda": [1, 1, 1, 1, 2, 2, 3],
+        "folio_habitante": [1, 2, 3, 4, 1, 2, 1],
+        "edad": [45, 43, 20, 10, 30, 60, 50],
+        "escolaridad": ["Primaria", "Licenciatura o profesional", "No sabe", "Maestría o doctorado", "Secundaria", None, "Preparatoria o bachillerato"],
+    }).set_index(["folio_vivienda", "folio_habitante"])
+    context = SimpleNamespace(eod=lambda: SimpleNamespace(hab=hab))
+    config = eod_source.load_config()["eod.household_education"]
+    workers = pd.DataFrame({"folio_vivienda": [1, 1, 2, 3], "folio_habitante": [1, 2, 2, 1]})
+    out = eod_source.household_education(workers, context, config, None)["hogar_escolaridad_max"]
+    # 1/1: the spouse's licenciatura (the child's "No sabe" and the 10-year-old's answer do not count); 1/2: primaria;
+    # 2/2: the other's secundaria; 3/1: nobody else
+    assert out.iloc[:3].tolist() == [16.0, 6.0, 9.0] and np.isnan(out.iloc[3])
+    dwellings = pd.DataFrame({"folio_vivienda": [1, 2], "jefe_folio_habitante": ["2", "1"]})
+    assert eod_source.household_education(dwellings, context, config, None)["hogar_escolaridad_max"].isna().tolist() == [False, True]
+
+
+def test_census_ratios_sum_a_rural_ageb_over_its_published_localities():
+    from eodgdl.impute.sources.census import unit_ratio
+
+    urban = pd.DataFrame({"PDER_IMSS": [50, 1], "POBTOT": [100, 0]}, index=["1403900010010", "1403900010025"], dtype="Float64")
+    rural = pd.DataFrame({"PDER_IMSS": [10, pd.NA, 5], "POBTOT": [40, 3, 10]}, index=["140390100", "140390101", "140390102"], dtype="Float64")
+    rural_ageb = pd.Series(["140390001", "140390001", "140390001"], index=rural.index)
+    ratio = unit_ratio(urban, rural, rural_ageb, ["PDER_IMSS"], "POBTOT")
+    # an urban AGEB's own counts, no population none; the rural AGEB sums the localities whose counts are published
+    assert ratio["1403900010010"] == 0.5 and pd.isna(ratio["1403900010025"]) and ratio["140390001"] == 15 / 50

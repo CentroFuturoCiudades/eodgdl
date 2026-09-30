@@ -107,6 +107,22 @@ def work_trip(frame, context, config, spec):
     return columns
 
 
+@register_builder("eod.household_education", config=load_config()["eod.household_education"], versions=_survey_versions)
+def household_education(frame, context, config, spec):
+    """``hogar_escolaridad_max``: the highest education (``years``: the level's years of schooling) among the other
+    members of the row's dwelling aged ``min_age`` or more whose education is known; NA without one. The row's own
+    person is ``folio_habitante`` (a person row) or ``jefe_folio_habitante`` (a dwelling row: the head)."""
+    hab = context.eod().hab.reset_index()
+    years = hab["escolaridad"].astype("string").map({str(level): float(value) for level, value in config["years"].items()})
+    members = hab.loc[hab["edad"].ge(config["min_age"]) & years.notna(), ["folio_vivienda", "folio_habitante"]].assign(years=years)
+    person = "folio_habitante" if "folio_habitante" in frame.columns else "jefe_folio_habitante"
+    rows = frame[["folio_vivienda", person]].reset_index(drop=True).rename(columns={person: "self"}).reset_index(names="row")
+    pairs = rows.merge(members, on="folio_vivienda")
+    others = pairs[pairs["folio_habitante"].astype("string") != pairs["self"].astype("string")]
+    best = others.groupby("row")["years"].max()
+    return pd.DataFrame({"hogar_escolaridad_max": best.reindex(rows["row"]).to_numpy(dtype=float)})
+
+
 # the workers' variables on the common levels (they replace the survey's own ocupacion, escolaridad, municipio,
 # estado_civil, parentesco in the task frame), and the dwellings' NSE variables
 register_harmonization("harmonize.eod", "eod")
@@ -126,8 +142,8 @@ def dwelling_levels(column):
 @register_source("eod.dwellings", config=load_config()["eod.dwellings"], versions=_survey_versions, schema_levels=dwelling_levels)
 def dwellings(context, config):
     """One row per dwelling (``viv``) with its head's columns (``head_columns``, ``weekend_*``; ``jefe_fuente`` says
-    whether the head was reported or is the oldest member) and ``trabajadores_14_n``, the members aged 14+ who
-    worked last week; categoricals as plain strings."""
+    whether the head was reported or is the oldest member; ``jefe_folio_habitante`` is the head's person number) and
+    ``trabajadores_14_n``, the members aged 14+ who worked last week; categoricals as plain strings."""
     tables = context.eod()
     hab = tables.hab.reset_index()
     frame = tables.viv.reset_index()
@@ -137,7 +153,7 @@ def dwellings(context, config):
     heads = pd.concat([reported.assign(jefe_fuente="observado"), oldest.assign(jefe_fuente="mayor_edad")])
     head_columns = dict(config["head_columns"])
     head_columns.update({column: column for column in hab.columns if column.startswith(tuple(config["head_prefixes"]))})
-    heads = heads[["folio_vivienda", "jefe_fuente", *head_columns]].rename(columns=head_columns)
+    heads = heads[["folio_vivienda", "jefe_fuente", "folio_habitante", *head_columns]].rename(columns={**head_columns, "folio_habitante": "jefe_folio_habitante"})
     frame = frame.merge(heads, on="folio_vivienda", how="left", validate="one_to_one")
     working = hab["edad"].ge(config["worker_min_age"]) & _employed(hab, config["employed_categories"])
     workers = working.groupby(hab["folio_vivienda"]).sum().rename("trabajadores_14_n")

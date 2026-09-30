@@ -1,0 +1,37 @@
+# The builder census.home (eodgdl.impute.sources.census): who lives in a row's dwelling AGEB, from the 2020 census
+# (mxcensus.load_census), DENUE and AMAI's NSE by AGEB. Every column is a ratio of the unit's census counts; a rural AGEB
+# (9-character key) sums the counts of its localities (eodgdl.reweight.zoning.assign_units). INEGI suppresses small
+# units' counts: those ratios are missing (the pipelines impute the median). Several follow INEGI's auxiliary variables
+# for its municipal labour indicators (ILMM 2023: affiliation to IMSS or ISSSTE, establishments per adult, the sex ratio
+# and the share aged 60+ among adults, all per population aged 15+).
+
+census.home:
+  state: 14
+  ageb: ageb                  # the frame's column holding the dwelling's unit (13-character urban or 9-character rural AGEB)
+  # column -> numerator counts (summed) over a denominator count; `cap` bounds a share: in ~170 small AGEBs the published
+  # dwelling counts (cars, even refrigerators) exceed the dwellings, INEGI's disclosure protection
+  ratios:
+    ageb_afil_imss: {numerator: [PDER_IMSS], denominator: POBTOT}
+    ageb_afil_issste: {numerator: [PDER_ISTE], denominator: POBTOT}              # ISSSTE (federal public employees)
+    ageb_afil_issste_estatal: {numerator: [PDER_ISTEE], denominator: POBTOT}     # the state's (suppressed in 20% of AGEBs)
+    ageb_sin_afiliacion: {numerator: [PSINDER], denominator: POBTOT}
+    ageb_posbasica: {numerator: [P18YM_PB], denominator: P_18YMAS}               # education past secundaria
+    ageb_sin_escolaridad: {numerator: [P15YM_SE], denominator: P_15YMAS}
+    ageb_ocupada: {numerator: [POCUPADA], denominator: P_12YMAS}
+    ageb_pea_mujeres: {numerator: [PEA_F], denominator: P_12YMAS_F}
+    ageb_hombres_mujeres: {numerator: [P_15YMAS_M], denominator: P_15YMAS_F}
+    ageb_60ymas: {numerator: [P_60YMAS], denominator: P_15YMAS}
+    ageb_autos: {numerator: [VPH_AUTOM], denominator: VIVPAR_HAB, cap: 1}
+    ageb_internet: {numerator: [VPH_INTER], denominator: VIVPAR_HAB, cap: 1}
+    ageb_computadora: {numerator: [VPH_PC], denominator: VIVPAR_HAB, cap: 1}
+  log_population: ageb_poblacion_log            # log(1 + POBTOT)
+  # DENUE establishments in the unit per resident aged 15+ (ILMM's Est_Denue)
+  establishments: {column: ageb_establecimientos_por_adulto, denominator: P_15YMAS, release: "202211"}
+  # AMAI's NSE by AGEB (urban AGEBs): read with the nse chain's calibration step's configuration (file, columns, levels)
+  amai:
+    chain: nse
+    step: nse_ageb_calibrado
+    index: ageb_amai_indice   # the mean level, E = 0 ... A/B = 6
+    shares:
+      ageb_amai_alto: [ab, c_mas]
+      ageb_amai_bajo: [d, e]

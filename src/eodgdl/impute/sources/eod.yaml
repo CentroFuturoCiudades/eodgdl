@@ -37,3 +37,20 @@ eod.dwellings:
     - Tiempo completo
     - Medio tiempo
     - Tenía trabajo, pero no trabajó
+
+eod.household_education:
+  # The highest education among the other members of the dwelling (for a worker: everyone else; for a dwelling: all but
+  # the head). An unknown answer (missing, "No sabe") does not count.
+  min_age: 15
+  years:                      # years of schooling of each `escolaridad` answer (INEGI's usual equivalence)
+    Ninguno: 0
+    Kinder: 0
+    Preescolar: 0
+    Primaria: 6
+    Secundaria: 9
+    Carrera técnica con secundaria terminada: 11
+    Normal básica: 12
+    Preparatoria o bachillerato: 12
+    Carrera técnica con preparatoria terminada: 14
+    Licenciatura o profesional: 16
+    Maestría o doctorado: 19

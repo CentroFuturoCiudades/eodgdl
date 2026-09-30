@@ -7,6 +7,24 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **`v0.7.0`** (session 9, 2026-09-30): the head's education (`educacion_jefe`) reads the other household members'
+  highest education (`eod.household_education`) in an arm of its own (`con_hogar`, requires it; `sin_hogar` is the model
+  as it was): CV -0.0465 against the single arm; one model reading it with the median where missing lost 0.030 on the
+  heads whose household skipped it (53% of the imputed, weighted). Retrained: held-out 1.420 -> 1.372 (each dwelling by
+  its arm), the NSE shares within 0.1 pp; parity: only `educacion_jefe` and `nse` moved. The census builder
+  `census.home` (census ratios, DENUE establishments per adult, AMAI's NSE by AGEB for the dwelling's AGEB) and the
+  household builder were measured on giro and educacion_jefe (numbers in the task YAMLs): nothing for giro, census and
+  AMAI -0.003 for education and -0.0008 beyond the household's, not taken. `eod.dwellings` gained
+  `jefe_folio_habitante`. The run is `output/impute_v070/` (`rerun.sh ... educacion_jefe`); the user swaps it into
+  `output/impute/`.
+- **TASHA gaps** (session 9): after imputation 10 required columns (+ `Formality`) still hold defaults for some rows:
+  `IncomeClass` 58% unknown, `DwellingType`/`License`/`TransitPass`/`FreeParking` not surveyed, `EmploymentStatus`
+  4,370 adults unanswered (the socio-economic block skipped; `StudentStatus` 3,954 of them), `Occupation` 9,484 workers
+  (giro's imputation not read by `tasha.build`), `EmploymentZone` 3,286 workers without a work trip, `SchoolZone`
+  2,965 students (mostly the Easter weeks, 3-16 April). The plan proposed to the user (pending decisions: one seeded
+  draw vs arg-max, the meaning of a worker's "0" zone, License/TransitPass sources): wire giro and informality by a
+  draw; an employment/student task first in the chain; income from ENIGH in the NSE chain; work and school location
+  models; dwelling type fused from the census sample questionnaire or ENIGH; parking from the trips' answers.
 - **`v0.6.0`** (session 9, 2026-09-30): giro's destination features are the staff-weighted shares of the 20 SCIAN
   sectors plus the staff share in large establishments (DENUE 2022-11, each establishment weighted by the midpoint of its
   `per_ocu` band, 500 for the top one), replacing the five shares of establishments per giro; `denue_scian2` became

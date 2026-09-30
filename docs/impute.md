@@ -31,7 +31,7 @@ the task.
 
 A **source** (`sources/`) returns a task's rows as a plain frame, with its keys, weight and CV group declared in the
 source's YAML (`eod.workers`, `eod.dwellings`, `enoe.workers`, `enigh.households`). **Feature builders** add columns
-(`eod.work_trip`, `giro.destination`), and **harmonizations** are builders that map a source's raw codes to the common
+(`eod.work_trip`, `giro.destination`, `eod.household_education`: the other members' highest education; `census.home`: the census, DENUE and AMAI profile of the dwelling's AGEB, INEGI's ILMM auxiliary variables among it, measured and used by no task yet), and **harmonizations** are builders that map a source's raw codes to the common
 levels of `harmonization/common.yaml`, failing on any code the map does not cover. Frames are cached as parquet under
 the eodgdl cache directory with keys over every input that could change them (the code, the configuration, the data
 files' sha256).
@@ -146,6 +146,8 @@ render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imput
 | The interview month is a giro feature (April's capture change) | `imputation_giro.qmd` #sec-month |
 | giro's two arms: education goes unanswered with the giro (the capture); the arm without it beats averaging the arm with it | `tasks/giro.yaml` arms; `imputation_giro.qmd` #sec-why-arms |
 | giro's destination mix: staff-weighted SCIAN sector shares (DENUE), not establishment shares per giro | `tasks/giro.yaml` builders |
+| The head's education reads the household's (another member's answer) in an arm of its own; no census or AMAI feature | `tasks/educacion_jefe.yaml` arms; `imputation_nse.qmd` #sec-education |
+| giro reads nothing about where the worker lives (census, AMAI, household education measured, not taken) | `tasks/giro.yaml` arms |
 | ENIGH training population: cities of 100,000+ | `imputation_nse.qmd`, the populations table |
 | NSE by 50 draws, calibration ties at random per draw | `imputation_nse.qmd` #sec-level, #sec-calibration |
 

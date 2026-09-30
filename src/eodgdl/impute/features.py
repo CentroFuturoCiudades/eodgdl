@@ -21,7 +21,7 @@ import pandas as pd
 
 from .spec import stable_hash
 
-BUILDER_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe", "eodgdl.impute.sources.enigh", "eodgdl.giro.features")
+BUILDER_MODULES = ("eodgdl.impute.sources.eod", "eodgdl.impute.sources.enoe", "eodgdl.impute.sources.enigh", "eodgdl.impute.sources.census", "eodgdl.giro.features")
 _BUILDERS = {}
 
 

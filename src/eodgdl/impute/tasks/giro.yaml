@@ -88,6 +88,13 @@ arms:
   # - Each arm trains on every worker with a reported giro, the with-education arm too (its 673 without education
   #   carry the missing label, a level it never scores): training it on the workers with education only changed its
   #   CV log loss on the rows it scores by +0.0002 (se 0.0007, worse on 8 of 15 folds over three seeds).
+  # - Tried and not taken (2026-09-30, paired CV, three seeds, the bundle's winners; with / without education): where
+  #   the worker lives adds nothing. The dwelling AGEB's census profile (builder census.home: affiliation to IMSS, ISSSTE
+  #   and the state's, education, employment, women's participation, sex ratio, 60+, cars, internet, computers,
+  #   population, DENUE establishments per adult) +0.0023 / +0.0026; INEGI's ILMM subset of it +0.0017 / +0.0004;
+  #   AMAI's NSE by AGEB -0.0000 / -0.0002; both +0.0029 / +0.0016. The highest education among the other household
+  #   members (eod.household_education) -0.0006 / -0.0006 (se 0.0006 / 0.0008), within noise. Imputing education
+  #   first and reading it here is averaging over P(education | x), which the arm without education beats (above).
   with_education:
     features: [person, destination, mobility, interview]
     requires: [escolaridad]
