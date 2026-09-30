@@ -407,12 +407,18 @@ for arm in ARMS:
                      "mean ECE": round(r["mean_ece"], 4), "share-weighted ECE": round(r["share_weighted_ece"], 4)})
 iso = pd.DataFrame(rows)
 trades = iso.pivot(index="arm", columns="probabilities")
-assert (trades[("log loss", "isotonic")] >= trades[("log loss", "selected")]).all() and (trades[("mean ECE", "isotonic")] < trades[("mean ECE", "selected")]).all()
+assert (trades[("log loss", "isotonic")] >= trades[("log loss", "selected")]).all()
+calibrates = trades[("mean ECE", "isotonic")] < trades[("mean ECE", "selected")]
+if calibrates.all():
+    trade = "It trades log loss for calibration error."
+else:
+    gains = " and ".join(f"the {arm.lower()} arm" for arm in calibrates.index[calibrates])
+    trade = (f"It never lowers the log loss; it lowers the mean calibration error only in {gains}." if gains else
+             "It lowers neither the log loss nor the mean calibration error.")
 display(Markdown(
     "One isotonic map per class is learned from out-of-fold probabilities on the training households and applied to the "
     "held-out ones. It is always evaluated and shipped only when the task says so "
-    f"(`evaluation.isotonic.ship: {str(SPEC.evaluation.get('isotonic', {}).get('ship', False)).lower()}`). The table "
-    "shows it trades log loss for calibration error."
+    f"(`evaluation.isotonic.ship: {str(SPEC.evaluation.get('isotonic', {}).get('ship', False)).lower()}`). " + trade
 ))
 display(iso)
 ```

@@ -17,9 +17,11 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   without a work trip, zero establishments) did not help and were removed. Retrained: the same selections, the combined
   held-out loss 0.8896 -> 0.8783 (with education 0.8894 -> 0.8776, without 0.9061 -> 0.8958), imputed shares within
   0.5 pp, the informality rate 35.908% -> 35.932%; parity: only giro and `sector_informality` moved. The giro bundle
-  reinstalled, `tests/data/giro_parity.parquet` regenerated. The run is `output/impute_v060/` (`rerun.sh ... giro`, 50
-  bootstrap bundles); `output/impute/` still holds v0.5.1's until the user swaps the roots (`output/impute_v060` ->
-  `output/impute`), and the reports read `output/impute/` (or `EODGDL_IMPUTE_*`).
+  reinstalled, `tests/data/giro_parity.parquet` regenerated. `output/impute/` is its run (`rerun.sh ... giro`, 50 bootstrap
+  bundles, the other tasks copied from v0.5.1's root), v0.5.1's kept as `output/impute_v051/`; the giro, informality
+  and figures reports re-rendered from it. With the new features isotonic recalibration no longer lowers the
+  with-education arm's mean ECE (0.0187 -> 0.0191; the share-weighted ECE still falls), so the giro report's sentence
+  now follows the table.
 - **Paused** (session 8, 2026-09-29): none of the open questions below is needed for the delivery (none moves an
   imputed value, a bundle or a model input), and the user paused the work; reopen the variance question if a
   deliverable quotes the reports' intervals. Session 8 added the bootstrap caveat to `docs/impute.md`'s limits and
