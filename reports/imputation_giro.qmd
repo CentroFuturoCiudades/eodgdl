@@ -182,6 +182,54 @@ display(Markdown(
 ))
 ```
 
+## Why two arms {#sec-why-arms}
+
+```{python}
+#| label: why-arms
+educ_missing = SPEC.is_missing(WORKERS, "escolaridad")
+unknown_giro = WORKERS["giro_desconocido"].astype(bool)
+wts = WORKERS["ponderador"]
+share = lambda rows: float(np.average(educ_missing[rows], weights=wts[rows]))
+by_month_missing = {m: share(WORKERS["mes_entrevista"].astype(str).eq(m)) for m in ("1", "2", "3", "4")}
+# heads, spouses and partners are one person per dwelling: they answered for themselves where the dwelling's main
+# informant has their relationship
+_tables = _Context().eod()
+_roles = WORKERS[["folio_vivienda", "folio_habitante"]].merge(_tables.hab["parentesco"].astype(str).rename("role").reset_index(), how="left") \
+    .merge(_tables.viv["informante_principal"].astype(str).rename("informant").reset_index(), how="left")
+single = _roles["role"].isin(["Jefe del hogar", "Cónyuge", "Compañero"]).to_numpy()
+own = _roles["role"].eq(_roles["informant"]).to_numpy()
+self_share, proxy_share = share(single & own), share(single & ~own)
+usage = T("model_usage").set_index("giro_model_used")["weighted_share"]
+heldout_loss = {arm: SUMMARY["arms"][arm]["test_metrics"]["weighted_log_loss"] for arm in ARMS}
+assert share(unknown_giro) > 10 * share(~unknown_giro)
+assert by_month_missing["1"] < 0.05 < 0.15 < by_month_missing["4"] and abs(self_share - proxy_share) < 0.05
+assert heldout_loss["with_education"] < heldout_loss["without_education"]
+display(Markdown(
+    "Education goes unanswered with the giro: "
+    f"{pct(share(~unknown_giro))} of the workers who report a giro lack it (weighted), against {pct(share(unknown_giro))} of "
+    f"those who do not, so the arm without education scores {pct(usage['without_education'], 0)} of the imputed weight. "
+    f"It follows the interview month ({pct(by_month_missing['1'], 0)} of January's workers, {pct(by_month_missing['4'], 0)} of "
+    "April's), not the respondent: heads and spouses answering for themselves skip it "
+    f"({pct(self_share, 0)}) about as often as when another member answers for them ({pct(proxy_share, 0)}). It is the "
+    "capture, like the giro's own non-response (@sec-month).\n\n"
+    f"- **Education is worth using where it is observed.** On the held-out fold the arm with it scores a log loss of "
+    f"{heldout_loss['with_education']:.4f}, the arm without it {heldout_loss['without_education']:.4f} (@sec-evaluation).\n"
+    "- **Where it is not, a model without it predicts better than the model with it averaged over education.** With "
+    "education hidden on the same held-out fold (measured 2026-09-30 on v0.6.0's retrain), the with-education model "
+    "averaged by P(education | x) from an auxiliary model scored 0.9010, and averaged by the training shares 0.9104, "
+    "against the arm without education's 0.8958.\n"
+    "- **What it assumes.** A worker whose giro and education both went unanswered has the giro of the workers who "
+    "reported them, given the features, the month among them. The only check is the 673 workers who report a giro but not "
+    "their education: out of fold, the arm without education predicted their shares within 1.6 points (commerce 41.2% "
+    "against 42.8% observed), with a log loss of 0.696 against 0.893 for the rest. The held-out fold holds few such "
+    "workers, so the second arm's accuracy where it is used rests on that assumption.\n"
+    "- **Its training rows.** Each arm trains on every worker with a reported giro. For the arm with education, those "
+    "without it carry the missing label, a level it never scores; training it on the workers with education alone moved "
+    "its CV log loss on the rows it scores by +0.0002 (standard error 0.0007), so it stays as it is.\n\n"
+    "The measurements are in `src/eodgdl/impute/tasks/giro.yaml` (`arms`)."
+))
+```
+
 ## The interview month {#sec-month}
 
 ```{python}

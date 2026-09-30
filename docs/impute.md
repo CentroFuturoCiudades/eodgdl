@@ -144,6 +144,8 @@ render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imput
 | AMAI points assume a completed level (the EOD records the level) | `imputation_nse.qmd` #sec-completion |
 | ENOE's agriculture grouped with manufacturing; the EOD's government meets government alone | `harmonization/enoe.yaml`; `imputation_informality.qmd` |
 | The interview month is a giro feature (April's capture change) | `imputation_giro.qmd` #sec-month |
+| giro's two arms: education goes unanswered with the giro (the capture); the arm without it beats averaging the arm with it | `tasks/giro.yaml` arms; `imputation_giro.qmd` #sec-why-arms |
+| giro's destination mix: staff-weighted SCIAN sector shares (DENUE), not establishment shares per giro | `tasks/giro.yaml` builders |
 | ENIGH training population: cities of 100,000+ | `imputation_nse.qmd`, the populations table |
 | NSE by 50 draws, calibration ties at random per draw | `imputation_nse.qmd` #sec-level, #sec-calibration |
 

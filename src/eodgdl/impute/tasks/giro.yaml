@@ -70,6 +70,24 @@ levels:
 arms:
   # In order: a row to impute is scored by the first arm whose `requires` it has observed. `features` lists groups
   # or features; `exclude` removes some.
+  #
+  # Why two (measured 2026-09-30, v0.6.0's features; reports/imputation_giro.qmd #sec-arms recomputes the counts):
+  # education goes unanswered with the giro. 2.5% of the workers who report a giro lack it (weighted) against 46.5% of
+  # those who do not, so the arm without education scores 47% of the imputed weight. It follows the interview month
+  # (1% of January's workers, 26% of April's), not the respondent (heads and spouses answering for themselves skip it
+  # as often as when another member answers for them): the capture, like the giro's own non-response.
+  # - Education is worth using where it is observed: on the retrain's held-out fold the arm with it scores 0.8776, the
+  #   arm without it 0.8958.
+  # - Where it is not, a model without it predicts better than the model with it averaged over education: with
+  #   education hidden on the held-out fold, averaged by P(education | x) from an auxiliary model 0.9010, by the
+  #   training shares 0.9104, against 0.8958.
+  # - Assumed: a worker whose giro and education both went unanswered has the giro of the workers who reported them,
+  #   given the features (the month among them). The 673 workers who report a giro but not their education are the only
+  #   check: out of fold, the arm without education predicts their shares within 1.6 pp (commerce 41.2% against 42.8%),
+  #   log loss 0.696 against 0.893 for the rest.
+  # - Each arm trains on every worker with a reported giro, the with-education arm too (its 673 without education
+  #   carry the missing label, a level it never scores): training it on the workers with education only changed its
+  #   CV log loss on the rows it scores by +0.0002 (se 0.0007, worse on 8 of 15 folds over three seeds).
   with_education:
     features: [person, destination, mobility, interview]
     requires: [escolaridad]
