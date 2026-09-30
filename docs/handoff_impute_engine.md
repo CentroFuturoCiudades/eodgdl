@@ -15,8 +15,8 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   `census.home` (census ratios, DENUE establishments per adult, AMAI's NSE by AGEB for the dwelling's AGEB) and the
   household builder were measured on giro and educacion_jefe (numbers in the task YAMLs): nothing for giro, census and
   AMAI -0.003 for education and -0.0008 beyond the household's, not taken. `eod.dwellings` gained
-  `jefe_folio_habitante`. The run is `output/impute_v070/` (`rerun.sh ... educacion_jefe`); the user swaps it into
-  `output/impute/`.
+  `jefe_folio_habitante`. `output/impute/` is its run (`rerun.sh ... educacion_jefe`), v0.6.0's kept as
+  `output/impute_v060/`; the NSE and figures reports re-rendered from it.
 - **TASHA gaps** (session 9): after imputation 10 required columns (+ `Formality`) still hold defaults for some rows:
   `IncomeClass` 58% unknown, `DwellingType`/`License`/`TransitPass`/`FreeParking` not surveyed, `EmploymentStatus`
   4,370 adults unanswered (the socio-economic block skipped; `StudentStatus` 3,954 of them), `Occupation` 9,484 workers
