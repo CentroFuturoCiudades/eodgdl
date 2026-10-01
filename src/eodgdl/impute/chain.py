@@ -363,16 +363,25 @@ def _check_levels(chain, step, column, completions, base, keys, levels):
                          f"completions ({len(rows)} {'row' if len(rows) == 1 else 'rows'}, e.g. {examples})")
 
 
-def _derive(step, index, chain, completions, base, keys, derive_functions):
-    """Run a derive step (``index``: its position in the chain) on every completion (its columns added to
-    ``completions`` in place) and aggregate each new column per row: ``{prob_<column>_<level> or <column>_media:
-    values}``; a categorical value outside its levels stops the chain (:func:`_check_levels`). The step's ``seed`` is a
-    stream of its own, spawned from the chain's seed by its position, apart from the draws'."""
+def derive_config(step, index, chain, weight):
+    """The configuration a derive step (``index``: its position in the chain) runs with: its own, the chain's
+    propagation and its ``seed``, a stream of its own spawned from the chain's seed by its position, apart from the
+    draws'. ``weight: source`` reads ``weight``, the scoring source's weight column, so a derive step weighs as the
+    source does (:attr:`eodgdl.impute.sources.Source.weight`)."""
+    config = {**step.config, "propagation": chain.propagation, "seed": np.random.SeedSequence(chain.seed, spawn_key=(index,))}
+    if config.get("weight") == "source":
+        config["weight"] = weight
+    return config
+
+
+def _derive(step, index, chain, completions, base, keys, derive_functions, weight):
+    """Run a derive step (``index``: its position in the chain; :func:`derive_config`) on every completion (its columns
+    added to ``completions`` in place) and aggregate each new column per row: ``{prob_<column>_<level> or
+    <column>_media: values}``; a categorical value outside its levels stops the chain (:func:`_check_levels`)."""
     from .derive import get_derive
 
     function = (derive_functions or {}).get(step.name) or get_derive(step.name)
-    seed = np.random.SeedSequence(chain.seed, spawn_key=(index,))
-    values = function(completions, base, {**step.config, "propagation": chain.propagation, "seed": seed})
+    values = function(completions, base, derive_config(step, index, chain, weight))
     derived = {}
     for column in values.columns:
         _check(column not in completions.columns, f"{chain.name}: the derive step {step.name!r} gives {column}, which the completions already hold "
@@ -504,7 +513,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
         provenance["given_columns"] = given_columns
     for index, step in enumerate(chain.steps):
         if isinstance(step, DeriveStep):
-            derived.update(_derive(step, index, chain, completions, base, keys, derive_functions))
+            derived.update(_derive(step, index, chain, completions, base, keys, derive_functions, get_source(source).weight))
             continue
 
         spec, frame, bundle = specs[step.task], frames[step.task], bundles[step.task]
