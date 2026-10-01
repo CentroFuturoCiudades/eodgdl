@@ -70,11 +70,13 @@ def test_a_weight_file_covers_every_row_once(tmp_path, monkeypatch, weighted_sou
         with_weight(rows, {**source.config, "weight": {"file": "pesos.csv"}})
 
 
-def test_the_design_weight_keeps_the_source_s_versions():
-    # `weight: ponderador` adds nothing: the feature cache and every bundle's training data version stay as they were
+def test_the_design_weight_keeps_the_source_s_versions(run_config):
+    # under the design weight every source reads a column of its rows, which adds nothing to its versions: every bundle's
+    # training data version stays as it was
+    run_config(weight="design")
     for name in ("eod.workers", "eod.persons", "eod.labour", "eod.dwellings", "enoe.workers", "enigh.households"):
         source = get_source(name)
-        assert isinstance(source.config["weight"], str) and sources.weight_versions(source.config) == {}
+        assert isinstance(sources.source_weight(source.config), str) and sources.weight_versions(source.config) == {}
 
 
 def test_load_completed_refuses_a_run_drawn_under_another_weight(tmp_path, monkeypatch, weighted_source):
@@ -94,8 +96,8 @@ def test_load_completed_refuses_a_run_drawn_under_another_weight(tmp_path, monke
         tasha.load_completed(tmp_path / "root")
 
 
-def test_a_survey_source_reads_its_weight_from_a_file(stages, tmp_path, monkeypatch):
-    # eod.persons with a household weight file: every person takes their dwelling's weight under the file's column
+def test_a_survey_source_reads_its_weight_from_a_file(stages, tmp_path, monkeypatch, run_config):
+    # eod.persons under the run weight tmg: every person takes their dwelling's household weight from the file
     from eodgdl.impute.features import build_frame
     from eodgdl.impute.spec import load_task
 
@@ -104,11 +106,12 @@ def test_a_survey_source_reads_its_weight_from_a_file(stages, tmp_path, monkeypa
     viv = stages.revised.viv
     for path in DATA_DIR.iterdir():                     # the survey files, read locally (their versions are hashed)
         (tmp_path / path.name).symlink_to(path)
-    pd.DataFrame({"folio_vivienda": viv.index, "peso": viv["ponderador"].astype(float) * 2}).to_csv(tmp_path / "pesos.csv", index=False)
+    weight = tmp_path / "EOD_peso_hogar_TMG.csv"
+    pd.DataFrame({"folio_vivienda": viv.index, "peso": viv["ponderador"].astype(float) * 2}).to_csv(weight, index=False)
     monkeypatch.setenv("EODGDL_DATA_DIR", str(tmp_path))
-    monkeypatch.setitem(get_source("eod.persons").config, "weight", WEIGHT)
+    run_config(weight="tmg")
     built = build_frame(load_task("empleo"), Context(tables=stages.revised))
-    assert built.weight == "peso" and built.versions["weight"] == sources.file_digest(str(tmp_path / "pesos.csv"))
+    assert built.weight == "peso" and built.versions["weight"] == sources.file_digest(str(weight))
     expected = viv["ponderador"].astype(float).reindex(built.frame["folio_vivienda"]).to_numpy() * 2
     assert (built.frame["peso"].to_numpy() == expected).all()
 

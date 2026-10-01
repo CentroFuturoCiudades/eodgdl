@@ -229,8 +229,14 @@ each (`scripts/impute/parity.py`, the manifests):
    `eod_loader` version key, so `output/impute/tasha` was re-scored at db5d3eb (completions identical to the v0.9.0
    run's, now with its manifest). A content key for the loader (the hash of `load_eod()`'s tables, not of its source)
    would spare such re-runs: a candidate for step 3.
-2. **One `config.yaml`**: the weight choice (today a hand edit of `impute/sources/eod.yaml` that `run.sh` checks), seeds,
-   draws, bootstrap B, read by the code; it makes the hand-switch guards hold by construction.
+2. **One `config.yaml` — done (uncommitted).** `config/config.yaml` + `src/eodgdl/config.py`: `weight` (design | tmg),
+   `bootstrap`, `draws` (the diagnostic chains' multiple imputations), `draw` (the TASHA build's default), checked key by
+   key. The four EOD sources' weight is `run_weights` (`eod.yaml`: `{design: ponderador, tmg: {file: ...}}`), resolved by
+   `sources.source_weight`, so the TMG weight enters by `weight: tmg` instead of editing four sources; `run.sh` and
+   `rerun.sh` read the parameters (`python -m eodgdl.config NAME`), `tasha build --draw` defaults to it. Seeds, grids
+   and the pipeline's draws stay in their YAMLs (narrowed from the plan: they define models and feed the spec hashes).
+   The guards (`weight_conflicts`, `check_weight`) stay until step 4: the config makes a mixed run unlikely, not
+   impossible (an old root under a new weight).
 3. **The Snakefile** (`workflow/`, rules at stage level: load → EOD parquet, zones, reweight inputs, retrain per task,
    the pipeline `tasha`, the TASHA build per draw, reports) replacing `scripts/pipeline/run.sh` and
    `scripts/impute/rerun.sh`; the TMG weight is a rule input under `data/`, so the graph stops there by itself. Declare

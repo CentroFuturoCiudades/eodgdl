@@ -128,6 +128,10 @@ Override the defaults with environment variables:
 | `EODGDL_MODELS_DIR` | read the model bundles from this directory (default: `models/`) |
 | `EODGDL_CACHE_DIR`  | where eodgdl caches its feature frames (default: `.cache/`)   |
 
+What a run of the processing chooses is `config/config.yaml`: the weight the survey's imputation tasks train on
+(`design`, the survey's own, or `tmg`, TMG.SurveyReweight's household weight once it is in `data/`), the bootstrap refits
+per task, the diagnostic chains' draws and the completed dataset the TASHA build reads (`docs/pipeline.md`).
+
 ### Data provenance
 
 Source: **Encuesta Origen-Destino 2023**, IMEPLAN (Instituto Metropolitano de Planeación del

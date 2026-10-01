@@ -2,7 +2,9 @@
 
 What runs, in which order, on which weight, and what each stage records so the chain can be checked from end to end.
 The driver is `scripts/pipeline/run.sh ROOT`; `eodgdl pipeline verify ROOT` checks a finished (or partial) run. The plan
-and its decisions: `docs/handoff_reproducible_pipeline.md`.
+and its decisions: `docs/handoff_reproducible_pipeline.md`. What a run chooses is `config/config.yaml` (`eodgdl.config`):
+the weight the EOD sources read (`design` or `tmg`), the bootstrap refits per task, the diagnostic chains' draws and the
+completed dataset the TASHA build reads; what defines a model (seeds, grids, the pipeline's draws) stays in its YAML.
 
 ## Stages
 
@@ -69,9 +71,9 @@ uv run eodgdl reweight import-weight UPDATED.csv --year 2023 --reweight output/r
 
 writes `data/EOD_peso_hogar_TMG.csv` (`folio_vivienda`, `peso`, in `HouseholdRecords.csv`'s order) and
 `data/EOD_peso_hogar_TMG.yaml` (the sha256 of the file received and written, stage 2's outputs digest and commit, the
-year, the tool's commit and the configuration's and report's sha256 or null). The EOD sources then read it by switching
-their `weight:` in `src/eodgdl/impute/sources/eod.yaml` to `{file: EOD_peso_hogar_TMG.csv, column: peso}`; the NSE
-calibration follows (`weight: source`). The tool parses numbers with the machine's culture: it must run under a
+year, the tool's commit and the configuration's and report's sha256 or null). The EOD sources then read it once `config/config.yaml`
+says `weight: tmg` (each source's `run_weights` in `src/eodgdl/impute/sources/eod.yaml` names the file under `tmg`); the
+NSE calibration follows (`weight: source`). The tool parses numbers with the machine's culture: it must run under a
 `.`-decimal locale.
 
 ## Commands
@@ -79,6 +81,7 @@ calibration follows (`weight: source`). The tool parses numbers with the machine
 ```bash
 scripts/pipeline/run.sh output                        # stages 0-2; stops at 3 until the weight is in data/
 uv run eodgdl reweight import-weight UPDATED.csv --year 2023 --data data   # stage 3's result into the data
+# then set `weight: tmg` in config/config.yaml (and commit it with the run's outputs)
 scripts/pipeline/run.sh output                        # again: checks the weight, then stages 4-6 (~75 min)
 uv run eodgdl pipeline verify output --data data      # every broken link, or none
 ```

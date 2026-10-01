@@ -30,7 +30,7 @@ def main() -> None:
     build_p.add_argument("--impute", default="output/impute",
                          help="Root of the eodgdl.impute outputs whose completed datasets fill the imputed columns "
                               "(default: output/impute; the pipeline's <root>/tasha/<level>/)")
-    build_p.add_argument("--draw", type=int, default=0, help="Which completed dataset (default 0)")
+    build_p.add_argument("--draw", type=int, default=None, help="Which completed dataset (default: config/config.yaml's draw)")
     build_p.add_argument("--no-impute", action="store_true",
                          help="Leave the imputed columns at their mapping's default (IncomeClass 7, no P, Formality O)")
 
@@ -207,6 +207,10 @@ def _tasha(args) -> int:
 
         if args.data:   # the survey load_completed checks the completed datasets against: the one built from
             os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
+        if args.draw is None:
+            from eodgdl import config
+
+            args.draw = config.load()["draw"]
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
         completed = None if args.no_impute else tasha.load_completed(args.impute, args.draw)

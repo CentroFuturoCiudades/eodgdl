@@ -2,19 +2,21 @@
 # Rerun every eodgdl.impute output into ROOT, the layout of output/impute/, for scripts/impute/parity.py: retrain the
 # tasks (each to ROOT/<task>/), score giro (ROOT/giro_scores.parquet, as `eodgdl impute score giro` writes
 # output/impute/giro_scores.parquet) and the diagnostic chains, evaluate them, and score the pipeline tasha (what the
-# TASHA build reads, ROOT/tasha/), all with --retrained ROOT (a task without a retrain in ROOT scores from its installed
-# bundle, which a change to its spec leaves unusable until reinstalled). Each retrain also writes BOOTSTRAP bootstrap
-# bundles (ROOT/<task>/bootstrap/), each chain its completed datasets with a bootstrap model per draw
-# (ROOT/<chain>/multiple_imputation/), which the evaluations' Rubin's rules read too, and the pipeline its 50.
+# TASHA build reads, ROOT/tasha/), all with --retrained ROOT (a task without a retrain in ROOT scores from its committed
+# bundle, which a change to its spec leaves unusable until a retrain replaces it). Each retrain also writes config's
+# bootstrap bundles (ROOT/<task>/bootstrap/), each chain config's draws completed datasets with a bootstrap model per
+# draw (ROOT/<chain>/multiple_imputation/), which the evaluations' Rubin's rules read too, and the pipeline its own.
 #
 #   scripts/impute/rerun.sh ROOT [TASK ...]      (from the repository root; ~30 minutes for the seven tasks)
 #
 # TASK ...: the tasks to retrain (default: all seven). A task not retrained into ROOT scores from its installed bundle
 # in the chains (--retrained falls back to it); `evaluate sector_informality` needs giro's retrain in ROOT. With
-# BOOTSTRAP > 0 the chains' multiple imputations and the pipeline read every one of their tasks' bootstrap bundles from
-# ROOT (an installed bundle has none): retrain a subset only into a ROOT that holds the other tasks' retrains.
-# Environment: DATA (default data), JOBS (the CV workers of a retrain, default -1: every core), BOOTSTRAP (the bootstrap
-# bundles per task, default 50; 0 writes none, and the chains' multiple imputations and the pipeline are then skipped).
+# bootstrap > 0 the chains' multiple imputations and the pipeline read every one of their tasks' bootstrap bundles from
+# ROOT (a committed bundle has none): retrain a subset only into a ROOT that holds the other tasks' retrains.
+# The run parameters are config/config.yaml's (eodgdl.config): its weight (the EOD tasks train on it), bootstrap and
+# draws. Environment: DATA (default data), JOBS (the CV workers of a retrain, default -1: every core), BOOTSTRAP to
+# override config's bootstrap for one run (0 writes none, and the chains' multiple imputations and the pipeline are
+# then skipped).
 #
 # Every step must succeed (set -o pipefail: a retrain piped through grep would otherwise exit 0), and every retrain
 # must leave its bundle.
@@ -28,7 +30,8 @@ if [ ${#tasks[@]} -eq 0 ]; then
 fi
 data=${DATA:-data}
 jobs=${JOBS:--1}
-bootstrap=${BOOTSTRAP:-50}
+bootstrap=${BOOTSTRAP:-$(uv run python -m eodgdl.config bootstrap)}
+draws=$(uv run python -m eodgdl.config draws)
 mkdir -p "$root"
 
 for task in "${tasks[@]}"; do
@@ -48,7 +51,7 @@ for chain in sector_informality nse; do
     uv run eodgdl impute score "$chain" --data "$data" --retrained "$root" --out "$root/$chain"
     if [ "$bootstrap" -gt 0 ]; then
         echo "== multiple imputations of $chain"
-        uv run eodgdl impute score "$chain" --data "$data" --retrained "$root" --draws 50 --bootstrap --out "$root/$chain/multiple_imputation"
+        uv run eodgdl impute score "$chain" --data "$data" --retrained "$root" --draws "$draws" --bootstrap --out "$root/$chain/multiple_imputation"
     fi
     echo "== evaluate $chain"
     uv run eodgdl impute evaluate "$chain" --data "$data" --retrained "$root"

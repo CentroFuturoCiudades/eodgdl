@@ -18,3 +18,21 @@ def stages():
     if not HAS_DATA:
         pytest.skip("in-repo data/ not present")
     return load_stages(DATA_DIR)
+
+
+@pytest.fixture
+def run_config(tmp_path, monkeypatch):
+    """``run_config(**changes)`` points eodgdl.config at a copy of config/config.yaml with ``changes`` (a run of the
+    processing with other parameters), for the rest of the test; returns the parameters written."""
+    import yaml
+
+    from eodgdl import config
+
+    def write(**changes):
+        values = {**config.load(), **changes}
+        path = tmp_path / "run_config.yaml"
+        path.write_text(yaml.safe_dump(values), encoding="utf-8")
+        monkeypatch.setenv("EODGDL_CONFIG", str(path))
+        return values
+
+    return write
