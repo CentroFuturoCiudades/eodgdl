@@ -5,6 +5,10 @@ what the engine does and why), then this file (state, decisions, pending), then 
 (local). The history of sessions 1–6 and the original plan (§1–§11 of the earlier handoff: the migration from
 informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e9d95:docs/handoff_impute_engine.md`.
 
+**Next session's brief: `docs/handoff_reproducible_pipeline.md`** (2026-10-01): the whole processing documented and
+reproducible, the reweighting by TMG.SurveyReweight included; the reweight records read `empleo` (design weight), the
+tasks are retrained on the TMG weight afterwards.
+
 ## Where things are
 
 - **Review of the chain pipeline** (session 11, 2026-10-01, one commit): a review of `chain.py`, `pipeline.py`,
