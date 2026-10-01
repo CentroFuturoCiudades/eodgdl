@@ -1,7 +1,7 @@
 [project]
 name = "eodgdl"
 version = "0.10.0"
-description = "IMEPLAN Guadalajara EOD 2023 origin-destination survey: loader, schemas, and TAZ zone tools"
+description = "IMEPLAN Guadalajara EOD 2023 origin-destination survey: the research pipeline from the shipped survey to the TASHA tables"
 readme = "README.md"
 authors = [
     { name = "Gonzalo Peraza", email = "ggperaza@gmail.com" }
@@ -14,8 +14,6 @@ dependencies = [
     "pandera>=0.29.0",
     "pyarrow>=18.0",
     "pyyaml>=6.0",
-    "pooch>=1.8",
-    "platformdirs>=4.0",
     "tqdm>=4.67",
 ]
 

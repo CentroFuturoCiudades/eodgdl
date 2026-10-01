@@ -18,7 +18,7 @@ def test_config_and_levels():
     for column in giro.SECTOR_FEATURES:
         if column not in giro.NUMERIC_FEATURES:
             assert levels[column][-1] == giro.NO_ESPECIFICADO, column
-    assert giro.MODEL_FILE in __import__("eodgdl.data", fromlist=["FILES"]).FILES
+    assert __import__("eodgdl.data", fromlist=["resolve"]).resolve(giro.MODEL_FILE).exists()
 
 
 def test_destination_is_its_zone_system_unit(monkeypatch):

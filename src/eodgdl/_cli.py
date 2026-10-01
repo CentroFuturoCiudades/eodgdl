@@ -11,16 +11,6 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    fetch_p = sub.add_parser("fetch", help="Pre-download data files and model bundles from the mirror")
-    fetch_p.add_argument(
-        "--dataset",
-        choices=["survey", "zones", "models", "all"],
-        default="all",
-        help="Which file group to fetch (default: all)",
-    )
-
-    sub.add_parser("info", help="Show cache directory and mirror info")
-
     tasha_p = sub.add_parser("tasha", help="Model output schema: mappings and validation")
     tasha_sub = tasha_p.add_subparsers(dest="tasha_cmd", required=True)
     tasha_sub.add_parser("check", help="Check mappings.yaml against model_schema.yaml")
@@ -32,7 +22,7 @@ def main() -> None:
     )
 
     build_p = tasha_sub.add_parser("build", help="Build od_*.csv from the survey")
-    build_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    build_p.add_argument("--data", default=None, help="Survey directory (default: the clone's data/)")
     build_p.add_argument("--out", default="output", help="Where to write (default: output/)")
     build_p.add_argument(
         "--suffix", default="", help="Filename suffix, e.g. _v2 for od_trips_v2.csv"
@@ -73,19 +63,19 @@ def main() -> None:
         "--since", default=None,
         help="A snapshot (`eodgdl review snapshot`): the persons whose values moved since it was taken",
     )
-    exp_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    exp_p.add_argument("--data", default=None, help="Survey directory (default: the clone's data/)")
     snap_p = review_sub.add_parser(
         "snapshot", help="Write every trip's values as load_eod() gives them, to compare after a rule change"
     )
     snap_p.add_argument("--out", required=True, help="Where to write (a .csv.gz)")
-    snap_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    snap_p.add_argument("--data", default=None, help="Survey directory (default: the clone's data/)")
     for name, help_text in (
         ("verify", "Check an edited sheet as freeze does and say what it would change, writing nothing"),
         ("freeze", "Merge an edited sheet into the hand decisions load_eod applies (eodgdl/revisions/chains.csv.gz)"),
     ):
         frz_p = review_sub.add_parser(name, help=help_text)
         frz_p.add_argument("sheet", help="The edited review sheet, exported from the tables load_eod() returns now")
-        frz_p.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+        frz_p.add_argument("--data", default=None, help="Survey directory (default: the clone's data/)")
         frz_p.add_argument("--source", default=None, help="The review round's name on its decisions (default: the sheet's name)")
         frz_p.add_argument("--dry-run", action="store_true", default=name == "verify",
                            help="Check and report, write no decisions (what verify does)")
@@ -97,7 +87,7 @@ def main() -> None:
     rew_p = sub.add_parser("reweight", help="Inputs for TMG.SurveyReweight: records, zone system, census targets")
     rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
     rb_p = rew_sub.add_parser("build", help="Build the record, zone and constraint files from the survey and the census")
-    rb_p.add_argument("--data", default=None, help="Local data directory (else fetch)")
+    rb_p.add_argument("--data", default=None, help="Data directory (default: the clone's data/)")
     rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
@@ -115,7 +105,7 @@ def main() -> None:
     pipe_sub = pipe_p.add_subparsers(dest="pipeline_cmd", required=True)
     pv_p = pipe_sub.add_parser("verify", help="Walk every manifest under ROOT and TMG's weight sidecar; list every broken link")
     pv_p.add_argument("root", nargs="?", default="output", help="Where the stages wrote (default: output/)")
-    pv_p.add_argument("--data", default=None, help="The data directory holding the weight sidecar (default: $EODGDL_DATA_DIR)")
+    pv_p.add_argument("--data", default=None, help="The data directory holding the weight sidecar (default: the clone's data/, or $EODGDL_DATA_DIR)")
 
     imp_p = sub.add_parser("impute", help="Imputation tasks, chains and pipelines (eodgdl.impute): score, retrain, evaluate, compare")
     imp_sub = imp_p.add_subparsers(dest="impute_cmd", required=True)
@@ -127,7 +117,7 @@ def main() -> None:
         cmd_p.add_argument("task", metavar="chain" if name == "evaluate" else "task",
                            help="Chain (src/eodgdl/impute/chains/<chain>.yaml)" if name == "evaluate" else
                            "Task (src/eodgdl/impute/tasks/<task>.yaml)" + (", chain (impute/chains/<chain>.yaml) or pipeline (impute/pipelines/<pipeline>.yaml)" if name != "compare" else ""))
-        cmd_p.add_argument("--data", default=None, help="Local data directory (else $EODGDL_DATA_DIR or fetch)")
+        cmd_p.add_argument("--data", default=None, help="Data directory (default: the clone's data/, or $EODGDL_DATA_DIR)")
         cmd_p.add_argument("--refresh", action="store_true", help="Rebuild the cached feature frames")
         if name in ("retrain", "compare"):
             cmd_p.add_argument("--jobs", type=int, default=-1, help="Parallel workers for the CV fits (default: all cores; 1 = in process)")
@@ -154,28 +144,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.cmd == "fetch":
-        from eodgdl.data import POOCH
-        from eodgdl.data._catalog import FILES, MODEL_FILES, SURVEY_FILES, ZONE_FILES
-
-        fnames = {"survey": SURVEY_FILES, "zones": ZONE_FILES, "models": MODEL_FILES, "all": FILES}[args.dataset]
-        for fname in fnames:
-            path = POOCH.fetch(fname, progressbar=True)
-            print(f"  {fname} → {path}")
-        print(f"\nFetched {len(fnames)} file(s).")
-
-    elif args.cmd == "info":
-        from eodgdl.data._paths import get_pooch_cache_dir
-        from eodgdl.data._registry import _BASE_URL, _MODELS_URL
-
-        print(f"Cache directory : {get_pooch_cache_dir()}")
-        print(f"Mirror base URL : {_BASE_URL}")
-        print(f"Models URL      : {_MODELS_URL}")
-        print("Overrides: $EODGDL_CACHE_DIR (cache), $EODGDL_DATA_DIR (local data dir),")
-        print("           $EODGDL_MODELS_DIR (local models dir; default: models/ beside the data dir),")
-        print("           $EODGDL_BASE_URL (mirror base), $EODGDL_MODELS_URL (models base).")
-
-    elif args.cmd == "tasha":
+    if args.cmd == "tasha":
         raise SystemExit(_tasha(args))
 
     elif args.cmd == "review":
@@ -417,7 +386,7 @@ def _reweight(args) -> int:
 
         from eodgdl import load_eod
 
-        if args.data:   # the imputed attributes' model file: models/ beside the data directory
+        if args.data:   # every file the build resolves, the survey's included
             os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         files = reweight.build(load_eod(args.data), data_dir=args.data)
         for path in reweight.write(files, args.out, data_dir=args.data):
@@ -510,7 +479,7 @@ def _impute(args) -> int:
             chosen = entry["selected"]
             print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "
                   f"held-out {entry['test_metrics']['weighted_log_loss']:.4f}")
-        print(f"wrote {path} (sha256 {digest}); to install it, copy it under models/ and update src/eodgdl/data/registry.txt")
+        print(f"wrote {path} (sha256 {digest}); to ship it, copy it under models/ and commit it")
         return 0
     import yaml
 

@@ -225,7 +225,7 @@ def main():
     parser.add_argument("root_b", type=Path)
     parser.add_argument("--models", action="store_true", help="Also compare every fitted model of each task's two bundles by predict_proba")
     parser.add_argument("--tolerance", type=float, default=1e-12, help="Absolute below one, relative above (default 1e-12)")
-    parser.add_argument("--data", default=None, help="Local data directory for --models (else $EODGDL_DATA_DIR or fetch)")
+    parser.add_argument("--data", default=None, help="Data directory for --models (default: the clone's data/, or $EODGDL_DATA_DIR)")
     parser.add_argument("--strict", action="store_true", help="Exit 1 on any difference beyond the tolerance, held-out tables included")
     parser.add_argument("--ignore-columns", nargs="+", default=[], metavar="PATTERN",
                         help="Drop the columns matching these shell patterns from every parquet of both roots before comparing (e.g. a "

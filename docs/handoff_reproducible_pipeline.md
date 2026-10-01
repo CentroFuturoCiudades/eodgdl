@@ -211,6 +211,33 @@ stage summaries. (4) Stage 4 **always** retrains on the TMG weight.
   bundle fetched from the mirror and sha256-checked; `impute-chains` merged into `main` (a31de77). The reweight set can
   be handed over (`output/reweight/`, reproducible from v0.10.0). The second release waits for the weight.
 
+## The simplification (decided 2026-10-01, session 12)
+
+The user's decision: eodgdl is an academic data pipeline, not a user-facing package. Keep the library (the chain rules,
+review, impute engine, reweight, tasha: ~90% of the code, untouched) and replace the convenience and orchestration layer
+with a Snakemake workflow in the same repo; the package stays installed editable, so `load_eod()`, `load_taz()` and the
+rest still read the clone. The release ritual (a registry sha256, `REF`, version and lock per data or model change: nine
+releases in five days) was the most frequent non-scientific chore. Four steps, the suite and output parity green at
+each (`scripts/impute/parity.py`, the manifests):
+
+1. **Drop distribution — done (uncommitted).** `src/eodgdl/data/` (Pooch, `registry.txt`, `_catalog.py`, `_registry.py`,
+   `_paths.py`) replaced by `src/eodgdl/data.py`: `data_dir()`, `models_dir()`, `cache_dir()` (`<clone>/.cache/`, the
+   feature cache moved there from the platform cache dir), `resolve()` (`*.joblib` → `models/`), the input files' names.
+   `eodgdl info|fetch` removed, `pooch` / `platformdirs` dropped from the dependencies, the reweight spec's `imputed`
+   bundle checked against `models/` instead of a catalog list. The "second release" of H is now a commit; tags mark
+   milestones (Zenodo at paper time, with the published outputs).
+2. **One `config.yaml`**: the weight choice (today a hand edit of `impute/sources/eod.yaml` that `run.sh` checks), seeds,
+   draws, bootstrap B, read by the code; it makes the hand-switch guards hold by construction.
+3. **The Snakefile** (`workflow/`, rules at stage level: load → EOD parquet, zones, reweight inputs, retrain per task,
+   the pipeline `tasha`, the TASHA build per draw, reports) replacing `scripts/pipeline/run.sh` and
+   `scripts/impute/rerun.sh`; the TMG weight is a rule input under `data/`, so the graph stops there by itself. Declare
+   the library modules each rule imports as its inputs (Snakemake does not see imported code), and leave mtime out of
+   the rerun triggers (a checkout must not retrain). Chain internals and draws stay in the engine, not in rules. A thin
+   `eodgdl.artifacts` reads the materialized outputs (cleaned tables, zones) for quick access.
+4. **Delete what became redundant**: most of the CLI (the review round's commands stay: interactive hand work, its
+   decisions table an input), `pipeline verify`, the staleness guards; `manifest.py` reduced to one final manifest
+   (commit plus the results' sha256), since Snakemake's provenance is weaker than the manifests'.
+
 ## Do not
 
 - Change a target or attribute in Python: `spec.yaml` holds every definition (`reweight/README.md`).

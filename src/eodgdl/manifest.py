@@ -187,7 +187,7 @@ def check_manifest(path) -> list[str]:
 
 def verify(root="output", data_dir=None) -> list[str]:
     """Every broken link under ``root``: each manifest's (:func:`check_manifest`), and TMG's weight sidecar in
-    ``data_dir`` (default ``$EODGDL_DATA_DIR``) against the reweight inputs it was fitted on
+    ``data_dir`` (default :func:`eodgdl.data.data_dir`) against the reweight inputs it was fitted on
     (:func:`eodgdl.reweight.weight.check_weight`). Empty when the chain is sound."""
     root = Path(root)
     problems = []

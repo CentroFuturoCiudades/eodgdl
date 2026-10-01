@@ -6,11 +6,8 @@ Guadalajara EOD 2023** household origin-destination survey.
 ```python
 from eodgdl import load_eod
 
-# Fetches the survey CSVs from the data mirror on first use (cached thereafter):
+# Reads the survey CSVs from the clone's data/ (or $EODGDL_DATA_DIR):
 viv, hab, trips, legs = load_eod()
-
-# Or read from a local copy (e.g. this repo's data/ dir, or $EODGDL_DATA_DIR):
-viv, hab, trips, legs = load_eod("data")
 ```
 
 `load_eod()` returns an `EODTables` named tuple with four linked, cleaned, schema-validated
@@ -37,7 +34,7 @@ units = reweight.assign_units(tables.viv, tables.trips)   # CVEGEO -> zone, rule
 zones = reweight.zone_shapes(units)                # the zones redrawn along AGEB edges
 ```
 
-Every loader fetches from the mirror by default and accepts a local path override. An
+Every loader reads the clone's `data/` by default and accepts a path override. An
 urban AGEB is never split: a sampled one takes the zone the survey coded there, an
 unsampled one takes the zone the survey coded for its trip ends, or else goes whole to the
 polygon holding most of its population. `reports/reweight_inputs.qmd`
@@ -108,31 +105,28 @@ left or made. See `eodgdl.review` for the functions behind both.
 
 ## Installation
 
+eodgdl is a research pipeline, run from its repository: `uv sync` installs the package editable, and every loader
+reads its files in place. Another project uses it as an editable path dependency
+(`uv add --editable ../eodgdl`) and reads the same clone.
+
 ```bash
-uv add eodgdl @ git+https://github.com/CentroFuturoCiudades/eodgdl
-# or, for development:
 git clone https://github.com/CentroFuturoCiudades/eodgdl && cd eodgdl && uv sync
 ```
 
 ## Data
 
 The survey and the other input data live in this repo's `data/` directory, the fitted
-imputation models in `models/` (both committed, but **not** distributed inside the installed
-package — the wheel ships code only). The package fetches the files it needs on demand via
-[Pooch](https://www.fatiando.org/pooch/), each from its directory, caching them locally and
-verifying checksums against `src/eodgdl/data/registry.txt`.
+imputation models in `models/`, both committed and read in place (`eodgdl.data`: `data_dir()`,
+`models_dir()`, `resolve(filename)`); nothing is downloaded, registered or released file by file.
+The census, ENOE, ENIGH and DENUE come through `mxcensus`, which fetches and checks its own files.
 
 Override the defaults with environment variables:
 
-| variable           | effect                                                            |
-|--------------------|-------------------------------------------------------------------|
-| `EODGDL_DATA_DIR`  | read data from this local directory instead of fetching           |
-| `EODGDL_MODELS_DIR` | read the models from this local directory (default: `models/` beside `EODGDL_DATA_DIR`) |
-| `EODGDL_CACHE_DIR` | where Pooch caches downloaded files                               |
-| `EODGDL_BASE_URL`  | mirror base URL of the data (fork / different ref); keep the trailing `/` |
-| `EODGDL_MODELS_URL` | mirror base URL of the models; keep the trailing `/`             |
-
-CLI helpers: `eodgdl info` (show cache dir + mirror) and `eodgdl fetch [--dataset survey|zones|models|all]`.
+| variable            | effect                                                         |
+|---------------------|----------------------------------------------------------------|
+| `EODGDL_DATA_DIR`   | read the input data from this directory (default: `data/`)     |
+| `EODGDL_MODELS_DIR` | read the model bundles from this directory (default: `models/`) |
+| `EODGDL_CACHE_DIR`  | where eodgdl caches its feature frames (default: `.cache/`)   |
 
 ### Data provenance
 
@@ -171,8 +165,8 @@ the TASHA build reads:
 | `labour` | chain: `empleo` → `giro` → `informality`, all on the workers and the persons who did not answer (50 draws) | the EOD's persons aged 16+ who answered (employment); as above (giro, informality) | every EOD worker and every person aged 16+ without an employment answer |
 | `tasha` | pipeline: `labour` on the persons → each dwelling's workers aged 14+ with the drawn ones → `nse` on the dwellings (50 draws, a bootstrap model per draw) | as `labour` and `nse` | as `labour` and `nse`: what the TASHA build reads |
 
-The fitted bundle of every task ships through the mirror's `models/` directory (`models/od_<task>_model.joblib`,
-giro's is `od_giro_hybrid_model.joblib`) and is fetched on first use. It is a scikit-learn pickle, checked against its task when
+The fitted bundle of every task is committed under `models/` (`models/od_<task>_model.joblib`,
+giro's is `od_giro_hybrid_model.joblib`). It is a scikit-learn pickle, checked against its task when
 it loads (scikit-learn version, category levels, features, scoring settings). `amai_trabajadores` is diagnostic only:
 the survey counts the workers, so the chain `nse` does not use it, and only `evaluate nse` reads it.
 
@@ -197,14 +191,14 @@ It predicts the five native levels — Comercio, Servicio, Educación, Industria
 the full probability vector (`prob_giro_<slug>`); `giro_final` is the arg-max.
 
 ```bash
-uv add "eodgdl[giro]"
+uv sync --extra giro
 ```
 
 ```python
 import eodgdl
 from eodgdl import giro
 
-workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the mirror's models/ on first use
+workers = giro.impute(eodgdl.load_eod())   # the fitted bundle in models/
 workers[giro.OUTPUT_COLUMNS].head()
 ```
 
@@ -267,9 +261,8 @@ A retrain writes the bundle, its scores and every evaluation table to `<out>/<ta
 `output/impute`; `retrain <chain>` does the same for each of its tasks). Every command that needs a bundle finds it
 the same way: with `--retrained <dir>`, the one a retrain wrote under `<dir>/<task>/` when there is one, else the
 shipped one. `score` and `compare` default to the shipped bundles; `evaluate` defaults to `--retrained output/impute`,
-where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `models/`, update
-its sha256 in `src/eodgdl/data/registry.txt` and tag a release (see Data). Feature frames are cached under the eodgdl
-cache directory (`--refresh` rebuilds).
+where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `models/` and
+commit it. Feature frames are cached under `.cache/impute/` (`$EODGDL_CACHE_DIR`; `--refresh` rebuilds).
 
 ### Figures
 

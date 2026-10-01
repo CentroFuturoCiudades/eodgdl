@@ -205,6 +205,6 @@ class Context:
     def cache_path(self):
         if self.cache_dir is not None:
             return Path(self.cache_dir)
-        from eodgdl.data import get_pooch_cache_dir
+        from eodgdl.data import cache_dir
 
-        return get_pooch_cache_dir() / "impute"
+        return cache_dir() / "impute"

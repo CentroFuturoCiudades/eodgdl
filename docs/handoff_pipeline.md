@@ -99,7 +99,7 @@ to the pipeline's output.
 - Untracked and not ours: `mappings/` (Monterrey's `pimus2019_to_tasha.yaml`, the user's), `reports/.gitignore`,
   `scripts/rural_agebs_clipped.py`. Leave them out of commits.
 - The auto-mode permission check blocks writing `data/` and moving or deleting `output/` roots: hand the user the
-  `!` commands (copy the bundle, append or replace its line in `src/eodgdl/data/registry.txt`).
+  `!` commands (copy the bundle under `models/`; since 2026-10-01 there is no registry to update).
 - `uv run pytest`: 182 passed.
 
 ## Still open for the TASHA file (after the pipeline)

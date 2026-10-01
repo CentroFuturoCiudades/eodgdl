@@ -8,7 +8,7 @@ from eodgdl import load_stages
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
-if HAS_DATA:   # every file, the model bundles in models/ beside it, read from the clone (what the tests test), not the mirror
+if HAS_DATA:   # the clone's data/ (eodgdl.data's default too), unless the caller points the tests elsewhere
     os.environ.setdefault("EODGDL_DATA_DIR", str(DATA_DIR))
 
 

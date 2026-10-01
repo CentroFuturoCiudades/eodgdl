@@ -35,7 +35,7 @@ steps:
     level: nse
     ageb: ageb                                             # the dwelling's 13-character urban AGEB
     weight: source                                         # the scoring source's weight (eod.dwellings: the dwelling's)
-    file: NSE_por_AGEB_AMAI.xlsx                           # eodgdl.data catalog
+    file: NSE_por_AGEB_AMAI.xlsx                           # data/
     file_columns: [entidad, nombre_entidad, municipio, nombre_municipio, localidad, nombre_localidad, ageb,
                    ab_num_viviendas, c_mas_num_viviendas, c_num_viviendas, c_menos_num_viviendas, d_mas_num_viviendas,
                    d_num_viviendas, e_num_viviendas, nivel_predominante, num_viviendas, tamano_localidad]

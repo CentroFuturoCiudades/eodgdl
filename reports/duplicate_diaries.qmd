@@ -48,7 +48,7 @@ import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
 from eodgdl import load_eod, rename_imeplan
-from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
+from eodgdl.data import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
 from eodgdl.eod import _VIAJES_MEDIO_FIXES
 
 plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})

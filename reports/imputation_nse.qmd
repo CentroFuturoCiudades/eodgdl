@@ -500,5 +500,5 @@ The pipeline ports informal-jobs-model's notebooks 06–08, with these deliberat
 #| label: provenance
 lines = [f"- `{task}`: bundle `{SUMMARY[task]['bundle']['file']}`, sha256 `{SUMMARY[task]['bundle']['sha256'][:16]}…`, spec `{SUMMARY[task]['spec_hash'][:12]}…`" for task in TASKS]
 display(Markdown("\n".join(lines) + f"\n\nChain `nse`: {CHAIN.mode}, {CHAIN.propagation}, {CHAIN.draws} draws, seed {CHAIN.seed}. "
-                 f"ENIGH {load_task('amai_banos').raw.get('source')} 2022 through mxcensus; AMAI's NSE by AGEB: `NSE_por_AGEB_AMAI.xlsx` (eodgdl data catalog)."))
+                 f"ENIGH {load_task('amai_banos').raw.get('source')} 2022 through mxcensus; AMAI's NSE by AGEB: `data/NSE_por_AGEB_AMAI.xlsx`."))
 ```

@@ -576,7 +576,7 @@ def consistency(tables: EODTables, stages) -> tuple[pd.Series, dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--data", default=None, help="Local survey directory (else fetch)")
+    parser.add_argument("--data", default=None, help="Survey directory (default: the clone's data/)")
     parser.add_argument("--previous", default=PREVIOUS, help="The decisions as rounds 1-13 left them")
     parser.add_argument("--snapshot", default=SNAPSHOT, help="The tables they gave")
     parser.add_argument("--out", default="notebooks/chain_review_17.csv", help="Where to write the sheet")

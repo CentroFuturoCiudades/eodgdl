@@ -113,14 +113,13 @@ def test_employed_is_tasha_s_worker(files, tables):
 def test_the_pinned_design_weight_empleo_bundle_is_v0_9_0_s():
     # stage 1 reads the empleo bundle trained on the survey's design weight, pinned under a
     # name of its own: v0.9.0's od_empleo_model.joblib, byte for byte
-    from eodgdl.data import POOCH
-    from eodgdl.impute.bundle import training_weight
-
     import joblib
 
     from eodgdl.data import resolve
+    from eodgdl.impute.bundle import training_weight
+    from eodgdl.manifest import sha256
 
-    assert POOCH.registry["od_empleo_design_model.joblib"] == "sha256:247d18fc175b98ebd0698648af6cb36dda671a822205889925141a815f6e97f2"
+    assert sha256(resolve("od_empleo_design_model.joblib")) == "247d18fc175b98ebd0698648af6cb36dda671a822205889925141a815f6e97f2"
     assert training_weight(joblib.load(resolve("od_empleo_design_model.joblib"))["metadata"]) == "design"
 
 

@@ -28,11 +28,9 @@ TOOL = "https://github.com/TravelModellingGroup/TMG.SurveyReweight"
 
 
 def _data_dir(data_dir):
-    import os
+    from eodgdl.data import data_dir as default
 
-    if data_dir is not None:
-        return Path(data_dir)
-    return Path(os.environ["EODGDL_DATA_DIR"]) if os.environ.get("EODGDL_DATA_DIR") else None
+    return Path(data_dir) if data_dir is not None else default()
 
 
 def import_weight(updated, reweight_dir, data_dir, year, *, tool_commit=None, configuration=None, report=None, notes=None):
@@ -74,9 +72,9 @@ def import_weight(updated, reweight_dir, data_dir, year, *, tool_commit=None, co
 
 
 def read_sidecar(data_dir=None):
-    """The sidecar of the TMG weight in ``data_dir`` (default ``$EODGDL_DATA_DIR``), or None where there is none."""
+    """The sidecar of the TMG weight in ``data_dir`` (default :func:`eodgdl.data.data_dir`), or None where there is none."""
     folder = _data_dir(data_dir)
-    if folder is None or not (folder / SIDECAR).exists():
+    if not (folder / SIDECAR).exists():
         return None
     return yaml.safe_load((folder / SIDECAR).read_text(encoding="utf-8"))
 
@@ -90,7 +88,7 @@ def check_weight(data_dir=None, root="output") -> list[str]:
     folder = _data_dir(data_dir)
     sidecar = read_sidecar(folder)
     if sidecar is None:
-        return [] if folder is None or not (folder / WEIGHT_CSV).exists() else [f"{folder / WEIGHT_CSV}: no sidecar {SIDECAR}"]
+        return [] if not (folder / WEIGHT_CSV).exists() else [f"{folder / WEIGHT_CSV}: no sidecar {SIDECAR}"]
     problems = []
     weight = folder / sidecar["weight_file"]
     if not weight.exists():

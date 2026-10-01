@@ -116,15 +116,15 @@ def check_spec():
                 if other not in attrs:
                     problems.append(f"{table}.{name}: sums {other!r}, not an attribute")
             if "imputed" in entry:
-                from eodgdl.data import MODEL_FILES
+                from eodgdl.data import MODEL_SUFFIX, models_dir
 
                 imputed = entry["imputed"]
                 if "values" not in entry or not isinstance(entry.get("source"), str):
                     problems.append(f"{table}.{name}: imputed fills a `values` attribute's missing answers")
                 if not isinstance(imputed, dict) or not {"task", "bundle", "class"} <= set(imputed) or set(imputed) - {"task", "bundle", "class", "complement"}:
                     problems.append(f"{table}.{name}: imputed is {{task, bundle, class, complement}}")
-                elif imputed["bundle"] not in MODEL_FILES:
-                    problems.append(f"{table}.{name}: imputed bundle {imputed['bundle']!r} is not a catalog model file")
+                elif not imputed["bundle"].endswith(MODEL_SUFFIX) or not (models_dir() / imputed["bundle"]).exists():
+                    problems.append(f"{table}.{name}: imputed bundle {imputed['bundle']!r} is not a model file under models/")
         for target, entry in constraints(table).items():
             if entry.get("geography") not in GEOGRAPHIES:
                 problems.append(f"{table}.{target}: geography {entry.get('geography')!r} is not one of {GEOGRAPHIES}")

@@ -49,7 +49,7 @@ import pandas as pd
 
 from eodgdl import load_eod, load_zm_muns, reweight
 from eodgdl.chains import non_trips
-from eodgdl.data._catalog import CONAPO_CSV, VMRC_CSV
+from eodgdl.data import CONAPO_CSV, VMRC_CSV
 
 plt.rcParams.update({"figure.dpi": 120, "font.size": 10, "axes.titlesize": 12})
 BLUE, ORANGE, GREY = "#2c7fb8", "#e6550d", "#969696"
@@ -1220,6 +1220,6 @@ QUARTO_PYTHON=$PWD/.venv/bin/python quarto render reports/reweight_inputs.qmd
 | to change | edit |
 |---|---|
 | an attribute or a target's definition | `src/eodgdl/reweight/spec.yaml` |
-| the growth sources | the `conapo`, `vmrc`, `rates` blocks of the spec, and their files under `data/` (new files also go in `_catalog.py` and `registry.txt`) |
+| the growth sources | the `conapo`, `vmrc`, `rates` blocks of the spec, and their files under `data/` |
 | how a census row is corrected | `targets.person_scale` / `targets.dwelling_scale` |
 | what counts as a loadable set | `reweight/check.py` |

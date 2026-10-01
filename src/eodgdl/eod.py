@@ -11,7 +11,7 @@ import pandas as pd
 
 from eodgdl._resources import imeplan_rename_map, leg_minutes
 from eodgdl.chains import PERSON, clean_trip_chains
-from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
+from eodgdl.data import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 
 log = logging.getLogger(__name__)
@@ -338,8 +338,8 @@ def load_eod(
 ) -> EODTables:
     """Load and clean the EOD survey at four linked levels.
 
-    With no argument the three master CSVs are fetched from the data mirror (and cached);
-    pass ``eod_path`` (or set ``$EODGDL_DATA_DIR``) to read them from a local directory.
+    With no argument the three master CSVs are read from the clone's ``data/`` (or
+    ``$EODGDL_DATA_DIR``); pass ``eod_path`` to read them from another directory.
     :func:`load_stages` returns all three stages below from one read.
 
     By default the trip chains are cleaned (:func:`eodgdl.chains.clean_trip_chains`, whose
