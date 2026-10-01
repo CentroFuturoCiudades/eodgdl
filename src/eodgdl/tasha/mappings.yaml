@@ -11,8 +11,9 @@
 #   derivation   prose, for what a lookup cannot express
 #   override     a second lookup applied on top of `values`, with its `when`
 #   note         caveats: lossy collapses, judgement calls, open questions
-#   imputed      {chain, column[, values]}: the value comes from one completed dataset of an eodgdl.impute chain
-#                (a draw: <root>/<chain>/multiple_imputation/completions.parquet), read through its own `values`,
+#   imputed      {pipeline, column[, values]}: the value comes from one completed dataset of an eodgdl.impute
+#                pipeline (a draw: <root>/<pipeline>/<level>/completions.parquet, the level whose completions hold
+#                the column; impute/pipelines/<pipeline>.yaml), read through its own `values`,
 #                or the entry's where it has no `source` (keys: the column's levels). Beside `source` it fills
 #                only what the survey's lookup leaves empty; in an `override` it replaces the code where `when`
 #                holds. tasha.build(tables, completed=tasha.load_completed(root, draw)) takes it.
@@ -103,7 +104,7 @@ households:
       0 vehicles rather than failing the build; no dwelling needs it today.
 
   IncomeClass:
-    imputed: {chain: nse, column: nse_calibrado}
+    imputed: {pipeline: tasha, column: nse_calibrado}
     values:
       e: 1
       d: 2
@@ -117,9 +118,11 @@ households:
     note: >-
       DECISION (2026-09-30): the AMAI socioeconomic level, as the model's Monterrey inputs (PIMUS 2019) coded this
       column, C- and C merged (LOSSY). Every dwelling's level is imputed: the EOD answers three of AMAI's six
-      components (internet, cars, workers) and most heads' education; the chain `nse` imputes the rest (education
-      where unknown, bathrooms and bedrooms from ENIGH), sums the points and calibrates the level within each AGEB to
-      AMAI's NSE by AGEB (nse_calibrado). One draw of the chain, so the levels' spread is kept. The reported income
+      components (internet, cars, workers) and most heads' education; the pipeline `tasha`'s dwellings (the chain
+      `nse`) impute the rest (education where unknown, bathrooms and bedrooms from ENIGH), sum the points and
+      calibrate the level within each AGEB to AMAI's NSE by AGEB (nse_calibrado). The workers aged 14+ count the
+      members whose employment was not answered and is drawn `trabaja` in the same completed dataset (the pipeline's
+      persons, since 2026-09-30). One draw of the pipeline, so the levels' spread is kept. The reported income
       (ingreso_mensual_hogar) is no longer read: 58% of dwellings refused or did not know it.
 
   ExpansionFactor:
@@ -194,7 +197,7 @@ people:
       Es jubilado o pensionado: O
       Está incapacitado permanentemente para trabajar: O
     imputed:
-      chain: labour
+      pipeline: tasha
       column: situacion_laboral
       values:
         trabaja: F
@@ -204,7 +207,7 @@ people:
         sin_trabajo: O
     default: O
     override:
-      imputed: {chain: labour, column: informalidad}
+      imputed: {pipeline: tasha, column: informalidad}
       values:
         informal: P
       when: the person is a worker (F)
@@ -212,13 +215,14 @@ people:
     note: >-
       DECISION (2026-09-30): P is an informal worker, the Monterrey convention (PIMUS 2019), not part-time; part-time
       workers ('Medio tiempo', 1,305) are F or P by their formality like everyone else, and hours are lost. The EOD
-      asks no formality question: every worker's informality is imputed (chain `labour`: ENOE's model over the giro,
-      reported or imputed). 'Tenía trabajo, pero no trabajó' (105) counts as employed. The 4,370 people aged 16+ who
-      did not answer take the chain's drawn situation (task empleo); the default O is left to persons under 16 without
+      asks no formality question: every worker's informality is imputed (the pipeline `tasha`'s persons, the chain
+      `labour`: ENOE's model over the giro, reported or imputed). 'Tenía trabajo, pero no trabajó' (105) counts as
+      employed. The 4,370 people aged 16+ who did not answer take the pipeline's drawn situation (task empleo); the
+      default O is left to persons under 16 without
       an answer (none).
 
   Formality:
-    imputed: {chain: labour, column: informalidad}
+    imputed: {pipeline: tasha, column: informalidad}
     values:
       formal: F
       informal: I
@@ -227,7 +231,7 @@ people:
     status: imputed
     note: >-
       The same draw as EmploymentStatus's P, so I exactly where it is P. The EOD has no formality or social-security
-      question: the chain labour scores ENOE's informality model on the EOD workers (reported, or drawn by the task
+      question: the pipeline tasha (chain labour) scores ENOE's informality model on the EOD workers (reported, or drawn by the task
       empleo), given their giro (reported, or imputed by the giro task).
 
   Occupation:
@@ -239,7 +243,7 @@ people:
       Gobierno/sector público: G
       Educación: G
     imputed:
-      chain: labour
+      pipeline: tasha
       column: giro
       values:
         servicio: P
@@ -249,13 +253,13 @@ people:
         educacion: G
     default: G
     derivation: >-
-      The reported giro through `values`; a worker who did not report it takes the chain's drawn giro (the same draw
+      The reported giro through `values`; a worker who did not report it takes the pipeline's drawn giro (the same draw
       as Formality). Then force O wherever EmploymentStatus is O, so that the two columns agree exactly, as the
       schema requires.
     status: imputed
     note: >-
       9,484 of the 26,913 workers did not report their giro, nor did the unanswered persons drawn as workers; the giro
-      task imputes it (eodgdl.impute, tasks/giro.yaml), in the chain labour.
+      task imputes it (eodgdl.impute, tasks/giro.yaml), in the pipeline tasha (chain labour).
       'Educación' is placed in G alongside government; the EOD's giro has no transport answer (PIMUS's 'transporte y
       comunicaciones' went to G). Kept as is (2026-09-30): what matters for the model is that Occupation uses the same
       crosswalk as the zonal employment by category it is matched to, which is not built yet; revisit both together.
@@ -272,7 +276,7 @@ people:
   StudentStatus:
     source: [ocupacion, trabajo_semana_pasada, motivo_viaje]
     imputed:
-      chain: labour
+      pipeline: tasha
       column: situacion_laboral
       values:
         estudiante: S
@@ -282,7 +286,7 @@ people:
       'Es estudiante' (13,187); the person has at least one trip with
       motivo_viaje 'Estudiar', or 'Guardería' made under the age of 12 (older
       travellers escort a child there, see PurposeDestination); or, for a person who did not answer
-      trabajo_semana_pasada, the chain labour's drawn situation is `estudiante`. Otherwise O.
+      trabajo_semana_pasada, the pipeline tasha's drawn situation is `estudiante`. Otherwise O.
     note: Full-time and part-time students are not distinguished.
 
   EmploymentZone:

@@ -7,9 +7,25 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
-- **Next: the staged imputation pipeline** (decided 2026-09-30, end of session 9): one pipeline (within-survey →
-  aggregate → fusion → derive) replaces the chains `labour` and `nse` as what the TASHA build reads, so the dwelling's
-  worker count includes the drawn workers. The brief: `docs/handoff_pipeline.md`.
+- **The staged imputation pipeline** (session 10, 2026-09-30, done; the brief: `docs/handoff_pipeline.md`): the
+  pipeline `tasha` (`impute/pipelines/tasha.yaml`, `pipeline.py`) replaces the chains `labour` and `nse` as what the
+  TASHA build reads. One chain per row level, each with its own seed: persons (`labour`), then the aggregate `workers`
+  (`aggregate.py`: each dwelling's reported workers aged 14+ plus the unanswered drawn `trabaja` in the same draw,
+  binned by `eod_viviendas.yaml`'s own `trabajadores_14`), then dwellings (`nse`) given it. The per-draw value enters
+  after the feature cache as a completion column (`run_chain(given=)`; `_conditionals` scores it like an upstream
+  value, `amai_puntos` reads it in place of the source's), so no cached frame goes stale. Parity: with the drawn workers
+  off (`--no-aggregate`) both levels' `scores.parquet` and `completions.parquet` equal `output/impute/{labour,nse}/
+  multiple_imputation/` exactly (`parity.py --ignore-columns 'trabajadores_14*' 'prob_trabajadores_14*'`; the JSONs
+  differ only in `chain_hash`, whose definition 2755200 changed after those runs, and the new `given`). With them on:
+  persons identical; per draw ~1,330 dwellings gain workers (1,480 drawn workers), the uncalibrated level moves up in
+  671 (625-731; 3.47% of the dwelling weight) and down in 15; bathrooms, bedrooms, points and levels move nowhere else,
+  the calibrated level only within an (AGEB, draw) holding a moved dwelling (552 up, 480 down per draw; calibrated
+  shares within 0.07 pp); `IncomeClass` at draw 0: 798 dwellings changed, class weights within 0.1 pp; people and trips
+  identical. `tasha/mappings.yaml` names `imputed: {pipeline: tasha, column}`; `tasha.load_completed` returns
+  `{pipeline: {level: frame}}` from `<root>/tasha/<level>/completions.parquet`; `_schema.completed_levels` replaces
+  `chain_levels`. `output/impute/tasha/` is written; `output/impute/labour/` is obsolete (no reader left).
+  `reports/imputation_empleo.qmd` reads the pipeline and has #sec-nse. Tests: `tests/test_pipeline.py` and
+  `test_given_features_enter_per_completion`. Not released (no bundle changed).
 - **`v0.7.0`** (session 9, 2026-09-30): the head's education (`educacion_jefe`) reads the other household members'
   highest education (`eod.household_education`) in an arm of its own (`con_hogar`, requires it; `sin_hogar` is the model
   as it was): CV -0.0465 against the single arm; one model reading it with the median where missing lost 0.030 on the

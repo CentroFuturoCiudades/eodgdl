@@ -1,5 +1,13 @@
 # Handoff: the staged imputation pipeline
 
+> **Done in session 10 (2026-09-30).** The pipeline is `impute/pipelines/tasha.yaml` (`pipeline.py`, `aggregate.py`,
+> `run_chain(given=)`); the design as built, the parity proof and what moved are in `docs/impute.md` (Pipelines) and
+> `docs/handoff_impute_engine.md` (session 10). Two departures from this brief: the runner runs one chain per row level
+> (persons, the aggregate, dwellings) rather than one call per stage, so each level keeps its chain's random stream and
+> parity holds; and the calibrated level may move on dwellings without a drawn worker, within the same AGEB and draw
+> (the calibration re-ranks the AGEB). `labour` survives as the persons level's chain, no longer scored alone. What
+> follows is the brief as written.
+
 Session 9 (2026-09-30) ended with the user's decision to replace the two chains that feed the TASHA build (`labour`,
 `nse`) with one **staged pipeline**: within-survey imputation, then data fusion, then derived values, drawn jointly
 per completed dataset. This file is the brief for the session that builds it. Read `docs/impute.md` (the engine's

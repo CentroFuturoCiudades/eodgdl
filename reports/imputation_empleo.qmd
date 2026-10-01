@@ -1,6 +1,6 @@
 ---
 title: "Employment situation (empleo) imputation"
-subtitle: "How `eodgdl impute retrain empleo` fills in `trabajo_semana_pasada` for the persons who did not answer it, and how the chain `labour` carries it, with giro and informality, into the TASHA build"
+subtitle: "How `eodgdl impute retrain empleo` fills in `trabajo_semana_pasada` for the persons who did not answer it, and how the pipeline `tasha` carries it, with giro and informality, into the TASHA build and into the dwellings' NSE"
 author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
 date: today
 lang: en
@@ -43,10 +43,13 @@ ROOT = _find_root()
 os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
 IMPUTE = Path(os.environ.get("EODGDL_IMPUTE_DIR", ROOT / "output" / "impute"))
 OUT = IMPUTE / "empleo"
-LABOUR = IMPUTE / "labour" / "multiple_imputation"
+PIPE = IMPUTE / "tasha"                                  # the pipeline's completed datasets: persons/ and dwellings/
+NSE = IMPUTE / "nse" / "multiple_imputation"             # the chain nse's alone: the reported workers only
 assert (OUT / "summary.json").exists(), f"No retrain at {OUT}: run `uv run eodgdl impute retrain empleo --data data` first."
-assert (LABOUR / "completions.parquet").exists(), (
-    f"No completed datasets at {LABOUR}: run `uv run eodgdl impute score labour --data data --retrained output/impute --draws 50 --bootstrap`.")
+assert (PIPE / "persons" / "completions.parquet").exists(), (
+    f"No completed datasets at {PIPE}: run `uv run eodgdl impute score tasha --data data --retrained output/impute`.")
+assert (NSE / "completions.parquet").exists(), (
+    f"No completed datasets at {NSE}: run `uv run eodgdl impute score nse --data data --retrained output/impute --draws 50 --bootstrap`.")
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -55,11 +58,13 @@ from IPython.display import Markdown, display
 
 from eodgdl.impute.chain import load_chain
 from eodgdl.impute.features import build_frame
+from eodgdl.impute.pipeline import load_pipeline
 from eodgdl.impute.sources import Context
 from eodgdl.impute.spec import load_task
 
 SPEC = load_task("empleo")
-CHAIN = load_chain("labour")
+PIPELINE = load_pipeline("tasha")
+CHAIN = load_chain(PIPELINE.level("persons").chain)
 SUMMARY = json.loads((OUT / "summary.json").read_text(encoding="utf-8"))
 ARMS = [arm.name for arm in SPEC.arms]
 ARM_LABEL = {"con_ocupacion": "With the occupation", "con_escolaridad": "With education", "sin_ambas": "With neither"}
@@ -113,10 +118,11 @@ $$P(S = s \mid X)$$
 for every person aged 16+ without an answer, over five situations: works (full time, part time, or had a job but did
 not work), student, home duties, retired, and not working (none, seeking work, unable to work). The TASHA build needs
 it twice: whether the person works (`EmploymentStatus`) and whether a non-answering person studies (`StudentStatus`).
-A person drawn as a worker then needs a giro and an informality, which the chain `labour` draws with it (@sec-labour).
+A person drawn as a worker then needs a giro and an informality, which the pipeline `tasha` draws with it
+(@sec-labour), and counts in their dwelling's AMAI level (@sec-nse).
 
-This report reads what the last retrain wrote to `output/impute/empleo/` and the chain's completed datasets in
-`output/impute/labour/multiple_imputation/`. It trains nothing. The task is `src/eodgdl/impute/tasks/empleo.yaml`.
+This report reads what the last retrain wrote to `output/impute/empleo/` and the pipeline's completed datasets in
+`output/impute/tasha/` (against the chain `nse`'s in `output/impute/nse/multiple_imputation/`). It trains nothing. The task is `src/eodgdl/impute/tasks/empleo.yaml`.
 
 # Who did not answer {#sec-who}
 
@@ -277,22 +283,24 @@ display(Markdown(
 shares[["observed_known", "imputed", "shift_weighted", "imputed_hard", "final"]].rename(index=LABEL).mul(100).round(2)
 ```
 
-# The chain `labour` and the TASHA build {#sec-labour}
+# The pipeline `tasha` and the TASHA build {#sec-labour}
 
 ```{python}
 #| label: labour
-completions = pd.read_parquet(LABOUR / "completions.parquet")
-provenance = json.loads((LABOUR / "provenance.json").read_text(encoding="utf-8"))
+completions = pd.read_parquet(PIPE / "persons" / "completions.parquet")
+PIPE_PROVENANCE = json.loads((PIPE / "provenance.json").read_text(encoding="utf-8"))
+provenance = PIPE_PROVENANCE["levels"]["persons"]
 drawn = completions.merge(PERSONS.loc[UNKNOWN, KEYS], on=KEYS)
 per_draw = drawn.groupby("completion").agg(workers=("situacion_laboral", lambda s: int(s.eq("trabaja").sum())),
                                            students=("situacion_laboral", lambda s: int(s.eq("estudiante").sum())))
 workers = completions[completions["situacion_laboral"].eq("trabaja")]
 informal = workers.groupby("completion").apply(lambda d: float(np.average(d["informalidad"].eq("informal"), weights=d["weight"])))
-assert provenance["draws"] == completions["completion"].nunique() == CHAIN.draws and provenance["uncertainty"] == "bootstrap"
+assert provenance["draws"] == completions["completion"].nunique() == PIPELINE.draws and provenance["uncertainty"] == "bootstrap"
 assert completions.groupby("completion").size().nunique() == 1
 assert [step.score_source for step in CHAIN.steps] == ["eod.labour"] * 3
 display(Markdown(
-    f"The chain `labour` (`src/eodgdl/impute/chains/labour.yaml`) scores the employment, then the giro, then the "
+    "The pipeline `tasha` (`src/eodgdl/impute/pipelines/tasha.yaml`) runs the persons first, with the chain `labour` "
+    f"(`src/eodgdl/impute/chains/labour.yaml`): it scores the employment, then the giro, then the "
     "informality given the giro's sector (`giro_sector`, `harmonization/common.yaml`) on the same rows: every person who "
     f"worked last week or did not say ({fmt(completions.groupby('completion').size().iloc[0])} persons). It draws "
     f"{provenance['draws']} completed datasets, each with its own bootstrap refit of the three models, so a dataset "
@@ -307,6 +315,78 @@ display(Markdown(
     "(`--draw N` another, each an equally valid completed survey) and records which in `od_provenance.json`."
 ))
 per_draw.describe().loc[["mean", "std", "min", "max"]].round(1)
+```
+
+# The drawn workers in the dwellings' NSE {#sec-nse}
+
+```{python}
+#| label: nse
+from eodgdl.impute.spec import load_task as _load_task
+
+ORDER = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
+alone = pd.read_parquet(NSE / "completions.parquet")
+joint = pd.read_parquet(PIPE / "dwellings" / "completions.parquet")
+alone_provenance = json.loads((NSE / "provenance.json").read_text(encoding="utf-8"))
+dwelling_provenance = PIPE_PROVENANCE["levels"]["dwellings"]
+# the same models, draws and seed: only the workers aged 14+ differ between the two
+assert PIPE_PROVENANCE["aggregate"] and dwelling_provenance["bundles"] == alone_provenance["bundles"]
+assert dwelling_provenance["draws"] == alone_provenance["draws"] and dwelling_provenance["seed"] == alone_provenance["seed"]
+assert (joint[["folio_vivienda", "completion"]].to_numpy() == alone[["folio_vivienda", "completion"]].to_numpy()).all()
+DWELLINGS = build_frame(_load_task("educacion_jefe"), Context()).frame.set_index("folio_vivienda")
+dwelling = joint["folio_vivienda"]
+w = DWELLINGS["ponderador"].reindex(dwelling).to_numpy(float)
+ageb = DWELLINGS["ageb"].astype(str).reindex(dwelling).to_numpy()
+reported = DWELLINGS["trabajadores_14_n"].reindex(dwelling).to_numpy(int)
+assert (joint["trabajadores_14_n"].to_numpy() >= reported).all()
+assert (alone["amai_puntos"].notna()).all()
+counted = joint["trabajadores_14"] != DWELLINGS["trabajadores_14"].reindex(dwelling).to_numpy()
+# nothing moves but where a draw's worker level changed, and the calibration only re-ranks within an AGEB and draw
+for column in ("educacion_jefe", "amai_banos", "amai_dormitorios", "amai_puntos", "nse"):
+    assert not ((joint[column].astype(str) != alone[column].astype(str)) & ~counted).any(), column
+assert not (joint["educacion_jefe"] != alone["educacion_jefe"]).any()
+moved_points = pd.Series((joint["amai_puntos"] != alone["amai_puntos"]).to_numpy())
+cell = moved_points.groupby([joint["completion"].to_numpy(), ageb]).transform("any").to_numpy()
+moved_calibrated = (joint["nse_calibrado"] != alone["nse_calibrado"]).to_numpy()
+assert not (moved_calibrated & ~cell).any()
+
+rank = {level: i for i, level in enumerate(ORDER)}
+step = joint["nse"].map(rank) - alone["nse"].map(rank)
+calibrated_step = joint["nse_calibrado"].map(rank) - alone["nse_calibrado"].map(rank)
+per_draw = pd.DataFrame({"raised count": (joint["trabajadores_14_n"].to_numpy() > reported), "level up": step > 0, "level down": step < 0,
+                         "calibrated up": calibrated_step > 0, "calibrated down": calibrated_step < 0, "completion": joint["completion"]}).groupby("completion").sum()
+D = joint["completion"].nunique()
+
+
+def shares(frame, column, levels):
+    return pd.Series({level: np.average(frame[column].astype(str).eq(level), weights=w) for level in levels})
+
+
+rows = []
+for column, levels in (("trabajadores_14", ["0", "1", "2", "3", "4 o más"]), ("amai_banos", ["0", "1", "2_o_mas"]),
+                       ("amai_dormitorios", ["1", "2", "3", "4_o_mas"]), ("nse", ORDER), ("nse_calibrado", ORDER)):
+    before = shares(alone.assign(trabajadores_14=DWELLINGS["trabajadores_14"].reindex(dwelling).to_numpy()), column, levels)
+    after = shares(joint, column, levels)
+    rows += [{"column": column, "level": level, "chain nse (%)": 100 * before[level], "pipeline (%)": 100 * after[level],
+              "change (pp)": 100 * (after[level] - before[level])} for level in levels]
+table = pd.DataFrame(rows)
+display(Markdown(
+    "The dwellings' AMAI level counts the members aged 14+ who worked last week (15 points a worker), and the two ENIGH "
+    "models read the same count. The chain `nse` alone counts the reported workers only. The pipeline runs the persons "
+    "first and adds to each dwelling, in each completed dataset, the members whose employment was not answered and is "
+    "drawn as working (`eodgdl.impute.aggregate`, after the feature cache), so dataset d of the dwellings reads dataset d "
+    "of the persons. Each level keeps its chain's seed and models: with the drawn workers switched off "
+    "(`eodgdl impute score tasha --no-aggregate`) the pipeline reproduces both chains' completed datasets exactly.\n\n"
+    f"Per dataset the count rises in {per_draw['raised count'].mean():,.0f} dwellings "
+    f"({per_draw['raised count'].min():,}-{per_draw['raised count'].max():,}), "
+    f"and their uncalibrated level moves up in {per_draw['level up'].mean():,.0f} "
+    f"({pct(np.average(step > 0, weights=w), 2)} of the dwelling weight) and down in {per_draw['level down'].mean():,.0f} "
+    "(the bathrooms and bedrooms drawn given more workers). Nothing else moves, but the AGEB calibration: its levels "
+    "follow the ranking of points within each AGEB to AMAI's mix there, so a dwelling that gains points can push a "
+    f"neighbour down. Per dataset the calibrated level moves up in {per_draw['calibrated up'].mean():,.0f} dwellings and "
+    f"down in {per_draw['calibrated down'].mean():,.0f}, and the calibrated shares stay AMAI's: `IncomeClass`, the TASHA "
+    "column, is the calibrated level of one dataset."
+))
+table.round(2).style.hide(axis="index").format(precision=2)
 ```
 
 # Assumptions and limits {#sec-limits}

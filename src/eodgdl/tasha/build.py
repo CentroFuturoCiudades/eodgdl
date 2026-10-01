@@ -7,9 +7,11 @@ work/school zone lookups, the daycare trips by age, H only at the household's
 zone — is implemented below, and the prose is its spec.
 
 The columns a mapping marks ``imputed`` (IncomeClass; EmploymentStatus and StudentStatus where unanswered,
-EmploymentStatus's P, Formality, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute chains: ``load_completed(root, draw)`` (each chain's
-``multiple_imputation/completions.parquet``, draw ``draw``), passed as ``build(tables, completed=...)``. Without it
-those columns take their mapping's default (IncomeClass 7, Formality O, no P, the reported giro only).
+EmploymentStatus's P, Formality, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute
+pipeline ``tasha`` (persons and dwellings drawn jointly: a dwelling's NSE counts its drawn workers):
+``load_completed(root, draw)`` (each level's ``<root>/tasha/<level>/completions.parquet``, draw ``draw``), passed as
+``build(tables, completed=...)``. Without it those columns take their mapping's default (IncomeClass 7, Formality O,
+no P, the reported giro only).
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
@@ -52,33 +54,35 @@ class ODTables(NamedTuple):
     trips: pd.DataFrame
 
 
-def load_completed(root="output/impute", draw=0) -> dict[str, pd.DataFrame]:
-    """One completed dataset of every eodgdl.impute chain a mapping reads: ``{chain: frame}``, the rows of draw
-    ``draw`` of ``<root>/<chain>/multiple_imputation/completions.parquet`` (every value drawn, jointly within the
-    chain), indexed by the chain's keys. ``frame.attrs`` holds the draw and the chain's provenance."""
-    chains = sorted({chain for entries in load_mappings().values() if isinstance(entries, dict)
-                     for entry in entries.values() if isinstance(entry, dict)
-                     for _, chain, _, _ in imputed_lookups(entry)})
+def load_completed(root="output/impute", draw=0) -> dict[str, dict[str, pd.DataFrame]]:
+    """One completed dataset of every eodgdl.impute pipeline a mapping reads: ``{pipeline: {level: frame}}``, the rows
+    of draw ``draw`` of each level's ``<root>/<pipeline>/<level>/completions.parquet`` (every value drawn, jointly
+    across the levels), indexed by the level's keys. ``frame.attrs`` holds the draw and the pipeline's provenance."""
+    pipelines = sorted({pipeline for entries in load_mappings().values() if isinstance(entries, dict)
+                        for entry in entries.values() if isinstance(entry, dict)
+                        for _, pipeline, _, _ in imputed_lookups(entry)})
     completed = {}
-    for chain in chains:
-        folder = Path(root) / chain / "multiple_imputation"
+    for pipeline in pipelines:
+        folder = Path(root) / pipeline
         provenance = json.loads((folder / "provenance.json").read_text(encoding="utf-8"))
         if not 0 <= draw < provenance["draws"]:
             raise ValueError(f"{folder}: draw {draw} outside its {provenance['draws']} completed datasets")
-        frame = pd.read_parquet(folder / "completions.parquet")
-        frame = frame[frame["completion"] == draw].drop(columns=["completion", "weight"])
-        frame = frame.set_index([key for key in ("folio_vivienda", "folio_habitante") if key in frame.columns])
-        frame.attrs = {"root": str(root), "draw": draw, "provenance": provenance}
-        completed[chain] = frame
+        completed[pipeline] = {}
+        for level in provenance["levels"]:
+            frame = pd.read_parquet(folder / level / "completions.parquet")
+            frame = frame[frame["completion"] == draw].drop(columns=["completion", "weight"])
+            frame = frame.set_index([key for key in ("folio_vivienda", "folio_habitante") if key in frame.columns])
+            frame.attrs = {"root": str(root), "draw": draw, "level": level, "provenance": provenance}
+            completed[pipeline][level] = frame
     return completed
 
 
-def _imputed(completed, chain: str, column: str, index: pd.Index) -> pd.Series:
-    """The completed ``column`` of ``chain`` for the rows of ``index`` (NA where the chain has no value, or with no
-    ``completed``)."""
+def _imputed(completed, pipeline: str, column: str, index: pd.Index) -> pd.Series:
+    """The completed ``column`` of ``pipeline`` (from the level whose completions hold it) for the rows of ``index``
+    (NA where the pipeline has no value, or with no ``completed``)."""
     if completed is None:
         return pd.Series(pd.NA, index=index, dtype="object")
-    frame = completed[chain]
+    [frame] = [frame for frame in completed[pipeline].values() if column in frame.columns]
     keys = index.to_frame(index=False)[list(frame.index.names)]
     return pd.Series(frame[column].reindex(pd.MultiIndex.from_frame(keys) if len(frame.index.names) > 1 else keys.iloc[:, 0]).to_numpy(),
                      index=index, dtype="object")
@@ -87,8 +91,8 @@ def _imputed(completed, chain: str, column: str, index: pd.Index) -> pd.Series:
 def _imputed_codes(column: str, index: pd.Index, completed, which="imputed") -> pd.Series:
     """The codes the mapping's imputed lookup (``which``: the entry's own, or its override's) gives the rows of
     ``index``; NA where the completed dataset has no value."""
-    [(_, chain, name, values)] = [lookup for lookup in imputed_lookups(mapping(column)) if lookup[0] == which]
-    return _imputed(completed, chain, name, index).map(values)
+    [(_, pipeline, name, values)] = [lookup for lookup in imputed_lookups(mapping(column)) if lookup[0] == which]
+    return _imputed(completed, pipeline, name, index).map(values)
 
 
 def _household_ids(viv: pd.DataFrame) -> pd.Series:
@@ -132,7 +136,7 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd
         "DwellingType": mapping("DwellingType")["constant"],
         "Vehicles": (viv.n_autos_camionetas.map(veh).fillna(veh_default).astype(int)
                      + viv.n_motos.map(veh).fillna(veh_default).astype(int)),
-        # the AMAI level of the chain nse's completed dataset
+        # the AMAI level of the pipeline's completed dataset (its dwellings: the chain nse given the drawn workers)
         "IncomeClass": (_imputed_codes("IncomeClass", viv.index, completed)
                            .fillna(mapping("IncomeClass")["default"]).astype(int)),
         "ExpansionFactor": viv.ponderador.astype(float),

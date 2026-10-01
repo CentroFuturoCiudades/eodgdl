@@ -30,7 +30,7 @@ so everything here works offline and from an installed wheel.
 ```python
 from eodgdl import load_eod, tasha
 
-completed = tasha.load_completed("output/impute", draw=0)   # the chains nse and labour, one completed dataset
+completed = tasha.load_completed("output/impute", draw=0)   # the pipeline tasha, one completed dataset
 od = tasha.build(load_eod("data"), completed=completed)    # ODTables(households, people, trips)
 assert tasha.validate_all(*od) == []
 od.trips.to_csv("output/od_trips.csv", index=False)
@@ -44,11 +44,12 @@ eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 
 The imputed columns (`IncomeClass`; `EmploymentStatus` and `StudentStatus` where
 unanswered, `EmploymentStatus`'s `P`, `Formality`, a worker's unreported `Occupation`) read
-one completed dataset of the eodgdl.impute chains (`nse`, `labour`): `tasha
-build` takes `--impute ROOT` (default `output/impute`) and `--draw N` (default 0), reads
-each chain's `ROOT/<chain>/multiple_imputation/completions.parquet` (every value drawn,
-jointly within the chain, `eodgdl impute score <chain> --draws M --bootstrap`) and writes
-`od_provenance.json` with the draw and the bundles; in Python,
+one completed dataset of the eodgdl.impute pipeline `tasha` (persons and dwellings drawn
+jointly, so a dwelling's AMAI level counts its members drawn as workers): `tasha build` takes
+`--impute ROOT` (default `output/impute`) and `--draw N` (default 0), reads each level's
+`ROOT/tasha/<level>/completions.parquet` (`persons`, `dwellings`; every value drawn,
+`eodgdl impute score tasha`) and writes `od_provenance.json` with the draw and the bundles; a
+mapping names the pipeline and the column (`imputed: {pipeline: tasha, column: ...}`); in Python,
 `tasha.build(tables, completed=tasha.load_completed(root, draw))`. A different draw is
 another equally valid completed survey; `--no-impute` leaves those columns at their
 mapping's defaults.

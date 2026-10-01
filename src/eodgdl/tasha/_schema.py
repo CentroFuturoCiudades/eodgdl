@@ -229,29 +229,36 @@ def _check_sources(table, column, entry):
 
 
 def imputed_lookups(entry):
-    """The (label, chain, column, values) of an entry's imputed lookups: its own ``imputed`` (with its own ``values``,
-    or the entry's where it has no ``source``) and an ``override``'s."""
+    """The (label, pipeline, column, values) of an entry's imputed lookups: its own ``imputed`` (with its own
+    ``values``, or the entry's where it has no ``source``) and an ``override``'s."""
     found = []
     imputed = entry.get("imputed")
     if imputed:
         values = imputed.get("values", entry.get("values") if entry.get("source") is None else None) or {}
-        found.append(("imputed", imputed["chain"], imputed["column"], values))
+        found.append(("imputed", imputed["pipeline"], imputed["column"], values))
     override = entry.get("override") or {}
     if override.get("imputed"):
-        found.append(("override imputed", override["imputed"]["chain"], override["imputed"]["column"], override.get("values") or {}))
+        found.append(("override imputed", override["imputed"]["pipeline"], override["imputed"]["column"], override.get("values") or {}))
     return found
 
 
 @functools.cache
-def chain_levels(chain, column):
-    """The levels an eodgdl.impute chain's completed ``column`` takes: a task's classes (the column named by the
-    task's output prefix) or a derive step's declared levels; None when the impute extra is not installed."""
+def completed_levels(pipeline, column):
+    """The levels an eodgdl.impute pipeline's completed ``column`` takes, in the chain of the level that holds it: a
+    task's classes (the column named by the task's output prefix), a derive step's declared levels or a given
+    column's (the levels of the tasks that read it); None when the impute extra is not installed."""
     try:
         from eodgdl.impute.chain import DeriveStep, load_chain
+        from eodgdl.impute.pipeline import load_pipeline
+        from eodgdl.impute.run import task_levels
         from eodgdl.impute.spec import load_task
     except ImportError:
         return None
-    spec = load_chain(chain)
+    level = load_pipeline(pipeline).column_level(column)
+    spec = load_chain(level.chain)
+    if column in level.given:
+        readers = [load_task(task) for task in spec.tasks if column in load_task(task).features]
+        return frozenset(task_levels(readers[0])[column]) - {readers[0].missing_label}
     for task in spec.tasks:
         task_spec = load_task(task)
         if task_spec.prefix == column:
@@ -259,21 +266,21 @@ def chain_levels(chain, column):
     for step in spec.steps:
         if isinstance(step, DeriveStep) and column in step.config.get("levels", {}):
             return frozenset(map(str, step.config["levels"][column]))
-    raise KeyError(f"chain {chain!r} has no output column {column!r}")
+    raise KeyError(f"pipeline {pipeline!r} has no output column {column!r}")
 
 
 def _check_imputed(table, column, entry):
-    """Every imputed lookup names a chain output and only keys its levels can take."""
+    """Every imputed lookup names a pipeline output and only keys its levels can take."""
     problems = []
-    for label, chain, name, values in imputed_lookups(entry):
+    for label, pipeline, name, values in imputed_lookups(entry):
         try:
-            levels = chain_levels(chain, name)
+            levels = completed_levels(pipeline, name)
         except (KeyError, FileNotFoundError, ValueError) as error:
-            problems.append(f"{table}.{column}: {label} {chain}.{name}: {error}")
+            problems.append(f"{table}.{column}: {label} {pipeline}.{name}: {error}")
             continue
         if levels is None:
             continue
-        problems.extend(f"{table}.{column}: {label} {chain}.{name} has no level {key!r}, so the lookup entry can never match"
+        problems.extend(f"{table}.{column}: {label} {pipeline}.{name} has no level {key!r}, so the lookup entry can never match"
                         for key in values if str(key) not in levels)
     return problems
 

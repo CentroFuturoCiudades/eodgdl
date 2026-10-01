@@ -27,6 +27,10 @@ batched call. A parallel chain with derive steps forms its completions the same 
 A downstream task is trained on the upstream target as observed in its training source, not on imputed values, so
 retraining an upstream task does not invalidate it; what must agree is the downstream feature's declared levels and
 the values the upstream fills it with (checked on every run). ``provenance`` records the bundles each run used.
+
+A draws chain may also be ``given`` per-completion features from outside it (a pipeline's aggregate of another row
+level's draws, :mod:`eodgdl.impute.pipeline`): they enter after the feature cache, as columns of the completions, and
+every step whose task reads one is scored on it per completion, as on an upstream value.
 """
 
 import functools
@@ -186,6 +190,8 @@ class ChainResult:
     frame: pd.DataFrame
     completions: pd.DataFrame
     provenance: dict
+    base: pd.DataFrame = field(default=None, repr=False)   # the scoring source's frame (the first task's), row by row
+    keys: list = field(default=None)                        # the scoring source's keys
 
 
 def _level_map(use, upstream=None, numeric=False):
@@ -256,9 +262,9 @@ def _joined_over_scenarios(values, rows, n_rows):
     return pd.array(joined.reindex(range(n_rows)).to_numpy(), dtype="string")
 
 
-def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_subsets):
-    """P(y | x, the upstream values of each completion), one row per completion, each distinct (row, upstream values)
-    scored once: ``(conditional, first, conditionals)``, with the task's outputs on each row's first combination (the
+def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_subsets, given=()):
+    """P(y | x, the upstream values of each completion, and its ``given`` columns), one row per completion, each
+    distinct (row, upstream and given values) scored once: ``(conditional, first, conditionals)``, with the task's outputs on each row's first combination (the
     columns that do not depend on the upstream; the arms used and the marginalized features joined over the
     combinations the row's completions take) and, for an enumerated step with one upstream, the conditionals of every
     row at every level of the feature (``{prob_<p>_<class>_given_<feature>_<level>: values}``)."""
@@ -269,6 +275,8 @@ def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_su
         level_map = _level_map(use, upstream, use.feature in spec.numeric) if chain.propagation != "expected" else None
         values = completions[upstream.prefix]
         filled[use.feature] = values.map(level_map).to_numpy() if level_map else values.to_numpy()
+    for column in given:
+        filled[column] = completions[column].to_numpy()
     combos = filled.drop_duplicates().reset_index(drop=True)
     by_level = chain.propagation == "enumerate" and len(step.uses) == 1
     if by_level:
@@ -281,6 +289,8 @@ def _conditionals(chain, step, spec, frame, bundle, completions, specs, level_su
     expanded = frame.iloc[combos["row"].to_numpy()].reset_index(drop=True)
     for use in step.uses:
         expanded[use.feature] = combos[use.feature].to_numpy()
+    for column in given:
+        expanded[column] = combos[column].to_numpy()
     scored = score_frame(spec, expanded, bundle, level_subsets=level_subsets)
     position = filled.merge(combos.reset_index(), on=list(filled.columns), how="left")["index"].to_numpy()
     firsts = combos.drop_duplicates("row")
@@ -376,7 +386,7 @@ def _derive(step, index, chain, completions, base, keys, derive_functions):
     return derived
 
 
-def _bootstrap_conditional(chain, step, spec, frame, models, completions, specs, level_subsets, option):
+def _bootstrap_conditional(chain, step, spec, frame, models, completions, specs, level_subsets, option, given=()):
     """P(y | x, the completion's upstream values) as the completion's bootstrap bundle gives it: draw d scored with the
     d-th (modulo B) of ``models``, each distinct (row, upstream values) once per model."""
     which = completions["completion"].to_numpy() % len(models)
@@ -384,16 +394,40 @@ def _bootstrap_conditional(chain, step, spec, frame, models, completions, specs,
     for m in np.unique(which):
         bundle = models[m] if option.get("auxiliary") is not False else {**models[m], "auxiliary": {}}
         rows = which == m
-        if step.uses:
-            conditional[rows] = _conditionals(chain, step, spec, frame, bundle, completions[rows].reset_index(drop=True), specs, level_subsets)[0]
+        if step.uses or given:
+            conditional[rows] = _conditionals(chain, step, spec, frame, bundle, completions[rows].reset_index(drop=True), specs, level_subsets, given)[0]
         else:
             scored = score_frame(spec, frame, bundle, level_subsets=level_subsets)
             conditional[rows] = scored[spec.probability_columns].to_numpy()[completions["row"].to_numpy()[rows]]
     return conditional
 
 
+def _given_columns(chain, given, base, keys, specs, completions):
+    """``given`` (a frame of the source's keys, ``completion`` and feature columns, or a function of ``base`` returning
+    one) aligned to ``completions``: ``{column: values}``, one value per completion. Every completion must have one, a
+    column must not shadow a task's output, and a categorical feature's values must be levels its tasks declare."""
+    if callable(given):
+        given = given(base)
+    _check(chain.propagation == "draws", f"{chain.name}: given features vary by completion, so they need propagation: draws")
+    columns = [column for column in given.columns if column not in (*keys, "completion")]
+    clash = set(columns) & ({spec.prefix for spec in specs.values()} | set(completions.columns))
+    _check(not clash, f"{chain.name}: given columns {sorted(clash)} clash with the chain's own")
+    index = base[keys].astype(str).reset_index(drop=True).reset_index(names="row")
+    given = given.assign(**{key: given[key].astype(str) for key in keys}).merge(index, on=keys, how="inner")
+    aligned = completions[["row", "completion"]].merge(given[["row", "completion", *columns]], on=["row", "completion"], how="left", validate="one_to_one")
+    missing = aligned[columns].isna().any(axis=1)
+    _check(not missing.any(), f"{chain.name}: no given value for {int(missing.sum())} completions")
+    for task, spec in specs.items():
+        declared = task_levels(spec)
+        for column in columns:
+            if column in spec.features and column not in spec.numeric:
+                outside = set(aligned[column].astype(str)) - set(declared[column])
+                _check(not outside, f"{chain.name}: given {column} takes levels {task} does not declare: {sorted(outside)}")
+    return {column: aligned[column].to_numpy() for column in columns}
+
+
 def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, derive_functions=None, specs=None, upstream_outputs=None, options=None,
-              bootstrap=None):
+              bootstrap=None, given=None):
     """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
     ``bundles`` ({task: bundle}) overrides the tasks' bundles, which are otherwise read by
     :func:`~eodgdl.impute.bundle.load_bundle` (from ``<retrained>/<task>/`` when a retrain wrote one there, else the
@@ -403,8 +437,11 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra level subsets, or no auxiliary
     models (training shares instead). ``bootstrap`` ({task: [bundles]}) gives the bootstrap bundles a chain with
     ``uncertainty: bootstrap`` scores its draws with (default: :func:`~eodgdl.impute.bundle.load_bootstrap` under
-    ``retrained``); the marginals, arms and flags are the bundles', the draws the bootstrap models'. Returns a
-    :class:`ChainResult`."""
+    ``retrained``); the marginals, arms and flags are the bundles', the draws the bootstrap models'. ``given`` (draws
+    only: a frame of the source's keys, ``completion`` and feature columns, or a function of the source frame returning
+    one) gives every completion values from outside the chain (:func:`_given_columns`): they become columns of the
+    completions, each step whose task reads one is scored on them, a derive step finds them among the completions, and
+    each is aggregated per row like a derived value. Returns a :class:`ChainResult`."""
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context(tables=tables)
     specs = {task: (specs or {}).get(task) or step_spec(chain, task) for task in chain.tasks}
@@ -437,6 +474,19 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
                                 "weight": np.full(n_rows * per_row, 1.0 / per_row)})
     needed = _needed(chain)
     outputs, derived = {}, {}
+    given_columns = []
+    if given is not None:
+        for column, values in _given_columns(chain, given, base, keys, specs, completions).items():
+            completions[column] = values
+            given_columns.append(column)
+            readers = [spec for spec in specs.values() if column in spec.features and column not in spec.numeric]
+            levels = list(task_levels(readers[0])[column]) if readers else None
+            aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), n_rows, levels)
+            if isinstance(aggregated, pd.DataFrame):
+                derived.update({f"prob_{column}_{level}": aggregated[level].to_numpy() for level in aggregated.columns})
+            else:
+                derived[f"{column}_media"] = aggregated
+        provenance["given"] = given_columns
     for index, step in enumerate(chain.steps):
         if isinstance(step, DeriveStep):
             derived.update(_derive(step, index, chain, completions, base, keys, derive_functions))
@@ -447,21 +497,22 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
         if option.get("auxiliary") is False:
             bundle = {**bundle, "auxiliary": {}}
         subsets = {**spec.level_subsets, **option.get("level_subsets", {})} or None
+        step_given = [column for column in given_columns if column in spec.features]
         rows = completions["row"].to_numpy()
         conditionals = {}
         if step.task in (upstream_outputs or {}):
-            _check(not step.uses, f"{chain.name}: only a task that uses no other can take given outputs")
+            _check(not step.uses and not step_given, f"{chain.name}: only a task that uses no other value can take given outputs")
             first = frame[keys].merge(upstream_outputs[step.task], on=keys, how="left", validate="one_to_one")
             _check(first[spec.probability_columns].notna().all().all(), f"{chain.name}: the given {step.task} outputs miss rows")
             first.index = frame.index
             conditional = first[spec.probability_columns].to_numpy()[rows]
-        elif not step.uses:
+        elif not step.uses and not step_given:
             first = score_frame(spec, frame, bundle, level_subsets=subsets)
             conditional = first[spec.probability_columns].to_numpy()[rows]
         else:
-            conditional, first, conditionals = _conditionals(chain, step, spec, frame, bundle, completions, specs, subsets)
+            conditional, first, conditionals = _conditionals(chain, step, spec, frame, bundle, completions, specs, subsets, step_given)
         if bootstrap and step.task not in (upstream_outputs or {}):
-            conditional = _bootstrap_conditional(chain, step, spec, frame, bootstrap[step.task], completions, specs, subsets, option)
+            conditional = _bootstrap_conditional(chain, step, spec, frame, bootstrap[step.task], completions, specs, subsets, option, step_given)
         outputs[step.task] = {**_marginal_outputs(chain, step, spec, first, conditional, completions).to_dict("series"), **conditionals}
         if step.task in needed or chain.propagation == "draws":      # a draw is a completed dataset: every value drawn
             completions = _advance(completions, spec, conditional, chain.propagation, rng)
@@ -474,7 +525,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
         frame[column] = values
     long = pd.concat([base[keys].iloc[completions["row"].to_numpy()].reset_index(drop=True), completions.drop(columns="row")], axis=1)
 
-    return ChainResult(chain, frame, long, provenance)
+    return ChainResult(chain, frame, long, provenance, base, list(keys))
 
 
 def write_chain(result, out):
