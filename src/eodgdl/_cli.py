@@ -382,8 +382,13 @@ def _reweight(args) -> int:
     from eodgdl import reweight
 
     if args.reweight_cmd == "build":
+        import os
+        from pathlib import Path
+
         from eodgdl import load_eod
 
+        if args.data:   # the imputed attributes' model file: models/ beside the data directory
+            os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         files = reweight.build(load_eod(args.data), data_dir=args.data)
         for path in reweight.write(files, args.out):
             print(f"wrote {path}")

@@ -474,7 +474,9 @@ notebook = [
     { name = "seaborn" },
 ]
 reweight = [
+    { name = "joblib" },
     { name = "mxcensus" },
+    { name = "scikit-learn" },
 ]
 
 [package.metadata]
@@ -484,6 +486,7 @@ requires-dist = [
     { name = "geopandas", specifier = ">=1.1.2" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.29" },
     { name = "joblib", marker = "extra == 'giro'", specifier = ">=1.5" },
+    { name = "joblib", marker = "extra == 'reweight'", specifier = ">=1.5" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "mapclassify", marker = "extra == 'notebook'", specifier = ">=2.10" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
@@ -501,6 +504,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "pyyaml", marker = "extra == 'giro'", specifier = ">=6.0" },
     { name = "scikit-learn", marker = "extra == 'giro'", specifier = ">=1.9.0" },
+    { name = "scikit-learn", marker = "extra == 'reweight'", specifier = ">=1.9.0" },
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13" },
     { name = "tqdm", specifier = ">=4.67" },
 ]

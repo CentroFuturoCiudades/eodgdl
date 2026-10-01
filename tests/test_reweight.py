@@ -84,13 +84,44 @@ def test_records_have_the_survey_s_rows_and_integer_keys(files, trips):
 
 def test_employed_is_tasha_s_worker(files, tables):
     # One worker definition across the package: tasha's EmploymentStatus F or P is
-    # reweight's Employed, person by person (both read trabajo_semana_pasada).
-    from eodgdl import tasha
+    # reweight's Employed, person by person (both read trabajo_semana_pasada), for those
+    # who answered; the 4,370 who did not take P(trabaja) from the pinned design-weight
+    # empleo bundle (the probability, not a draw), and NotEmployed its complement.
+    import numpy as np
 
-    people = tasha.build_people(tables.hab, tables.trips, tables.viv)
+    from eodgdl import tasha
+    from eodgdl.data import resolve
+    from eodgdl.impute.run import score_task
+    from eodgdl.impute.sources import Context
+
+    pp, hab = files.persons, tables.hab
+    people = tasha.build_people(hab, tables.trips, tables.viv)
+    answered = hab.trabajo_semana_pasada.notna().to_numpy()
     worker = people.EmploymentStatus.isin(["F", "P"]).to_numpy()
-    assert (worker == (files.persons.Employed.to_numpy() == 1)).all()
-    assert (files.persons.Employed + files.persons.NotEmployed == (files.persons.Age6_11 == 0)).all()
+    assert (worker[answered] == (pp.Employed.to_numpy()[answered] == 1)).all()
+    assert np.isclose(pp.Employed + pp.NotEmployed, (pp.Age6_11 == 0).astype(float), rtol=0, atol=1e-12).all()
+
+    unanswered = ~answered & (hab.edad >= 12).to_numpy()
+    assert unanswered.sum() == 4_370 and (hab.edad[unanswered] >= 16).all()
+    scores = score_task("empleo", path=resolve("od_empleo_design_model.joblib"), context=Context(tables=tables))
+    p = scores.set_index(["folio_vivienda", "folio_habitante"])["prob_situacion_laboral_trabaja"].reindex(hab.index[unanswered])
+    assert (pp.Employed.to_numpy()[unanswered] == p.to_numpy()).all() and (pp.NotEmployed.to_numpy()[unanswered] == 1 - p.to_numpy()).all()
+    assert ((pp.Employed > 0) & (pp.Employed < 1)).sum() == 4_370      # every unanswered person, and no one else, fractional
+    assert (pp.Unemployed.to_numpy()[unanswered] == 0).all() and (pp.Inactive.to_numpy()[unanswered] == 0).all()
+
+
+def test_the_pinned_design_weight_empleo_bundle_is_v0_9_0_s():
+    # stage 1 reads the empleo bundle trained on the survey's design weight, pinned under a
+    # name of its own: v0.9.0's od_empleo_model.joblib, byte for byte
+    from eodgdl.data import POOCH
+    from eodgdl.impute.bundle import training_weight
+
+    import joblib
+
+    from eodgdl.data import resolve
+
+    assert POOCH.registry["od_empleo_design_model.joblib"] == "sha256:247d18fc175b98ebd0698648af6cb36dda671a822205889925141a815f6e97f2"
+    assert training_weight(joblib.load(resolve("od_empleo_design_model.joblib"))["metadata"]) == "design"
 
 
 def test_zone_system_is_the_cells_of_the_survey(files):
@@ -110,7 +141,7 @@ def test_dummies_partition(files):
     assert (pp.Male + pp.Female == pp.Persons).all()
     assert (pp[ages].sum(axis=1) == pp.Persons).all()
     assert (pp.Employed + pp.Unemployed + pp.Inactive <= pp.Persons).all()
-    assert ((pp.Employed + pp.NotEmployed) == (pp.Age6_11 == 0).astype(float)).all()  # partitions the 12+
+    assert ((pp.Employed + pp.NotEmployed) - (pp.Age6_11 == 0).astype(float)).abs().max() < 1e-12  # partitions the 12+
     assert pp.Cyclist.sum() == 561   # the survey's bicycle commuters with a trip on the chain the model reads
     boardings = ["BusBoardings", "RailBoardings", "BRTBoardings", "SitrenBoardings", "OtherTransitBoardings"]
     assert (tt[boardings].sum(axis=1) == tt.TransitBoardings).all()
@@ -285,6 +316,11 @@ def test_diagnostic_reads_the_shipped_weights_against_the_targets(files):
     assert round(dwellings.survey_at_design_weight.sum()) == 1_476_347
     assert (dwellings.ratio - 1).abs().median() < 0.08  # the report's 6.5 % median deviation
     assert d.loc[d.target_column == "BusBoardings", "ratio"].iloc[0] > 2
+    # the activity targets with the 4,370 unanswered counted by their probability of working
+    # (2,252,572 and 2,181,263 when they were all NotEmployed)
+    activity = d.groupby("target_column").survey_at_design_weight.sum()
+    assert round(activity.Employed + activity.NotEmployed) == 2_252_572 + 2_181_263
+    assert (round(activity.Employed), round(activity.NotEmployed)) == (2_366_943, 2_066_892)
 
 
 def test_census_cyclists_reproduce_the_spec_constants():

@@ -20,6 +20,10 @@
 #   count        legs-level lookup: the attribute is the number of the trip's legs whose
 #                answer maps to 1 (boardings), or `any: true` for a 0/1 flag instead
 #   sum          the attribute is the sum of these attributes
+#   imputed      {task, bundle, class, complement}: on a `values` attribute, the rows whose
+#                answer is missing and that `when` admits take the probability of `class`
+#                from eodgdl.impute's `task` scored with the model file `bundle` (one minus
+#                it with `complement: true`), not `default`; every such row must be scored
 #   derivation   prose, for what a lookup cannot express
 #   note         caveats and judgement calls
 #   status       ok (default) | assumed | pending
@@ -171,10 +175,16 @@ attributes:
         Tiempo completo: 1
         Medio tiempo: 1
         Tenía trabajo, pero no trabajó: 1
+      imputed: {task: empleo, bundle: od_empleo_design_model.joblib, class: trabaja}
       note: >-
         The census counts economic activity from age 12; the same worker rule as
-        eodgdl.giro. 4,370 persons gave no answer and are 0 in Employed, Unemployed and
-        Inactive alike, so the three do not partition Persons.
+        eodgdl.giro. The 4,370 persons who gave no answer (all 16+, the socio-economic
+        block skipped) take their probability of working from the task empleo trained on
+        the survey's design weight (stage 1 of the processing: the weights are fitted on
+        the employment the TASHA build draws, not on non-response read as not working).
+        The probability, not a draw: no seed, the same records for every draw; the tool
+        reads attributes as floats and sums weight x value. They are 0 in Unemployed and
+        Inactive, which no target reads, so those two do not partition Persons.
 
     Unemployed:
       source: trabajo_semana_pasada
@@ -206,11 +216,12 @@ attributes:
         Medio tiempo: 0
         Tenía trabajo, pero no trabajó: 0
       default: 1
+      imputed: {task: empleo, bundle: od_empleo_design_model.joblib, class: trabaja, complement: true}
       note: >-
-        Everyone aged 12+ who is not Employed: the unemployed, the inactive and the 4,370
-        with no answer. With Employed it partitions the 12+ population, which is what the
-        census does with POCUPADA against the rest; the model cares about who travels to
-        work, not why the others do not.
+        Everyone aged 12+ who is not Employed: the unemployed and the inactive, and the
+        4,370 with no answer by one minus their probability of working. With Employed it
+        partitions the 12+ population, which is what the census does with POCUPADA against
+        the rest; the model cares about who travels to work, not why the others do not.
 
     Cyclist:
       source: [legs.traslado_medio, trips.motivo_viaje]

@@ -1,15 +1,15 @@
 """The survey as the tool's record tables: integer keys, numeric attributes.
 
 Every attribute is read from spec.yaml (``attributes``); this module only realises the
-entry kinds the spec documents (constant, values, range, when, count, sum, verbatim) and
-the one prose derivation, ``Cyclist``.
+entry kinds the spec documents (constant, values, range, when, count, sum, imputed,
+verbatim) and the one prose derivation, ``Cyclist``.
 """
 from __future__ import annotations
 
 import pandas as pd
 
 from eodgdl.chains import non_trips
-from eodgdl.reweight._spec import GEOGRAPHY_COLUMN, attributes, load_spec
+from eodgdl.reweight._spec import GEOGRAPHY_COLUMN, TABLES, attributes, load_spec
 from eodgdl.taz import load_zm_muns
 
 PERSON = ["folio_vivienda", "folio_habitante"]
@@ -81,6 +81,49 @@ def _attribute(df, name, entry):
     raise ValueError(f"{name}: cannot build from {entry}")
 
 
+def imputed_scores(tables):
+    """{(task, bundle): its scores} for every `imputed` attribute of the spec: the task
+    (eodgdl.impute) scored on its scoring source's rows with the model file `bundle`, indexed
+    by the source's keys. Needs the `giro` extra (scikit-learn)."""
+    from eodgdl.data import resolve
+    from eodgdl.impute.run import score_task
+    from eodgdl.impute.sources import Context, get_source
+    from eodgdl.impute.spec import load_task
+
+    scores = {}
+    for table in TABLES:
+        for entry in attributes(table).values():
+            key = (entry["imputed"]["task"], entry["imputed"]["bundle"]) if "imputed" in entry else None
+            if key is None or key in scores:
+                continue
+            spec = load_task(key[0])
+            scored = score_task(key[0], path=resolve(key[1]), context=Context(tables=tables))
+            scores[key] = scored.set_index(get_source(spec.score_source).keys)
+    return scores
+
+
+def _imputed(df, name, entry, values, scores):
+    """`values` with the rows whose answer is missing (and that `when` admits) set to the
+    probability of the entry's class (one minus it with `complement`)."""
+    from eodgdl.impute.spec import load_task
+
+    imputed = entry["imputed"]
+    if scores is None or (imputed["task"], imputed["bundle"]) not in scores:
+        raise ValueError(f"{name}: imputed from {imputed['task']} ({imputed['bundle']}), but no scores were given (records.imputed_scores)")
+    spec = load_task(imputed["task"])
+    column = spec.probability_columns[spec.class_slugs.index(imputed["class"])]
+    missing = df[entry["source"]].isna()
+    if "when" in entry:
+        missing &= df.eval(entry["when"])
+    probability = scores[imputed["task"], imputed["bundle"]][column].reindex(df.index[missing])
+    if probability.isna().any():
+        raise ValueError(f"{name}: {int(probability.isna().sum())} rows without an answer have no {imputed['task']} score")
+    probability = probability.to_numpy(dtype=float)
+    values = values.copy()
+    values[missing] = 1.0 - probability if imputed.get("complement") else probability
+    return values
+
+
 def build_households(viv):
     ids = zone_ids(viv)
     out = pd.DataFrame({"HouseholdID": viv.index.to_numpy(), "HouseholdTAZ": ids.TAZ.to_numpy()})
@@ -97,7 +140,8 @@ def _cyclists(hab, trips, legs, entry):
     return pd.Series(hab.index.isin(persons), index=hab.index).astype(float)
 
 
-def build_people(hab, trips, legs):
+def build_people(hab, trips, legs, scores=None):
+    """The person records; ``scores`` are the imputed attributes' (:func:`imputed_scores`)."""
     trips = trips[~non_trips(trips)]
     legs = legs[legs.index.droplevel("folio_traslado").isin(trips.index)]
     folio_viv = hab.index.get_level_values("folio_vivienda")
@@ -108,6 +152,8 @@ def build_people(hab, trips, legs):
             values = _cyclists(hab, trips, legs, entry)
         else:
             values = _attribute(hab, name, entry)
+            if "imputed" in entry:
+                values = _imputed(hab, name, entry, values, scores)
         out[name] = values.to_numpy()
     return out
 

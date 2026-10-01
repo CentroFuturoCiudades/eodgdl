@@ -1,4 +1,5 @@
 """Shared fixtures: the survey read and cleaned once for the whole session."""
+import os
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,8 @@ from eodgdl import load_stages
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 HAS_DATA = (DATA_DIR / "IMEPLAN_Base_Viajes_Master.csv").exists()
+if HAS_DATA:   # every file, the model bundles in models/ beside it, read from the clone (what the tests test), not the mirror
+    os.environ.setdefault("EODGDL_DATA_DIR", str(DATA_DIR))
 
 
 @pytest.fixture(scope="session")

@@ -15,6 +15,7 @@ from eodgdl.reweight.records import (
     build_people,
     build_trips,
     build_zones,
+    imputed_scores,
     record_geography,
 )
 from eodgdl.reweight.targets import (
@@ -55,12 +56,13 @@ def years():
 
 
 def build(tables, data_dir=None):
-    """Everything the tool reads, from `load_eod`'s tables and the census."""
+    """Everything the tool reads, from `load_eod`'s tables, the imputed attributes' models
+    (spec.yaml's `imputed`) and the census."""
     viv, hab, trips, legs = tables
     zone_system, zone_labels = build_zones(viv)
     records = ReweightFiles(
         zone_system, zone_labels,
-        build_households(viv), build_people(hab, trips, legs), build_trips(trips, legs),
+        build_households(viv), build_people(hab, trips, legs, imputed_scores(tables)), build_trips(trips, legs),
         {}, pd.DataFrame(), {}, pd.DataFrame(),
     )
     universe = census_universe(viv, trips)  # raises if the zone assignment disagrees with the survey
