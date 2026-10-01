@@ -25,6 +25,19 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   draw vs arg-max, the meaning of a worker's "0" zone, License/TransitPass sources): wire giro and informality by a
   draw; an employment/student task first in the chain; income from ENIGH in the NSE chain; work and school location
   models; dwelling type fused from the census sample questionnaire or ENIGH; parking from the trips' answers.
+- **Employment status** (session 9, 2026-09-30): task `empleo` (source `eod.persons`, 16+; target `situacion_laboral`:
+  trabaja / estudiante / hogar / jubilado / sin_trabajo; arms con_ocupacion / con_escolaridad / sin_ambas; builder
+  `eod.person_context`: trips, work/school trip, other members by answer, children). Held-out log loss 0.415 without
+  occupation or education (marginal 1.222), 0.228 with the occupation; workers F1 0.95, students 0.92. Of the 4,370
+  unanswered, 34% are imputed as working (59% among the answered; they are older, 4% made a work trip). Chain `labour`
+  (empleo -> giro -> informality, every step on `eod.labour` through the new step option `score_source`; sources may
+  declare `builders_as`); the TASHA build reads its draw for EmploymentStatus, StudentStatus, Formality, Occupation
+  (draw 0: 1,453 of the 4,370 workers, 337 students; employment 16+ 57.0% against 59.3% answered; informal 35.9%).
+  `output/impute/empleo/` (50 bootstrap bundles) and `output/impute/labour/` written in place; `reports/imputation_empleo.qmd`
+  reads both (who did not answer, arms, selection, held-out, calibration, the imputation, the chain's draws, limits). The giro -> sector
+  map is defined once, `transforms: giro_sector` in `harmonization/common.yaml`, read by both chains (`transform:
+  giro_sector`) and by eod.yaml's `sector` (`labels_of: giro`); rescored, both chains' outputs are identical (only the
+  chain hash, which now covers resolved transforms, moved).
 - **TASHA decisions** (2026-09-30, after comparing with Monterrey's `mappings/pimus2019_to_tasha.yaml`): `IncomeClass`
   is the AMAI level (chain `nse`'s `nse_calibrado`, C- and C merged, as Monterrey); `EmploymentStatus` P is an
   informal worker (Monterrey), from `sector_informality`, and `Formality` mirrors it; `Occupation` kept (to align with

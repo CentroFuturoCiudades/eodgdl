@@ -6,8 +6,8 @@ as ``derivation`` prose — the R/C demotion, the passenger override, the
 work/school zone lookups, the daycare trips by age, H only at the household's
 zone — is implemented below, and the prose is its spec.
 
-The columns a mapping marks ``imputed`` (IncomeClass, EmploymentStatus's P, Formality, a worker's unreported
-Occupation) read one completed dataset of the eodgdl.impute chains: ``load_completed(root, draw)`` (each chain's
+The columns a mapping marks ``imputed`` (IncomeClass; EmploymentStatus and StudentStatus where unanswered,
+EmploymentStatus's P, Formality, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute chains: ``load_completed(root, draw)`` (each chain's
 ``multiple_imputation/completions.parquet``, draw ``draw``), passed as ``build(tables, completed=...)``. Without it
 those columns take their mapping's default (IncomeClass 7, Formality O, no P, the reported giro only).
 
@@ -141,7 +141,9 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd
 
 def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, completed=None) -> pd.DataFrame:
     """od_people.csv, one row per person in ``hab`` (``completed``: :func:`load_completed`)."""
-    employment = (hab.trabajo_semana_pasada.map(build_map("EmploymentStatus"))
+    # the answer, else the drawn situation (a person who did not answer), else the default
+    employment = (hab.trabajo_semana_pasada.map(build_map("EmploymentStatus")).astype("object")
+                     .fillna(_imputed_codes("EmploymentStatus", hab.index, completed))
                      .fillna(mapping("EmploymentStatus")["default"]))
     # a worker's code from the drawn informality (P: informal), where the completed dataset has one
     informal = _imputed_codes("EmploymentStatus", hab.index, completed, "override imputed")
@@ -164,9 +166,11 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, comp
                          | ((trips.motivo_viaje == DAYCARE) & (age < ESCORT_FROM_AGE)))
                              .groupby(level=PERSON).any()
                              .reindex(hab.index).fillna(False))
+    drawn_student = (hab.trabajo_semana_pasada.isna() & _imputed_codes("StudentStatus", hab.index, completed).eq("S")).fillna(False)
     student = ((hab.ocupacion == "Estudiante")
                | (hab.trabajo_semana_pasada == "Es estudiante")
-               | made_school_trip)
+               | made_school_trip
+               | drawn_student)
 
     return pd.DataFrame({
         "HouseholdId": _household_ids(viv).reindex(

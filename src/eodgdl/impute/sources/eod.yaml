@@ -13,6 +13,52 @@ eod.workers:
   # The source adds `mes_entrevista`, the interview's month: the capture changed through the fieldwork (from April a
   # work trip's destination is an office half as often, reports/loading.qmd #sec-april) and so did the answers.
 
+eod.persons:
+  # One row per interviewed person aged `min_age` or more, with the dwelling's attributes, the interview month and
+  # `situacion_laboral` (the employment answer on the employment task's levels; NA where unanswered: 4,370 adults whose
+  # socio-economic block was skipped, most in February-April). The training rows of the task `empleo`.
+  keys: [folio_vivienda, folio_habitante]
+  weight: ponderador
+  group: folio_vivienda
+  min_age: 16                 # every unanswered person is 16 or older
+  dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]
+  labour_status:              # slug -> `trabajo_semana_pasada` answers
+    trabaja: [Tiempo completo, Medio tiempo, "Tenía trabajo, pero no trabajó"]
+    estudiante: [Es estudiante]
+    hogar: [Se dedica a los quehaceres del hogar o a cuidar a sus hijos]
+    jubilado: [Es jubilado o pensionado]
+    sin_trabajo: [No trabajo, Busco trabajo, Está incapacitado permanentemente para trabajar]
+
+eod.labour:
+  # The rows the chain `labour` completes: the persons of eod.persons who worked last week or did not answer. Their
+  # employment is observed or drawn (task empleo); giro and informality are scored on every row and read only where
+  # the person works (reported, or drawn). Feature builders as eod.workers's (`builders_as`).
+  keys: [folio_vivienda, folio_habitante]
+  weight: ponderador
+  group: folio_vivienda
+  min_age: 0                  # every worker, as eod.workers (243 are 12-15); the unanswered are all 16+
+  dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]
+  labour_status:
+    trabaja: [Tiempo completo, Medio tiempo, "Tenía trabajo, pero no trabajó"]
+    estudiante: [Es estudiante]
+    hogar: [Se dedica a los quehaceres del hogar o a cuidar a sus hijos]
+    jubilado: [Es jubilado o pensionado]
+    sin_trabajo: [No trabajo, Busco trabajo, Está incapacitado permanentemente para trabajar]
+  worker_status: trabaja
+  builders_as: eod.workers
+
+eod.person_context:
+  # The person's survey day (trips, and whether one went to work or to study) and the household around them (the other
+  # members aged `min_age`+ by their employment answer, and the children); read by the task empleo.
+  work_motive: Trabajar
+  school_motive: Estudiar
+  min_age: 16
+  child_age: 12
+  household_roles:            # column -> `trabajo_semana_pasada` answers counted among the other members
+    hogar_otros_trabajan: [Tiempo completo, Medio tiempo, "Tenía trabajo, pero no trabajó"]
+    hogar_otros_estudian: [Es estudiante]
+    hogar_otros_hogar: [Se dedica a los quehaceres del hogar o a cuidar a sus hijos]
+
 eod.work_trip:
   # Most frequent destination type, destination code / zone and main mode of each person's work trips.
   purpose: Trabajar           # `motivo_viaje` of the trips whose destination describes the workplace

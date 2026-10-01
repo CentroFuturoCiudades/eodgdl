@@ -780,7 +780,8 @@ def test_harmonizations_are_builders_keyed_by_the_harmonization_code():
     for name in ("harmonize.eod", "harmonize.eod_viviendas", "harmonize.enoe", "harmonize.enigh"):
         builder = features.get_builder(name)
         assert builder.replaces and Path(builder.module_file).name == "harmonize.py"
-        assert set(builder.versions(None, {})) == {"harmonization", "common"}
+        # harmonize.eod also reads giro's classes (its `sector` maps the reported labels through them: labels_of)
+        assert set(builder.versions(None, {})) == {"harmonization", "common"} | ({"labels_of"} if name == "harmonize.eod" else set())
 
 
 def test_a_work_trip_level_for_the_workers_without_one(stages):
@@ -888,3 +889,27 @@ def test_census_ratios_sum_a_rural_ageb_over_its_published_localities():
     ratio = unit_ratio(urban, rural, rural_ageb, ["PDER_IMSS"], "POBTOT")
     # an urban AGEB's own counts, no population none; the rural AGEB sums the localities whose counts are published
     assert ratio["1403900010010"] == 0.5 and pd.isna(ratio["1403900010025"]) and ratio["140390001"] == 15 / 50
+
+
+def test_persons_labour_rows_and_person_context(stages):
+    """eod.persons holds everyone aged 16+ with their employment on the empleo levels; eod.labour the workers of every
+    age and the unanswered; eod.person_context counts the person's trips and the other members by their answer."""
+    from eodgdl.impute.sources import Context
+    from eodgdl.impute.sources.eod import labour, load_config, person_context, persons, workers
+
+    context = Context(tables=stages.revised)
+    config = load_config()
+    hab = stages.revised.hab
+    people = persons(context, config["eod.persons"])
+    assert len(people) == int(hab.edad.ge(16).sum())
+    assert people["situacion_laboral"].isna().sum() == hab.trabajo_semana_pasada.isna().sum() == 4_370
+    assert set(people["situacion_laboral"].dropna()) == set(config["eod.persons"]["labour_status"])
+    rows = labour(context, config["eod.labour"])
+    assert len(rows) == len(workers(context, config["eod.workers"])) + 4_370
+    columns = person_context(people, context, config["eod.person_context"], None)
+    trips = stages.revised.trips.groupby(level=["folio_vivienda", "folio_habitante"]).size()
+    keys = pd.MultiIndex.from_frame(people[["folio_vivienda", "folio_habitante"]].astype(int))
+    assert (columns["n_viajes"].to_numpy() == trips.reindex(keys).fillna(0).to_numpy()).all()
+    works = people["situacion_laboral"].eq("trabaja").fillna(False).astype(int)
+    # every working member 16+ is counted among the others but never oneself
+    assert (columns["hogar_otros_trabajan"].to_numpy() == (works.groupby(people["folio_vivienda"]).transform("sum") - works).to_numpy()).all()

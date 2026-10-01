@@ -53,7 +53,8 @@ package and meant to be read by hand.
 ```python
 from eodgdl import load_eod, tasha
 
-od = tasha.build(load_eod("data"))   # ODTables(households, people, trips)
+completed = tasha.load_completed("output/impute", draw=0)   # one completed dataset of the chains nse and labour
+od = tasha.build(load_eod("data"), completed=completed)    # ODTables(households, people, trips)
 tasha.validate_all(*od)
 
 tasha.build_map("Mode")              # {'A PIE': 'W', 'CAMIÓN O AUTOBÚS': 'B', …}
@@ -62,7 +63,7 @@ tasha.gaps()                         # what is assumed, constant, or unresolved
 ```
 
 ```bash
-eodgdl tasha build --data data/ --out output/   # build, write and validate
+eodgdl tasha build --data data/ --out output/   # build, write and validate (--impute output/impute --draw 0)
 eodgdl tasha check                              # mappings vs. contract
 eodgdl tasha gaps                               # open items
 eodgdl tasha validate output/                   # produced CSVs vs. contract
@@ -72,6 +73,15 @@ Zone columns carry the survey's own zone id as a string — a 13-character urban
 9-character rural AGEB key (INEGI's rural AGEB, not a locality) or one of the 7 access points
 (`99999000x`) — and the zone system places every one of them (`eodgdl.reweight.zoning`); read
 them back with `dtype=str`.
+
+Some columns come from the imputation models (see Imputation models below), one completed
+dataset at a time: `IncomeClass` is the dwelling's AMAI socioeconomic level (chain `nse`, as
+the model's Monterrey inputs coded it); `EmploymentStatus` takes the drawn employment
+situation of the persons who did not answer, and `P` is an informal worker (Monterrey's
+convention, not part-time), with `Formality` mirroring it; a worker without a reported giro
+takes the drawn one for `Occupation`, and an unanswered person drawn as a student is `S`
+(chain `labour`). The build writes `od_provenance.json` with the draw and the models;
+`--no-impute` leaves those columns at their defaults.
 
 See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
 mapping-entry format, and the open items.
@@ -144,13 +154,14 @@ zone). Zones are built from the census by `reweight.zoning` instead.
 `eodgdl.impute` is the package's categorical imputation engine; every imputation model on the survey runs on it. A
 **task** is one model, a YAML under `src/eodgdl/impute/tasks/` (source, classes, features, arms, candidate grid,
 evaluation settings). A **chain** strings tasks together, in parallel or in sequence, and passes each task's class
-probabilities to the tasks downstream (YAMLs under `src/eodgdl/impute/chains/`). There are three imputations:
+probabilities to the tasks downstream (YAMLs under `src/eodgdl/impute/chains/`). There are four imputations:
 
 | imputation | kind | trained on | scores |
 |---|---|---|---|
 | `giro` | task | EOD workers who reported their employer's activity | every EOD worker |
 | `sector_informality` | chain: `giro` → `informality` (exact sum over the sector) | ENOE, 8 quarters of Jalisco's employed, harmonized to the survey | every EOD worker |
 | `nse` | chain: `educacion_jefe` → `amai_banos` → `amai_dormitorios` → AMAI points, level, AGEB calibration (50 draws) | the EOD's heads (education); ENIGH 2022, households in cities of 100,000+ (bathrooms, bedrooms) | every EOD dwelling |
+| `labour` | chain: `empleo` → `giro` → `informality`, all on the workers and the persons who did not answer (50 draws) | the EOD's persons aged 16+ who answered (employment); as above (giro, informality) | every EOD worker and every person aged 16+ without an employment answer |
 
 The fitted bundle of every task ships through the data mirror (`data/od_<task>_model.joblib`, giro's is
 `od_giro_hybrid_model.joblib`) and is fetched on first use. It is a scikit-learn pickle, checked against its task when
@@ -214,7 +225,7 @@ quarto render reports/imputation_informality.qmd
 ### Socioeconomic level (NSE)
 
 AMAI's socioeconomic level (NSE) of every dwelling is the chain `nse`. The head's education is imputed within the
-survey, and complete bathrooms and bedrooms from INEGI's ENIGH 2022 (households in cities of 100,000+). Internet, cars
+survey (with the other members' highest education where one answered), and complete bathrooms and bedrooms from INEGI's ENIGH 2022 (households in cities of 100,000+). Internet, cars
 and the members aged 14+ who worked come from the survey's own answers. AMAI's points and levels are carried through
 50 multiple imputations, then rank-calibrated against AMAI's NSE by AGEB (`data/NSE_por_AGEB_AMAI.xlsx`):
 
@@ -223,6 +234,22 @@ uv run eodgdl impute score nse --data data                 # -> output/impute/ns
 for task in educacion_jefe amai_banos amai_dormitorios amai_trabajadores; do uv run eodgdl impute retrain $task --data data; done
 uv run eodgdl impute evaluate nse --data data              # propagation variants, Monte Carlo error, AMAI by AGEB
 quarto render reports/imputation_nse.qmd
+```
+
+### Employment situation
+
+4,370 persons aged 16+ did not answer whether they worked last week (`trabajo_semana_pasada`), with the occupation,
+the giro and often the education blank too: the questionnaire's socio-economic block was skipped, mostly from
+February on. The task `empleo` imputes their situation (works, student, home duties, retired, not working) from the
+persons who answered: age, sex, relationship, the dwelling, the survey day's trips, the weekend block and the other
+household members' answers, with an arm for the occupation and one for the education where given. The chain `labour`
+draws it together with a giro and an informality for every worker (reported, or drawn as one); the TASHA build reads
+one of its 50 completed datasets:
+
+```bash
+uv run eodgdl impute retrain empleo --data data --bootstrap 50                              # -> output/impute/empleo/
+uv run eodgdl impute score labour --data data --retrained output/impute --draws 50 --bootstrap   # -> output/impute/labour/multiple_imputation/
+quarto render reports/imputation_empleo.qmd
 ```
 
 ### Retraining and shipping a bundle

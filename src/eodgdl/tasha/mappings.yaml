@@ -193,9 +193,18 @@ people:
       Se dedica a los quehaceres del hogar o a cuidar a sus hijos: O
       Es jubilado o pensionado: O
       Está incapacitado permanentemente para trabajar: O
+    imputed:
+      chain: labour
+      column: situacion_laboral
+      values:
+        trabaja: F
+        estudiante: O
+        hogar: O
+        jubilado: O
+        sin_trabajo: O
     default: O
     override:
-      imputed: {chain: sector_informality, column: informalidad}
+      imputed: {chain: labour, column: informalidad}
       values:
         informal: P
       when: the person is a worker (F)
@@ -203,12 +212,13 @@ people:
     note: >-
       DECISION (2026-09-30): P is an informal worker, the Monterrey convention (PIMUS 2019), not part-time; part-time
       workers ('Medio tiempo', 1,305) are F or P by their formality like everyone else, and hours are lost. The EOD
-      asks no formality question: every worker's informality is imputed (chain `sector_informality`: ENOE's model
-      over the imputed giro). 'Tenía trabajo, pero no trabajó' (105) counts as employed. 4,370 people have no answer
-      and fall to the default O (pending an employment-status imputation).
+      asks no formality question: every worker's informality is imputed (chain `labour`: ENOE's model over the giro,
+      reported or imputed). 'Tenía trabajo, pero no trabajó' (105) counts as employed. The 4,370 people aged 16+ who
+      did not answer take the chain's drawn situation (task empleo); the default O is left to persons under 16 without
+      an answer (none).
 
   Formality:
-    imputed: {chain: sector_informality, column: informalidad}
+    imputed: {chain: labour, column: informalidad}
     values:
       formal: F
       informal: I
@@ -217,8 +227,8 @@ people:
     status: imputed
     note: >-
       The same draw as EmploymentStatus's P, so I exactly where it is P. The EOD has no formality or social-security
-      question: the chain sector_informality scores ENOE's informality model on the EOD workers, given their giro
-      (reported, or imputed by the giro task).
+      question: the chain labour scores ENOE's informality model on the EOD workers (reported, or drawn by the task
+      empleo), given their giro (reported, or imputed by the giro task).
 
   Occupation:
     source: giro_empresa
@@ -229,7 +239,7 @@ people:
       Gobierno/sector público: G
       Educación: G
     imputed:
-      chain: sector_informality
+      chain: labour
       column: giro
       values:
         servicio: P
@@ -244,7 +254,8 @@ people:
       schema requires.
     status: imputed
     note: >-
-      9,484 of the 26,913 workers did not report their giro; the giro task imputes it (eodgdl.impute, tasks/giro.yaml).
+      9,484 of the 26,913 workers did not report their giro, nor did the unanswered persons drawn as workers; the giro
+      task imputes it (eodgdl.impute, tasks/giro.yaml), in the chain labour.
       'Educación' is placed in G alongside government; the EOD's giro has no transport answer (PIMUS's 'transporte y
       comunicaciones' went to G). Kept as is (2026-09-30): what matters for the model is that Occupation uses the same
       crosswalk as the zonal employment by category it is matched to, which is not built yet; revisit both together.
@@ -260,11 +271,18 @@ people:
 
   StudentStatus:
     source: [ocupacion, trabajo_semana_pasada, motivo_viaje]
+    imputed:
+      chain: labour
+      column: situacion_laboral
+      values:
+        estudiante: S
+    status: imputed
     derivation: >-
       S if any of: ocupacion == 'Estudiante' (13,451); trabajo_semana_pasada ==
       'Es estudiante' (13,187); the person has at least one trip with
       motivo_viaje 'Estudiar', or 'Guardería' made under the age of 12 (older
-      travellers escort a child there, see PurposeDestination). Otherwise O.
+      travellers escort a child there, see PurposeDestination); or, for a person who did not answer
+      trabajo_semana_pasada, the chain labour's drawn situation is `estudiante`. Otherwise O.
     note: Full-time and part-time students are not distinguished.
 
   EmploymentZone:

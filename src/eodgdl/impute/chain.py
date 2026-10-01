@@ -41,7 +41,7 @@ from .bundle import as_v2, load_bootstrap, load_bundle
 from .features import build_frame
 from .run import expected_score_column, output_columns, score_frame, task_levels
 from .sources import Context, get_source
-from .spec import load_task, read_yaml, stable_hash
+from .spec import load_task, parse_task, read_yaml, stable_hash
 
 CHAINS_DIR = Path(__file__).parent / "chains"
 MODES = ("parallel", "sequential")
@@ -59,6 +59,7 @@ class Uses:
 class TaskStep:
     task: str
     uses: list = field(default_factory=list)
+    score_source: str | None = None   # the chain scores the task on these rows instead of the task's own score_source
 
 
 @dataclass
@@ -84,7 +85,9 @@ class ChainSpec:
 
     @property
     def hash(self):
-        return stable_hash(self.raw)
+        """Over the YAML and every resolved transform (a named one lives in harmonization/common.yaml)."""
+        transforms = {step.task: [[use.task, list(use.transform)] for use in step.uses] for step in self.steps if isinstance(step, TaskStep) and step.uses}
+        return stable_hash({"raw": self.raw, "transforms": transforms}) if transforms else stable_hash(self.raw)
 
 
 def _check(condition, message):
@@ -112,8 +115,13 @@ def parse_chain(raw, load=None):
             uses = []
             for upstream, how in ((options or {}).get("uses") or {}).items():
                 how = how or {}
-                uses.append(Uses(upstream, how.get("as", upstream), tuple((str(k), v if isinstance(v, (int, float)) else str(v)) for k, v in (how.get("transform") or {}).items())))
-            steps.append(TaskStep(task, uses))
+                transform = how.get("transform") or {}
+                if isinstance(transform, str):        # a named map of harmonization/common.yaml (defined once)
+                    from .harmonize import named_transform
+
+                    transform = named_transform(transform)
+                uses.append(Uses(upstream, how.get("as", upstream), tuple((str(k), v if isinstance(v, (int, float)) else str(v)) for k, v in transform.items())))
+            steps.append(TaskStep(task, uses, (options or {}).get("score_source")))
         if isinstance(steps[-1], TaskStep):
             step = steps[-1]
             _check(step.task not in seen, f"{name}: task {step.task!r} appears twice")
@@ -144,6 +152,13 @@ def parse_chain(raw, load=None):
         unscored = [task for task in chain.tasks if task in needed and not load(task).scores]
         _check(not unscored, f"{name}: expected propagation carries the expected score of {unscored}, which declare no target scores")
     return chain
+
+
+def step_spec(chain, task, load=None):
+    """The spec a chain scores ``task`` with: the task's own, on the step's ``score_source`` where it names one."""
+    spec = (load or load_task)(task)
+    step = next(step for step in chain.steps if isinstance(step, TaskStep) and step.task == task)
+    return parse_task({**spec.raw, "score_source": step.score_source}) if step.score_source else spec
 
 
 @functools.cache
@@ -392,7 +407,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     :class:`ChainResult`."""
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context(tables=tables)
-    specs = {task: (specs or {}).get(task) or load_task(task) for task in chain.tasks}
+    specs = {task: (specs or {}).get(task) or step_spec(chain, task) for task in chain.tasks}
     sources = {spec.score_source for spec in specs.values()}
     _check(len(sources) == 1, f"{chain.name}: the tasks score different sources {sorted(sources)}")
     keys = get_source(sources.pop()).keys

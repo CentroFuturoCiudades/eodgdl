@@ -396,3 +396,32 @@ def test_diagnostics_of_a_distribution_chain(diagnostics_on_synthetic_tasks, mon
     mi = tables["multiple_imputation"].set_index("level")
     assert set(mi["models"]) == {"single fit"} and mi.loc["alto", "estimate"] + mi.loc["bajo", "estimate"] == pytest.approx(1.0)
     assert (mi["fmi"].between(0, 1)).all() and summary["draws"] == 40
+
+
+def test_a_step_can_score_its_task_on_other_rows():
+    from eodgdl.impute.chain import step_spec
+
+    chain = parse_chain({"chain": "t", "steps": [{"giro": {"score_source": "eod.labour"}}, "informality"]})
+    assert step_spec(chain, "giro").score_source == "eod.labour"
+    assert step_spec(chain, "informality").score_source == "eod.workers"
+    # a source declaring builders_as runs the task's builders for that source
+    informality = step_spec(parse_chain({"chain": "u", "steps": [{"informality": {"score_source": "eod.labour"}}]}), "informality")
+    assert informality.builders_for("eod.labour") == informality.builders_for("eod.workers")
+
+
+def test_the_giro_sector_map_is_defined_once():
+    # the chains' transform and the reported giro's harmonized sector are common.yaml's giro_sector, over giro's classes
+    from eodgdl.impute.chain import load_chain
+    from eodgdl.impute.harmonize import apply_variables, load_harmonization, named_transform
+    from eodgdl.impute.spec import load_task
+
+    giro_sector = named_transform("giro_sector")
+    giro = load_task("giro")
+    assert set(giro_sector) == set(giro.class_slugs)
+    assert set(giro_sector.values()) <= set(load_harmonization("common")["levels"]["sector"])
+    for name in ("sector_informality", "labour"):
+        [use] = [use for step in load_chain(name).steps if getattr(step, "task", None) == "informality" for use in step.uses]
+        assert dict(use.transform) == giro_sector
+    labels = pd.DataFrame({"giro_empresa": [*giro.classes, None]})
+    sector = apply_variables(labels, {"sector": load_harmonization("eod")["variables"]["sector"]})["sector"]
+    assert sector.tolist() == [giro_sector[slug] for slug in giro.classes.values()] + ["no_especificado"]

@@ -1,0 +1,82 @@
+# Imputation task: the employment situation of the EOD persons aged 16+ who did not answer `trabajo_semana_pasada`
+# (4,370, the socio-economic block skipped: the occupation 90% blank, the giro 99.5%, most in February-April).
+# Trained and scored within the survey (source eod.persons). The first step of the chain `labour`, whose completed
+# datasets give the TASHA build its EmploymentStatus, StudentStatus, Formality and Occupation.
+
+task: empleo
+source: eod.persons
+bundle: od_empleo_model.joblib
+
+target:
+  column: situacion_laboral           # eod.persons's slug of the answer (sources/eod.yaml: labour_status)
+  classes: {trabaja: trabaja, estudiante: estudiante, hogar: hogar, jubilado: jubilado, sin_trabajo: sin_trabajo}
+
+missing_label: no_especificado
+missing_values:
+  escolaridad: ["No sabe"]
+
+features:
+  builders: [eod.person_context]
+  groups:
+    person: [sexo_nacimiento, edad, parentesco, estado_civil]
+    education: [escolaridad]
+    occupation: [ocupacion]           # a near-deterministic answer where given (10% of the unanswered)
+    dwelling: [municipio, centralidad, personas_en_vivienda, n_autos_camionetas]
+    interview: [mes_entrevista]
+    # the survey day: whether they left home, how many trips, whether one went to work or to study
+    day: [salio_casa_ayer, n_viajes, viaje_trabajo, viaje_estudio]
+    # the weekend block, answered by every unanswered person
+    weekend: [weekend_dest_trabajar, weekend_dest_estudiar, weekend_dest_llevar_recoger, weekend_dest_compras_comida,
+              weekend_dest_recreacion]
+    # the other members aged 16+ by their answer, and the children under 12
+    household: [hogar_otros_trabajan, hogar_otros_estudian, hogar_otros_hogar, hogar_menores]
+  numeric: [edad, n_viajes, hogar_otros_trabajan, hogar_otros_estudian, hogar_otros_hogar, hogar_menores]
+
+levels:
+  declared:
+    mes_entrevista: ["1", "2", "3", "4"]
+    viaje_trabajo: ["Sí", "No"]
+    viaje_estudio: ["Sí", "No"]
+    weekend_dest_trabajar: ["Sí", "No"]
+    weekend_dest_estudiar: ["Sí", "No"]
+    weekend_dest_llevar_recoger: ["Sí", "No"]
+    weekend_dest_compras_comida: ["Sí", "No"]
+    weekend_dest_recreacion: ["Sí", "No"]
+
+arms:
+  # In order: a person is scored by the first arm whose `requires` they have observed. The occupation and the
+  # education go unanswered with the employment (the same skipped block), so each has an arm, as giro's education.
+  con_ocupacion:
+    features: [person, education, occupation, dwelling, interview, day, weekend, household]
+    requires: [ocupacion]
+  con_escolaridad:
+    features: [person, education, dwelling, interview, day, weekend, household]
+    requires: [escolaridad]
+  sin_ambas:
+    features: [person, dwelling, interview, day, weekend, household]
+
+selection:
+  cv: {splits: 5, seed: 42, test_fold: 0}
+  rule: one_se
+  families:
+    LogisticRegression: {max_iter: 2000, params: {C: [0.1, 1.0, 10.0]}}
+    RandomForest:
+      n_estimators: 500
+      n_jobs: -1
+      params: {max_leaf_nodes: [25, 50, 100], max_features: [sqrt, 0.7], min_samples_leaf: [1, 5, 10]}
+    GradientBoosting:
+      native_categoricals: true
+      early_stopping: false
+      params: {max_iter: [50, 100, 200, 400], learning_rate: [0.05, 0.1], max_leaf_nodes: [15, 31], l2_regularization: [0.0, 1.0]}
+
+evaluation:
+  bootstrap: 500
+  calibration_bins: 10
+  profiles: [sexo_nacimiento, parentesco, estado_civil, municipio, mes_entrevista, salio_casa_ayer, viaje_trabajo,
+             weekend_dest_trabajar]
+  isotonic: {ship: false}
+  shift:
+    profile: [sexo_nacimiento, edad, parentesco, municipio, mes_entrevista, salio_casa_ayer, viaje_trabajo, weekend_dest_trabajar]
+
+outputs:
+  prefix: situacion_laboral

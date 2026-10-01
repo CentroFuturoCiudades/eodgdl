@@ -30,7 +30,8 @@ so everything here works offline and from an installed wheel.
 ```python
 from eodgdl import load_eod, tasha
 
-od = tasha.build(load_eod("data"))       # ODTables(households, people, trips)
+completed = tasha.load_completed("output/impute", draw=0)   # the chains nse and labour, one completed dataset
+od = tasha.build(load_eod("data"), completed=completed)    # ODTables(households, people, trips)
 assert tasha.validate_all(*od) == []
 od.trips.to_csv("output/od_trips.csv", index=False)
 ```
@@ -41,8 +42,9 @@ or in one step:
 eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 ```
 
-The imputed columns (`IncomeClass`, `EmploymentStatus`'s `P`, `Formality`, a worker's
-unreported `Occupation`) read one completed dataset of the eodgdl.impute chains: `tasha
+The imputed columns (`IncomeClass`; `EmploymentStatus` and `StudentStatus` where
+unanswered, `EmploymentStatus`'s `P`, `Formality`, a worker's unreported `Occupation`) read
+one completed dataset of the eodgdl.impute chains (`nse`, `labour`): `tasha
 build` takes `--impute ROOT` (default `output/impute`) and `--draw N` (default 0), reads
 each chain's `ROOT/<chain>/multiple_imputation/completions.parquet` (every value drawn,
 jointly within the chain, `eodgdl impute score <chain> --draws M --bootstrap`) and writes
@@ -213,11 +215,12 @@ else.
   dwelling's level is imputed in part (bathrooms and bedrooms are not surveyed). The
   reported income is no longer read (58% refused or did not know).
 - **`EmploymentStatus`** (imputed) — P is an informal worker, the Monterrey convention
-  (decided 2026-09-30), not part-time: each worker's informality comes from the chain
-  `sector_informality`; part-time hours are not represented. 4,370 people with no
-  answer fall to `O`, pending an employment-status imputation.
-- **`Occupation`** (imputed) — a worker who did not report the giro (9,484) takes the
-  chain's drawn giro.
+  (decided 2026-09-30), not part-time; part-time hours are not represented. The 4,370
+  people aged 16+ who did not answer take the drawn situation (task `empleo`), and every
+  worker's informality is drawn, all in one completed dataset of the chain `labour`.
+- **`StudentStatus`** (imputed) — an unanswered person drawn as a student is S.
+- **`Occupation`** (imputed) — a worker who did not report the giro (9,484, plus the
+  unanswered drawn as workers) takes the chain's drawn giro.
 - **`FreeParking`** (pending) — constant `O`, but this survey does carry
   `estacionamiento_lugar` and `pago_estacionamiento` on every trip, so a real
   value is derivable.

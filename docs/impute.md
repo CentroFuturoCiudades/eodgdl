@@ -13,14 +13,16 @@ probability for each class, and downstream users collapse, relabel or draw from 
 Two kinds of model live side by side:
 
 - **within the survey**: the target is observed for some EOD rows and imputed for the others (`giro`,
-  `educacion_jefe`);
+  `educacion_jefe`, `empleo`);
 - **data fusion**: the target is observed in another survey and imputed for every EOD row (`informality` from INEGI's
   ENOE; the AMAI components `amai_banos`, `amai_dormitorios` and the diagnostic `amai_trabajadores` from ENIGH). Both
   surveys are first **harmonized** to common levels, and the imputation assumes the target is independent of the survey
   given the shared covariates (conditional independence): nothing in the EOD can test it.
 
 Imputations are chained where one depends on another: `sector_informality` (the giro's sector, then informality given
-it) and `nse` (education, bathrooms given it, bedrooms given both, then AMAI's points, level and calibration).
+it), `nse` (education, bathrooms given it, bedrooms given both, then AMAI's points, level and calibration) and `labour`
+(the employment situation of the persons who did not answer, then giro and informality, on the workers and those
+persons: the labour columns of the TASHA build).
 
 ## Building blocks
 
@@ -30,9 +32,9 @@ auxiliary models, candidate grid and evaluation settings. The engine knows no su
 the task.
 
 A **source** (`sources/`) returns a task's rows as a plain frame, with its keys, weight and CV group declared in the
-source's YAML (`eod.workers`, `eod.dwellings`, `enoe.workers`, `enigh.households`). **Feature builders** add columns
+source's YAML (`eod.workers`, `eod.dwellings`, `eod.persons`: everyone aged 16+ with the employment answer on the `empleo` levels; `eod.labour`: the workers and the unanswered, the chain `labour`'s rows, with eod.workers's builders through `builders_as`; `enoe.workers`, `enigh.households`). **Feature builders** add columns
 (`eod.work_trip`, `giro.destination`, `eod.household_education`: the other members' highest education; `census.home`: the census, DENUE and AMAI profile of the dwelling's AGEB, INEGI's ILMM auxiliary variables among it, measured and used by no task yet), and **harmonizations** are builders that map a source's raw codes to the common
-levels of `harmonization/common.yaml`, failing on any code the map does not cover. Frames are cached as parquet under
+levels of `harmonization/common.yaml`, failing on any code the map does not cover. A map between a task's classes and the common levels is defined once as a named `transforms:` entry of common.yaml (`giro_sector`), read by a chain's `uses: {transform: <name>}` and by a variable's `transform: <name>` with `labels_of: <task>` (labels -> class slugs -> levels). Frames are cached as parquet under
 the eodgdl cache directory with keys over every input that could change them (the code, the configuration, the data
 files' sha256).
 
@@ -98,8 +100,13 @@ invalidate it. Every mode builds **completions**, one row per (row, scenario) or
 - `enumerate`: every combination of the upstream classes, weighted by their probabilities: the exact
   `P(y | x) = Σ_s P(s | x) P(y | x, s)` (`sector_informality`);
 - `draws`: seeded multiple imputations, each value drawn given the draws before it; a step's marginal is the mean of
-  its conditional probabilities over the draws, and derive steps run per draw (`nse`, 50 draws);
+  its conditional probabilities over the draws, and derive steps run per draw (`nse`, `labour`, 50 draws);
 - `expected`: the upstream's expected score plugged in (a comparison only: it compresses the tails).
+
+A step may score its task on other rows than the task's own `score_source` (`score_source:` in the step): `labour`
+scores `empleo`, `giro` and `informality` on `eod.labour` (the workers and the persons without an employment answer),
+whose source YAML lends it eod.workers's builders (`builders_as`). giro and informality do not read the employment:
+trained on workers, their values are P(· | x, works), read only where the person works.
 
 The NSE's derive steps sum AMAI's points (`derive/amai.py`, the AMAI 2022 rule: education, bathrooms, cars, internet,
 workers, bedrooms), cut AMAI's levels, and **calibrate** within each AGEB against AMAI's NSE by AGEB: in each draw the
@@ -128,7 +135,7 @@ Rubin's rules. For a distribution chain (`nse`): the distribution under other pr
 error, agreement, AMAI's reference by AGEB, a check against a component the EOD does observe, and Rubin's rules.
 
 The reports read what the retrains and evaluations wrote and train nothing; their structural claims are asserted at
-render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imputation_nse.qmd`, and
+render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imputation_nse.qmd`, `imputation_empleo.qmd`, and
 `imputation_figures.qmd` (informal-jobs-model's figures redrawn).
 
 ## Decisions that shape the outputs
@@ -148,6 +155,7 @@ render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imput
 | giro's destination mix: staff-weighted SCIAN sector shares (DENUE), not establishment shares per giro | `tasks/giro.yaml` builders |
 | The head's education reads the household's (another member's answer) in an arm of its own; no census or AMAI feature | `tasks/educacion_jefe.yaml` arms; `imputation_nse.qmd` #sec-education |
 | giro reads nothing about where the worker lives (census, AMAI, household education measured, not taken) | `tasks/giro.yaml` arms |
+| The persons without an employment answer are imputed (task `empleo`, three arms: occupation, education, neither); the chain `labour` draws their situation, then giro and informality on every worker or unanswered person, read only where the person works (giro and informality were trained on workers) | `tasks/empleo.yaml`; `chains/labour.yaml` |
 | ENIGH training population: cities of 100,000+ | `imputation_nse.qmd`, the populations table |
 | NSE by 50 draws, calibration ties at random per draw | `imputation_nse.qmd` #sec-level, #sec-calibration |
 

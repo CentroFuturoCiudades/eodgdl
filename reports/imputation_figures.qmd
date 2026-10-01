@@ -130,7 +130,8 @@ INFORMALITY = load_task("informality")
 MISSING = INFORMALITY.missing_label
 LEVELS = load_harmonization("common")["levels"]
 CHAIN = load_chain("sector_informality")
-TRANSFORM = dict(CHAIN.raw["steps"][1]["informality"]["uses"]["giro"]["transform"])     # giro class -> sector
+TRANSFORM = dict(next(use.transform for step in CHAIN.steps if getattr(step, "task", None) == "informality"
+                      for use in step.uses if use.task == "giro"))     # giro class -> sector (common.yaml's giro_sector)
 
 
 def rotate(ax, variable):
