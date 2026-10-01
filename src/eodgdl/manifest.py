@@ -18,7 +18,8 @@ writes a manifest beside them (:func:`write_manifest`):
   keeps the link.
 - ``outputs``: ``{relative path: sha256}`` of every file it wrote, and ``outputs_digest`` over them.
 
-:func:`verify` walks every manifest under a directory and lists every broken link: an output that changed or went missing, an upstream whose outputs are no longer what was read,
+:func:`verify` walks every manifest under a directory (and TMG's weight sidecar, :mod:`eodgdl.reweight.weight`) and
+lists every broken link: an output that changed or went missing, an upstream whose outputs are no longer what was read,
 an input whose bytes changed. Like ``reweight check`` it returns a list, empty when the chain is sound.
 """
 from __future__ import annotations
@@ -185,8 +186,9 @@ def check_manifest(path) -> list[str]:
 
 
 def verify(root="output", data_dir=None) -> list[str]:
-    """Every broken link under ``root``: each manifest's (:func:`check_manifest`). Empty when the chain is sound.
-    ``data_dir``: where stage 3's weight sits (unused until it can be checked)."""
+    """Every broken link under ``root``: each manifest's (:func:`check_manifest`), and TMG's weight sidecar in
+    ``data_dir`` (default ``$EODGDL_DATA_DIR``) against the reweight inputs it was fitted on
+    (:func:`eodgdl.reweight.weight.check_weight`). Empty when the chain is sound."""
     root = Path(root)
     problems = []
     manifests = sorted(root.rglob(MANIFEST)) + sorted(p for p in root.rglob(f"*_{MANIFEST}"))
@@ -194,4 +196,7 @@ def verify(root="output", data_dir=None) -> list[str]:
         problems.append(f"{root}: no manifest found")
     for path in manifests:
         problems += check_manifest(path)
+    from eodgdl.reweight.weight import check_weight
+
+    problems += check_weight(data_dir, root)
     return problems

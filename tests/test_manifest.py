@@ -1,6 +1,13 @@
-"""Manifests (eodgdl.manifest): each stage records what it read and wrote, and `pipeline verify` lists every broken
-link."""
+"""Manifests (eodgdl.manifest) and stage 3's boundary (eodgdl.reweight.weight): each stage records what it read and
+wrote, `pipeline verify` lists every broken link, and TMG's weight enters the data only with the reweight inputs it was
+fitted on."""
+import json
+
+import pandas as pd
+import pytest
+
 from eodgdl.manifest import check_manifest, read_manifest, verify, write_manifest
+from eodgdl.reweight import weight
 
 
 def _stage(folder, files, **kw):
@@ -42,3 +49,57 @@ def test_a_manifest_records_outputs_inputs_and_upstream(tmp_path, monkeypatch):
     assert any("output y.csv changed" in p for p in problems) and any("output sub/z.csv is missing" in p for p in problems)
     assert any("input input (input.csv) changed" in p for p in problems)
 
+
+def _reweight_set(folder, households=(1, 2, 3)):
+    folder.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"HouseholdID": list(households), "HouseholdTAZ": 1001}).to_csv(folder / "HouseholdRecords.csv", index=False)
+    return write_manifest(folder, "reweight_inputs", parameters={"years": [2020, 2023]})
+
+
+def test_the_tmg_weight_enters_with_its_sidecar(tmp_path, monkeypatch):
+    from eodgdl import manifest as module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_repo", lambda: None)
+    data, root = tmp_path / "data", tmp_path / "output"
+    data.mkdir()
+    _reweight_set(root / "reweight")
+    pd.DataFrame({"UpdatedExpansionFactor": [10.5, 20.0, 30.25]}).to_csv(tmp_path / "updated.csv", index=False)
+    csv, sidecar = weight.import_weight(tmp_path / "updated.csv", root / "reweight", data, 2023, tool_commit="960c5ed")
+    assert pd.read_csv(csv).to_dict("list") == {"folio_vivienda": [1, 2, 3], "peso": [10.5, 20.0, 30.25]}
+    recorded = weight.read_sidecar(data)
+    assert recorded["reweight_inputs"]["outputs_digest"] == read_manifest(root / "reweight")["outputs_digest"]
+    assert recorded["reweight_inputs"]["constraint_year"] == 2023 and recorded["tool"]["commit"] == "960c5ed"
+    assert recorded["configuration_sha256"] is None and recorded["constraint_report_sha256"] is None   # only the weight came back
+    assert weight.check_weight(data, root) == [] and verify(root, data) == []
+
+    # reweight inputs rebuilt with other content: the weight was fitted on something else
+    (root / "reweight" / "HouseholdRecords.csv").write_text("HouseholdID,HouseholdTAZ\n1,1001\n2,1001\n3,2001\n")
+    write_manifest(root / "reweight", "reweight_inputs", parameters={"years": [2020, 2023]})
+    assert any("the weight is stale" in p for p in weight.check_weight(data, root))
+    # the weight file edited after the import
+    csv.write_text("folio_vivienda,peso\n1,1\n2,1\n3,1\n")
+    assert any("not the weight its sidecar records" in p for p in weight.check_weight(data, root))
+
+
+def test_import_weight_refuses_what_does_not_fit_the_records(tmp_path):
+    _reweight_set(tmp_path / "reweight")
+    for frame, message in ((pd.DataFrame({"UpdatedExpansionFactor": [1.0, 2.0]}), "2 weights for 3 household records"),
+                           (pd.DataFrame({"UpdatedExpansionFactor": [1.0, 0.0, 2.0]}), "1 weights that are not positive"),
+                           (pd.DataFrame({"weight": [1.0, 1.0, 1.0]}), "the single column UpdatedExpansionFactor")):
+        frame.to_csv(tmp_path / "updated.csv", index=False)
+        with pytest.raises(ValueError, match=message):
+            weight.import_weight(tmp_path / "updated.csv", tmp_path / "reweight", tmp_path, 2023)
+    pd.DataFrame({"UpdatedExpansionFactor": [1.0, 1.0, 1.0]}).to_csv(tmp_path / "updated.csv", index=False)
+    with pytest.raises(ValueError, match="no constraint set for 2021"):
+        weight.import_weight(tmp_path / "updated.csv", tmp_path / "reweight", tmp_path, 2021)
+
+
+def test_a_source_refuses_a_weight_its_sidecar_does_not_record(tmp_path, monkeypatch):
+    from eodgdl.impute.sources import with_weight
+
+    monkeypatch.setenv("EODGDL_DATA_DIR", str(tmp_path))
+    pd.DataFrame({"folio_vivienda": [1, 2], "peso": [1.0, 2.0]}).to_csv(tmp_path / "w.csv", index=False)
+    (tmp_path / "w.yaml").write_text(json.dumps({"weight_sha256": "0" * 64}))
+    with pytest.raises(ValueError, match="not the weight its sidecar w.yaml records"):
+        with_weight(pd.DataFrame({"folio_vivienda": [1, 2]}), {"weight": {"file": "w.csv", "column": "peso"}})

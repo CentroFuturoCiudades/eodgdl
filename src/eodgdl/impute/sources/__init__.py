@@ -123,6 +123,13 @@ def with_weight(frame, config):
     from eodgdl.data import resolve
 
     path, key, column = resolve(weight["file"]), weight["key"], weight["column"]
+    sidecar = path.with_suffix(".yaml")       # TMG's weight records its own sha256 (eodgdl.reweight.weight)
+    if sidecar.exists():
+        from ..spec import read_yaml
+
+        recorded = read_yaml(sidecar).get("weight_sha256")
+        if recorded is not None and recorded != file_digest(str(path)):
+            raise ValueError(f"{path.name}: not the weight its sidecar {sidecar.name} records")
     table = pd.read_csv(path)
     missing = {key, column} - set(table.columns)
     if missing:

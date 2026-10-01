@@ -101,9 +101,19 @@ def main() -> None:
     rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
+    ri_p = rew_sub.add_parser("import-weight", help="Bring TMG.SurveyReweight's household weight into the data, with its sidecar")
+    ri_p.add_argument("updated", help="The tool's UpdatedExpansionFactorsFile (one UpdatedExpansionFactor per household record)")
+    ri_p.add_argument("--year", type=int, required=True, help="The constraint set it was fitted to (2020 or 2023)")
+    ri_p.add_argument("--reweight", default="output/reweight", help="The reweight set handed over (default: output/reweight/)")
+    ri_p.add_argument("--data", default="data", help="Where to write the weight and its sidecar (default: data/)")
+    ri_p.add_argument("--tool-commit", default=None, help="TMG.SurveyReweight's commit, if known")
+    ri_p.add_argument("--configuration", default=None, help="The exported model system (.xmsys), if handed back")
+    ri_p.add_argument("--report", default=None, help="The tool's ConstraintReportFile, if handed back")
+    ri_p.add_argument("--notes", default=None, help="Anything else known about the run")
+
     pipe_p = sub.add_parser("pipeline", help="The whole processing: verify the stages' manifests")
     pipe_sub = pipe_p.add_subparsers(dest="pipeline_cmd", required=True)
-    pv_p = pipe_sub.add_parser("verify", help="Walk every manifest under ROOT; list every broken link")
+    pv_p = pipe_sub.add_parser("verify", help="Walk every manifest under ROOT and TMG's weight sidecar; list every broken link")
     pv_p.add_argument("root", nargs="?", default="output", help="Where the stages wrote (default: output/)")
     pv_p.add_argument("--data", default=None, help="The data directory holding the weight sidecar (default: $EODGDL_DATA_DIR)")
 
@@ -414,6 +424,14 @@ def _reweight(args) -> int:
             print(f"wrote {path}")
         print()
         return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
+
+    if args.reweight_cmd == "import-weight":
+        from eodgdl.reweight.weight import import_weight
+
+        for path in import_weight(args.updated, args.reweight, args.data, args.year, tool_commit=args.tool_commit,
+                                  configuration=args.configuration, report=args.report, notes=args.notes):
+            print(f"wrote {path}")
+        return 0
 
     return _report(reweight.check(args.directory), "the set is loadable and every constraint is feasible")
 
