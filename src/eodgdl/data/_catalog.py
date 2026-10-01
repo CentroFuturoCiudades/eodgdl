@@ -1,7 +1,8 @@
-"""Catalog of fetchable IMEPLAN EOD 2023 data files.
+"""Catalog of fetchable IMEPLAN EOD 2023 files: the input data and the fitted model bundles.
 
-The bare filenames are the Pooch registry keys; the data files live in the ``data/``
-directory of the eodgdl repo (the Pooch ``base_url``). See ``_registry.py``.
+The bare filenames are the Pooch registry keys. The input data live in the ``data/``
+directory of the eodgdl repo (the Pooch ``base_url``), the model bundles (``MODEL_FILES``)
+in its ``models/`` directory (a URL of their own). See ``_registry.py``.
 """
 from __future__ import annotations
 

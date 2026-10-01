@@ -10,7 +10,7 @@ Typical use::
     import eodgdl
     from eodgdl import giro
 
-    workers = giro.impute(eodgdl.load_eod())          # fitted bundle fetched from the data mirror
+    workers = giro.impute(eodgdl.load_eod())          # fitted bundle fetched from the mirror's models/
     workers[["giro_final"] + giro.PROBABILITY_COLUMNS]
 
 giro is the engine's task ``giro`` (``impute/tasks/giro.yaml``; :mod:`eodgdl.impute` scores, retrains and compares it)
@@ -48,8 +48,8 @@ OUTPUT_COLUMNS = KEYS + [
 
 def load_model(path=None):
     """The fitted giro bundle, a v2 bundle (``arms``, ``auxiliary``, ``classes``, ``category_levels``, ``metadata``:
-    :mod:`eodgdl.impute.bundle`), fetched from the data mirror unless ``path`` is given or ``$EODGDL_DATA_DIR`` holds a
-    local copy. Scoring checks it against the task spec and the running scikit-learn (:func:`impute`)."""
+    :mod:`eodgdl.impute.bundle`), fetched from the mirror's ``models/`` unless ``path`` is given or a local models
+    directory holds it (``$EODGDL_MODELS_DIR``, else ``models/`` beside ``$EODGDL_DATA_DIR``: :func:`eodgdl.data.resolve`). Scoring checks it against the task spec and the running scikit-learn (:func:`impute`)."""
     from eodgdl.impute.bundle import load_bundle
 
     return load_bundle(TASK, path)

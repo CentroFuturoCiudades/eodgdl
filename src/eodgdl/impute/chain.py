@@ -431,7 +431,7 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
     ``bundles`` ({task: bundle}) overrides the tasks' bundles, which are otherwise read by
     :func:`~eodgdl.impute.bundle.load_bundle` (from ``<retrained>/<task>/`` when a retrain wrote one there, else the
-    data file); ``derive_functions`` ({name: fn}) overrides the derive registry and ``specs`` ({task: TaskSpec}) the
+    model file); ``derive_functions`` ({name: fn}) overrides the derive registry and ``specs`` ({task: TaskSpec}) the
     task files. For sensitivity runs, ``upstream_outputs`` ({task: frame with the source's keys and the task's output
     columns}) replaces a first-level task's scoring (e.g. a retrain scenario), and ``options`` ({task:
     {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra level subsets, or no auxiliary

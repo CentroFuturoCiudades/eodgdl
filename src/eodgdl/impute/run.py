@@ -14,7 +14,7 @@
   folds scored as the selection scores them), each candidate's fold log losses paired against the baseline's.
 
 A mode that needs a fitted bundle takes it from :func:`eodgdl.impute.bundle.load_bundle`: ``retrained=<dir>`` reads
-the one a retrain wrote under ``<dir>/<task>/`` when there is one, else the installed data file.
+the one a retrain wrote under ``<dir>/<task>/`` when there is one, else the installed model file (``models/``).
 """
 
 import copy
@@ -109,7 +109,7 @@ def predict_rows(spec, bundle, rows, auxiliary=True):
 def score_task(task, tables=None, bundle=None, path=None, retrained=None, context=None):
     """Load (or take) the task's bundle and score its scoring source's rows. ``tables`` are the survey tables
     (loaded, and the features cached, when omitted); ``bundle`` a fitted v2 bundle, else read
-    by :func:`~eodgdl.impute.bundle.load_bundle` (``path``, else ``<retrained>/<task>/``, else the data file)."""
+    by :func:`~eodgdl.impute.bundle.load_bundle` (``path``, else ``<retrained>/<task>/``, else the model file)."""
     spec = _spec(task)
     context = context or Context(tables=tables)
     bundle = bundle if bundle is not None else load_bundle(spec, path, retrained)

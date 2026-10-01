@@ -56,12 +56,12 @@ def test_destination_is_its_zone_system_unit(monkeypatch):
 
 
 FIXTURE = Path(__file__).parent / "data" / "giro_parity.parquet"
-BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
+BUNDLE = Path(__file__).resolve().parent.parent / "models" / giro.MODEL_FILE
 
 
 @pytest.mark.skipif(not BUNDLE.exists(), reason="in-repo giro bundle not present")
 def test_scoring_reproduces_the_reference():
-    # 384 workers of outputs/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
+    # 384 workers of output/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
     # installed bundle's scores (regenerated 2026-09-29 for the bundle that reads the interview month, which the
     # fixture gained, and again for the level sin_viaje its 131 workers without a work trip took; 2026-09-30 for v0.6.0's
     # staff-weighted SCIAN sector shares, which replaced the five giro shares): the engine scores them exactly so.

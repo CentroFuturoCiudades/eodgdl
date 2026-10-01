@@ -53,7 +53,7 @@ package and meant to be read by hand.
 ```python
 from eodgdl import load_eod, tasha
 
-completed = tasha.load_completed("output/impute", draw=0)   # one completed dataset of the chains nse and labour
+completed = tasha.load_completed("output/impute", draw=0)   # one completed dataset of the pipeline tasha
 od = tasha.build(load_eod("data"), completed=completed)    # ODTables(households, people, trips)
 tasha.validate_all(*od)
 
@@ -75,13 +75,15 @@ Zone columns carry the survey's own zone id as a string — a 13-character urban
 them back with `dtype=str`.
 
 Some columns come from the imputation models (see Imputation models below), one completed
-dataset at a time: `IncomeClass` is the dwelling's AMAI socioeconomic level (chain `nse`, as
-the model's Monterrey inputs coded it); `EmploymentStatus` takes the drawn employment
-situation of the persons who did not answer, and `P` is an informal worker (Monterrey's
-convention, not part-time), with `Formality` mirroring it; a worker without a reported giro
-takes the drawn one for `Occupation`, and an unanswered person drawn as a student is `S`
-(chain `labour`). The build writes `od_provenance.json` with the draw and the models;
-`--no-impute` leaves those columns at their defaults.
+dataset at a time, of the pipeline `tasha` (persons and dwellings drawn jointly):
+`IncomeClass` is the dwelling's AMAI socioeconomic level (its dwellings, the chain `nse`, as
+the model's Monterrey inputs coded it, counting the members drawn as workers);
+`EmploymentStatus` takes the drawn employment situation of the persons who did not answer,
+and `P` is an informal worker (Monterrey's convention, not part-time), with `Formality`
+mirroring it; a worker without a reported giro takes the drawn one for `Occupation`, and an
+unanswered person drawn as a student is `S` (its persons, the chain `labour`). The build
+writes `od_provenance.json` with the draw and the models; `--no-impute` leaves those columns
+at their defaults.
 
 See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
 mapping-entry format, and the open items.
@@ -114,9 +116,10 @@ git clone https://github.com/CentroFuturoCiudades/eodgdl && cd eodgdl && uv sync
 
 ## Data
 
-The survey data lives in this repo's `data/` directory (committed, but **not** distributed
-inside the installed package — the wheel ships code only). The package fetches the files it
-needs on demand via [Pooch](https://www.fatiando.org/pooch/), caching them locally and
+The survey and the other input data live in this repo's `data/` directory, the fitted
+imputation models in `models/` (both committed, but **not** distributed inside the installed
+package — the wheel ships code only). The package fetches the files it needs on demand via
+[Pooch](https://www.fatiando.org/pooch/), each from its directory, caching them locally and
 verifying checksums against `src/eodgdl/data/registry.txt`.
 
 Override the defaults with environment variables:
@@ -124,10 +127,12 @@ Override the defaults with environment variables:
 | variable           | effect                                                            |
 |--------------------|-------------------------------------------------------------------|
 | `EODGDL_DATA_DIR`  | read data from this local directory instead of fetching           |
+| `EODGDL_MODELS_DIR` | read the models from this local directory (default: `models/` beside `EODGDL_DATA_DIR`) |
 | `EODGDL_CACHE_DIR` | where Pooch caches downloaded files                               |
-| `EODGDL_BASE_URL`  | mirror base URL (fork / different ref); keep the trailing `/`     |
+| `EODGDL_BASE_URL`  | mirror base URL of the data (fork / different ref); keep the trailing `/` |
+| `EODGDL_MODELS_URL` | mirror base URL of the models; keep the trailing `/`             |
 
-CLI helpers: `eodgdl info` (show cache dir + mirror) and `eodgdl fetch [--dataset survey|zones|all]`.
+CLI helpers: `eodgdl info` (show cache dir + mirror) and `eodgdl fetch [--dataset survey|zones|models|all]`.
 
 ### Data provenance
 
@@ -154,7 +159,9 @@ zone). Zones are built from the census by `reweight.zoning` instead.
 `eodgdl.impute` is the package's categorical imputation engine; every imputation model on the survey runs on it. A
 **task** is one model, a YAML under `src/eodgdl/impute/tasks/` (source, classes, features, arms, candidate grid,
 evaluation settings). A **chain** strings tasks together, in parallel or in sequence, and passes each task's class
-probabilities to the tasks downstream (YAMLs under `src/eodgdl/impute/chains/`). There are four imputations:
+probabilities to the tasks downstream (YAMLs under `src/eodgdl/impute/chains/`). A **pipeline** draws the chains of
+several row levels jointly (YAMLs under `src/eodgdl/impute/pipelines/`). There are four imputations, and the pipeline
+the TASHA build reads:
 
 | imputation | kind | trained on | scores |
 |---|---|---|---|
@@ -162,9 +169,10 @@ probabilities to the tasks downstream (YAMLs under `src/eodgdl/impute/chains/`).
 | `sector_informality` | chain: `giro` → `informality` (exact sum over the sector) | ENOE, 8 quarters of Jalisco's employed, harmonized to the survey | every EOD worker |
 | `nse` | chain: `educacion_jefe` → `amai_banos` → `amai_dormitorios` → AMAI points, level, AGEB calibration (50 draws) | the EOD's heads (education); ENIGH 2022, households in cities of 100,000+ (bathrooms, bedrooms) | every EOD dwelling |
 | `labour` | chain: `empleo` → `giro` → `informality`, all on the workers and the persons who did not answer (50 draws) | the EOD's persons aged 16+ who answered (employment); as above (giro, informality) | every EOD worker and every person aged 16+ without an employment answer |
+| `tasha` | pipeline: `labour` on the persons → each dwelling's workers aged 14+ with the drawn ones → `nse` on the dwellings (50 draws, a bootstrap model per draw) | as `labour` and `nse` | as `labour` and `nse`: what the TASHA build reads |
 
-The fitted bundle of every task ships through the data mirror (`data/od_<task>_model.joblib`, giro's is
-`od_giro_hybrid_model.joblib`) and is fetched on first use. It is a scikit-learn pickle, checked against its task when
+The fitted bundle of every task ships through the mirror's `models/` directory (`models/od_<task>_model.joblib`,
+giro's is `od_giro_hybrid_model.joblib`) and is fetched on first use. It is a scikit-learn pickle, checked against its task when
 it loads (scikit-learn version, category levels, features, scoring settings). `amai_trabajadores` is diagnostic only:
 the survey counts the workers, so the chain `nse` does not use it, and only `evaluate nse` reads it.
 
@@ -196,7 +204,7 @@ uv add "eodgdl[giro]"
 import eodgdl
 from eodgdl import giro
 
-workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the data mirror on first use
+workers = giro.impute(eodgdl.load_eod())   # fitted bundle fetched from the mirror's models/ on first use
 workers[giro.OUTPUT_COLUMNS].head()
 ```
 
@@ -243,12 +251,13 @@ the giro and often the education blank too: the questionnaire's socio-economic b
 February on. The task `empleo` imputes their situation (works, student, home duties, retired, not working) from the
 persons who answered: age, sex, relationship, the dwelling, the survey day's trips, the weekend block and the other
 household members' answers, with an arm for the occupation and one for the education where given. The chain `labour`
-draws it together with a giro and an informality for every worker (reported, or drawn as one); the TASHA build reads
-one of its 50 completed datasets:
+draws it together with a giro and an informality for every worker (reported, or drawn as one). The pipeline `tasha`
+runs it on the persons, then counts the members drawn as workers in their dwelling's AMAI level (the chain `nse` on the
+dwellings, draw by draw); the TASHA build reads one of its 50 completed datasets:
 
 ```bash
 uv run eodgdl impute retrain empleo --data data --bootstrap 50                              # -> output/impute/empleo/
-uv run eodgdl impute score labour --data data --retrained output/impute --draws 50 --bootstrap   # -> output/impute/labour/multiple_imputation/
+uv run eodgdl impute score tasha --data data --retrained output/impute      # -> output/impute/tasha/ (persons/, dwellings/)
 quarto render reports/imputation_empleo.qmd
 ```
 
@@ -258,7 +267,7 @@ A retrain writes the bundle, its scores and every evaluation table to `<out>/<ta
 `output/impute`; `retrain <chain>` does the same for each of its tasks). Every command that needs a bundle finds it
 the same way: with `--retrained <dir>`, the one a retrain wrote under `<dir>/<task>/` when there is one, else the
 shipped one. `score` and `compare` default to the shipped bundles; `evaluate` defaults to `--retrained output/impute`,
-where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `data/`, update
+where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `models/`, update
 its sha256 in `src/eodgdl/data/registry.txt` and tag a release (see Data). Feature frames are cached under the eodgdl
 cache directory (`--refresh` rebuilds).
 

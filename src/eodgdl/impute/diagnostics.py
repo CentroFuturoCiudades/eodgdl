@@ -32,7 +32,7 @@ from .spec import load_task
 
 
 def _bundles(tasks, retrained):
-    """Each task's bundle: from ``<retrained>/<task>/`` when a retrain wrote one there, else its data file."""
+    """Each task's bundle: from ``<retrained>/<task>/`` when a retrain wrote one there, else its model file."""
     return {task: load_bundle(load_task(task), retrained=retrained) for task in tasks}
 
 
@@ -51,7 +51,7 @@ def _upstream_probabilities(chain, result, step):
 
 def evaluate_chain(chain, retrained="output/impute", context=None):
     """Every diagnostic of ``chain``'s ``evaluation:`` section, with the bundles of the retrains under ``retrained``
-    (``<retrained>/<task>/``; a task without one uses its data file). Returns ``({name: DataFrame}, summary)``."""
+    (``<retrained>/<task>/``; a task without one uses its model file). Returns ``({name: DataFrame}, summary)``."""
     chain = load_chain(chain) if isinstance(chain, str) else chain
     ev = chain.raw.get("evaluation") or {}
     context = context or Context()

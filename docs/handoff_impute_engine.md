@@ -7,6 +7,12 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **Cleanup** (session 10, 2026-10-01): the fitted bundles moved from `data/` (input data only now) to `models/`
+  (`eodgdl.data.resolve`: `$EODGDL_MODELS_DIR`, else `models/` beside `$EODGDL_DATA_DIR`, else the mirror's
+  `.../<REF>/models/`; `$EODGDL_MODELS_URL`), released as `v0.9.0`; `outputs/` merged into `output/` (`output/reference/`
+  holds the legacy giro notebook's results). v0.6.0–v0.8.0 and the pipeline were pushed and merged into `main` (77c8f93)
+  before it, the mirror check passed. To ship a retrained bundle now: copy it to `models/`, update its line in
+  `src/eodgdl/data/registry.txt`, release.
 - **The staged imputation pipeline** (session 10, 2026-09-30, done; the brief: `docs/handoff_pipeline.md`): the
   pipeline `tasha` (`impute/pipelines/tasha.yaml`, `pipeline.py`) replaces the chains `labour` and `nse` as what the
   TASHA build reads. One chain per row level, each with its own seed: persons (`labour`), then the aggregate `workers`

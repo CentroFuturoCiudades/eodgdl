@@ -11,10 +11,10 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    fetch_p = sub.add_parser("fetch", help="Pre-download data files from the mirror")
+    fetch_p = sub.add_parser("fetch", help="Pre-download data files and model bundles from the mirror")
     fetch_p.add_argument(
         "--dataset",
-        choices=["survey", "zones", "all"],
+        choices=["survey", "zones", "models", "all"],
         default="all",
         help="Which file group to fetch (default: all)",
     )
@@ -140,9 +140,9 @@ def main() -> None:
 
     if args.cmd == "fetch":
         from eodgdl.data import POOCH
-        from eodgdl.data._catalog import FILES, SURVEY_FILES, ZONE_FILES
+        from eodgdl.data._catalog import FILES, MODEL_FILES, SURVEY_FILES, ZONE_FILES
 
-        fnames = {"survey": SURVEY_FILES, "zones": ZONE_FILES, "all": FILES}[args.dataset]
+        fnames = {"survey": SURVEY_FILES, "zones": ZONE_FILES, "models": MODEL_FILES, "all": FILES}[args.dataset]
         for fname in fnames:
             path = POOCH.fetch(fname, progressbar=True)
             print(f"  {fname} → {path}")
@@ -150,12 +150,14 @@ def main() -> None:
 
     elif args.cmd == "info":
         from eodgdl.data._paths import get_pooch_cache_dir
-        from eodgdl.data._registry import _BASE_URL
+        from eodgdl.data._registry import _BASE_URL, _MODELS_URL
 
         print(f"Cache directory : {get_pooch_cache_dir()}")
         print(f"Mirror base URL : {_BASE_URL}")
+        print(f"Models URL      : {_MODELS_URL}")
         print("Overrides: $EODGDL_CACHE_DIR (cache), $EODGDL_DATA_DIR (local data dir),")
-        print("           $EODGDL_BASE_URL (mirror base).")
+        print("           $EODGDL_MODELS_DIR (local models dir; default: models/ beside the data dir),")
+        print("           $EODGDL_BASE_URL (mirror base), $EODGDL_MODELS_URL (models base).")
 
     elif args.cmd == "tasha":
         raise SystemExit(_tasha(args))

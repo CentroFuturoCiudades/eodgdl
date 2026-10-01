@@ -89,7 +89,7 @@ contract and metadata: hashes of the spec, of what decides scoring and of the le
 selection and held-out metrics, the scikit-learn and eodgdl versions. `check_bundle` **refuses** a bundle that could not
 score the task as it stands: another scikit-learn, other levels, classes, arms, features or auxiliary predictors, or a
 scoring or level-contract hash that differs. `load_bundle` reads an explicit file, else the one a retrain wrote under
-`<root>/<task>/`, else the installed data file (`data/od_<task>_model.joblib`, fetched from the data mirror). A change
+`<root>/<task>/`, else the installed model file (`models/od_<task>_model.joblib`, fetched from the mirror's `models/`). A change
 to a task's features or levels therefore requires retraining and reinstalling its bundle.
 
 ## Chains

@@ -20,6 +20,19 @@ def get_data_dir() -> Path:
     return Path(user_data_dir(_APP))
 
 
+def get_models_dir() -> Path | None:
+    """Return the local directory of the fitted model bundles, or None (they are then fetched).
+
+    ``$EODGDL_MODELS_DIR``, else the ``models/`` directory beside ``$EODGDL_DATA_DIR`` (a
+    clone's layout: ``data/`` holds the input data, ``models/`` the bundles).
+    """
+    if env := os.environ.get("EODGDL_MODELS_DIR"):
+        return Path(env).expanduser().resolve()
+    if env := os.environ.get("EODGDL_DATA_DIR"):
+        return Path(env).expanduser().resolve().parent / "models"
+    return None
+
+
 def get_pooch_cache_dir() -> Path:
     """Return the directory where Pooch caches downloaded files.
 

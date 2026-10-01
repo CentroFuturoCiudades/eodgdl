@@ -9,7 +9,7 @@ contract or scoring definition differs from the running code and task spec; :fun
 (the giro notebook's, ``model_with_education`` ... keys, was converted on load until 2026-09-29).
 
 :func:`load_bundle` finds a task's bundle the same way for every mode: an explicit file, else the one a retrain wrote
-under ``<retrained>/<task>/``, else the installed data file."""
+under ``<retrained>/<task>/``, else the installed model file (the repo's ``models/``)."""
 
 import hashlib
 from pathlib import Path
@@ -95,7 +95,7 @@ def check_bundle(bundle, spec, category_levels):
 
 def bundle_path(spec, path=None, retrained=None):
     """Where the task's bundle is read from: ``path``; else ``<retrained>/<task>/<bundle file>`` when a retrain wrote
-    it there; else the task's data file (:func:`eodgdl.data.resolve`: ``$EODGDL_DATA_DIR`` or the data mirror)."""
+    it there; else the task's model file (:func:`eodgdl.data.resolve`: a local ``models/`` directory, else the mirror's)."""
     if path is not None:
         return Path(path)
     if retrained is not None and (Path(retrained) / spec.name / spec.bundle_name).exists():

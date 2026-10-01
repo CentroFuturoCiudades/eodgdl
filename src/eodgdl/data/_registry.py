@@ -1,4 +1,4 @@
-"""Global Pooch registry for the IMEPLAN EOD 2023 data files.
+"""Global Pooch registry for the IMEPLAN EOD 2023 data files and model bundles.
 
 No network traffic occurs at import time — files are only downloaded on the first
 ``POOCH.fetch()`` call for each file.
@@ -10,24 +10,26 @@ from importlib import resources
 
 import pooch
 
+from eodgdl.data._catalog import MODEL_FILES
 from eodgdl.data._paths import get_pooch_cache_dir
 
-# The data files live in the ``data/`` directory of the eodgdl repo itself. Pooch fetches
-# them over plain HTTPS from raw.githubusercontent.com, pinned to a tag/commit for
-# reproducibility (registry keys are bare filenames → ``base_url`` ends in the ``data/``
-# path). Override $EODGDL_BASE_URL to point at a fork/mirror or a different ref (keep the
-# trailing "/").
+# The input data live in the ``data/`` directory of the eodgdl repo itself, the fitted model
+# bundles in its ``models/`` directory. Pooch fetches them over plain HTTPS from
+# raw.githubusercontent.com, pinned to a tag/commit for reproducibility (registry keys are
+# bare filenames → ``base_url`` ends in the ``data/`` path, and each model file has a URL of
+# its own under ``models/``). Override $EODGDL_BASE_URL (data) and $EODGDL_MODELS_URL
+# (models) to point at a fork/mirror or a different ref (keep the trailing "/").
 GH = "CentroFuturoCiudades/eodgdl"
 REF = "v0.8.0"
-_BASE_URL = os.environ.get(
-    "EODGDL_BASE_URL",
-    f"https://raw.githubusercontent.com/{GH}/{REF}/data/",
-)
+_ROOT_URL = f"https://raw.githubusercontent.com/{GH}/{REF}/"
+_BASE_URL = os.environ.get("EODGDL_BASE_URL", _ROOT_URL + "data/")
+_MODELS_URL = os.environ.get("EODGDL_MODELS_URL", _ROOT_URL + "models/")
 
 POOCH = pooch.create(
     path=get_pooch_cache_dir(),
     base_url=_BASE_URL,
     registry={},
+    urls={name: _MODELS_URL + name for name in MODEL_FILES},
     env="EODGDL_CACHE_DIR",
 )
 

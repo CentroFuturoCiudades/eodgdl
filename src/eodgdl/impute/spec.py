@@ -86,7 +86,7 @@ class TaskSpec:
 
     @property
     def bundle_name(self):
-        """File name of the task's bundle: its data file, else ``<task>.joblib``."""
+        """File name of the task's bundle: its model file (``bundle:``), else ``<task>.joblib``."""
         return self.bundle_file or f"{self.name}.joblib"
 
     def builders_for(self, source):
