@@ -205,9 +205,11 @@ stage summaries. (4) Stage 4 **always** retrains on the TMG weight.
   parity of the two roots are written to run once stage 4 has (the parity section still to add then).
 - **Pending, not in the brief:** stage 6's expansion (`tasha/mappings.yaml` `ExpansionFactor` reads each table's
   `ponderador`; with the TMG weight every table should read the household weight) — a mapping change when it arrives.
-- **H waits for the user** (tags and pushes are outward-facing).
-- **Found:** the `v0.9.0` tag was never pushed (`git ls-remote` shows up to v0.8.0), so installs fetch 404 for every
-  bundle under `.../v0.9.0/models/`.
+- **Committed** per item (7fe9adf A, 5a4ebc3 B, a08de68 C, c5bafc0 D, 7f59d26 E, d23bc67 F, 645771a G).
+- **H, first release done** (2026-10-01): the `v0.9.0` tag, never pushed until then (installs fetched 404 for every
+  bundle under `.../v0.9.0/models/`), pushed; `v0.10.0` (9c5e6d9: version, `REF`, lock) tagged and pushed, every model
+  bundle fetched from the mirror and sha256-checked; `impute-chains` merged into `main` (a31de77). The reweight set can
+  be handed over (`output/reweight/`, reproducible from v0.10.0). The second release waits for the weight.
 
 ## Do not
 
