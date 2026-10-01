@@ -26,7 +26,10 @@ batched call. A parallel chain with derive steps forms its completions the same 
 
 A downstream task is trained on the upstream target as observed in its training source, not on imputed values, so
 retraining an upstream task does not invalidate it; what must agree is the downstream feature's declared levels and
-the values the upstream fills it with (checked on every run). ``provenance`` records the bundles each run used.
+the values the upstream fills it with (checked on every run). ``provenance`` records the bundles each run used
+(:func:`eodgdl.impute.bundle.bundle_identity`: their files' sha256 and the data, weight included, they were trained on),
+and a chain refuses EOD-trained bundles fitted on another weight than its source reads
+(:func:`eodgdl.impute.bundle.weight_conflicts`).
 
 A draws chain may also be ``given`` per-completion features from outside it (a pipeline's aggregate of another row
 level's draws, :mod:`eodgdl.impute.pipeline`): they enter after the feature cache, as columns of the completions, and
@@ -41,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 from .arms import set_class_probabilities
-from .bundle import as_v2, check_bootstrap, load_bootstrap, load_bundle
+from .bundle import as_v2, bootstrap_paths, bundle_identity, bundle_path, check_bootstrap, load_bootstrap, load_bundle, weight_conflicts
 from .features import build_frame
 from .run import expected_score_column, output_columns, score_frame, task_levels
 from .sources import Context, get_source
@@ -468,14 +471,17 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     _check(len(sources) == 1, f"{chain.name}: the tasks score different sources {sorted(sources)}")
     source = sources.pop()
     keys = get_source(source).keys
-    bundles = {task: as_v2(bundles[task], spec) if task in (bundles or {}) else load_bundle(spec, retrained=retrained) for task, spec in specs.items()}
+    paths = {task: None if task in (bundles or {}) else bundle_path(spec, retrained=retrained) for task, spec in specs.items()}
+    bundles = {task: as_v2(bundles[task], spec) if task in (bundles or {}) else load_bundle(spec, paths[task]) for task, spec in specs.items()}
     built = {task: build_frame(spec, context, role="score") for task, spec in specs.items()}
     frames = {task: frame.frame for task, frame in built.items()}
     for task in chain.tasks:
         _check(frames[task][keys].astype(str).equals(frames[chain.tasks[0]][keys].astype(str)), f"{chain.name}: {task}'s rows differ from {chain.tasks[0]}'s")
     _check_uses(chain, specs)
     _check(not bootstrap or chain.uncertainty == "bootstrap", f"{chain.name}: bootstrap bundles given to a chain without uncertainty: bootstrap")
+    boot_paths = {}
     if chain.uncertainty == "bootstrap" and bootstrap is None:
+        boot_paths = {task: bootstrap_paths(spec, retrained) for task, spec in specs.items()}
         bootstrap = {task: load_bootstrap(spec, retrained) for task, spec in specs.items()}
     if bootstrap:
         _check(chain.propagation == "draws", f"{chain.name}: bootstrap models are drawn per imputation, so they need propagation: draws")
@@ -485,10 +491,11 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
         bootstrap = {task: check_bootstrap(bundles[task], [as_v2(model, specs[task]) for model in bootstrap[task]]) for task in chain.tasks}
     versions = {key: value for key, value in built[chain.tasks[0]].versions.items() if key != "features"}   # the tasks share the source
     provenance = {"chain_hash": chain.hash, "mode": chain.mode, "propagation": chain.propagation, "draws": chain.draws, "seed": chain.seed,
-                  "bundles": {task: {key: bundle["metadata"].get(key) for key in ("spec_hash", "scoring_hash", "sklearn_version", "eodgdl_version")}
-                              for task, bundle in bundles.items()},
+                  "bundles": {task: bundle_identity(bundle, specs[task], paths[task], boot_paths.get(task, ())) for task, bundle in bundles.items()},
                   "source": source, "versions": {**versions, "features": {task: frame.versions["features"] for task, frame in built.items()}},
                   **({"uncertainty": "bootstrap", "bootstrap": {task: len(models) for task, models in bootstrap.items()}} if bootstrap else {})}
+    conflicts = weight_conflicts({chain.name: provenance})
+    _check(not conflicts, f"{chain.name}: its bundles and source mix weights ({'; '.join(conflicts)}): retrain the EOD tasks on the weight the sources read")
     base = frames[chain.tasks[0]]
     n_rows = len(base)
 

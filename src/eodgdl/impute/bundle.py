@@ -115,28 +115,85 @@ def load_bundle(spec, path=None, retrained=None):
     return as_v2(joblib.load(bundle_path(spec, path, retrained)), spec)
 
 
+def bootstrap_paths(spec, retrained):
+    """The files of the task's bootstrap bundles under ``<retrained>/<task>/bootstrap/``, in order; none without
+    ``retrained``."""
+    if retrained is None:
+        return []
+    return sorted((Path(retrained) / spec.name / "bootstrap").glob(f"{Path(spec.bundle_name).stem}_*.joblib"))
+
+
 def load_bootstrap(spec, retrained):
     """The task's bootstrap bundles under ``<retrained>/<task>/bootstrap/`` (:func:`eodgdl.impute.run.write_bootstrap`),
     in order, as v2 bundles; an empty list where there are none."""
     import joblib
 
-    if retrained is None:
-        return []
-    directory = Path(retrained) / spec.name / "bootstrap"
-    return [as_v2(joblib.load(path), spec) for path in sorted(directory.glob(f"{Path(spec.bundle_name).stem}_*.joblib"))]
+    return [as_v2(joblib.load(path), spec) for path in bootstrap_paths(spec, retrained)]
 
 
 def check_bootstrap(bundle, models):
     """``models`` (a task's bootstrap bundles) unless one was refitted from another bundle than ``bundle``: its task
-    spec or its selected configurations (``metadata["selected"]``, which :func:`eodgdl.impute.run.bootstrap_bundles`
-    copies) differ, e.g. a set an earlier retrain left beside a newer bundle. Raises :class:`BundleMismatch`."""
+    spec, its selected configurations (``metadata["selected"]``, which :func:`eodgdl.impute.run.bootstrap_bundles`
+    copies) or its training weight (:func:`training_weight`) differ, e.g. a set an earlier retrain left beside a newer
+    bundle. Raises :class:`BundleMismatch`."""
     metadata = bundle["metadata"]
-    for key, what in (("spec_hash", "task spec"), ("selected", "selected configurations")):
-        stale = [m for m, model in enumerate(models) if model["metadata"].get(key) != metadata.get(key)]
+    for key, what in (("spec_hash", "task spec"), ("selected", "selected configurations"), ("training_weight", "training weight")):
+        value = (lambda m: training_weight(m)) if key == "training_weight" else (lambda m: m.get(key))
+        stale = [m for m, model in enumerate(models) if value(model["metadata"]) != value(metadata)]
         if stale:
             raise BundleMismatch(f"The bootstrap bundles {stale[:5]} of task {bundle['task']!r} were refitted from another bundle (other {what}): "
                                  f"rerun `eodgdl impute retrain {bundle['task']} --bootstrap B`")
     return models
+
+
+def training_weight(metadata):
+    """The weight a bundle was trained on: the sha256 of the weight file its training source joined
+    (``metadata["data_versions"]["training"]["weight"]``, :func:`eodgdl.impute.sources.with_weight`), else ``"design"``,
+    a column of the source's own rows (the survey's ``ponderador``, ENOE's and ENIGH's factors: every bundle up to
+    v0.9.0)."""
+    return ((metadata.get("data_versions") or {}).get("training") or {}).get("weight", "design")
+
+
+def bundle_identity(bundle, spec, path=None, bootstrap=()):
+    """What a run records of a bundle (a chain's ``provenance["bundles"][task]``): its spec and scoring hashes, the
+    scikit-learn and eodgdl versions it was fitted under, its training source and the data ``versions`` it was trained
+    on (the weight file's sha256 among them), the sha256 of its file (``path``; None for a bundle handed in) and one
+    sha256 over its bootstrap bundles' files (``bootstrap``), if any."""
+    from .sources import file_digest, files_digest
+
+    metadata = bundle["metadata"]
+    identity = {key: metadata.get(key) for key in ("spec_hash", "scoring_hash", "sklearn_version", "eodgdl_version")}
+    identity.update({"training_source": spec.source, "versions": (metadata.get("data_versions") or {}).get("training"),
+                     "sha256": file_digest(str(path)) if path is not None else None})
+    if bootstrap:
+        identity["bootstrap_sha256"] = files_digest(bootstrap)
+    return identity
+
+
+def weight_conflicts(levels):
+    """Where a run mixes weights, as readable strings (none when sound): ``levels`` maps a name to what a chain run
+    records (its ``provenance``: ``bundles`` and the scoring source's ``versions``). Every bundle trained on the EOD (a
+    training source ``eod.*``) must have been trained on the weight its level's scoring source reads now
+    (``versions["weight"]``, else ``"design"``), and so on one weight across the levels; ENOE's and ENIGH's tasks train
+    on their surveys' own weights and are exempt. A recorded bundle without ``training_source`` (a run before the
+    weight could change) is reported, as nothing says which weight it was trained on."""
+    problems, weights = [], {}
+    for name, entry in levels.items():
+        source_weight = (entry.get("versions") or {}).get("weight", "design")
+        weights.setdefault(source_weight, []).append(f"{name}'s source")
+        for task, identity in (entry.get("bundles") or {}).items():
+            if "training_source" not in identity:
+                problems.append(f"{name}: no training source recorded for {task}'s bundle")
+                continue
+            if not identity["training_source"].startswith("eod."):
+                continue
+            trained = (identity.get("versions") or {}).get("weight", "design")
+            weights.setdefault(trained, []).append(f"{name}.{task}")
+            if trained != source_weight:
+                problems.append(f"{name}: {task}'s bundle was trained on weight {trained[:12]}, its source reads {source_weight[:12]}")
+    if len(weights) > 1:
+        problems.append("more than one weight: " + "; ".join(f"{weight[:12]}: {', '.join(names)}" for weight, names in weights.items()))
+    return problems
 
 
 def bundle_arms(bundle, auxiliary=True):

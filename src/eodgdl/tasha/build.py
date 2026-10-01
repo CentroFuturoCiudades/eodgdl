@@ -62,7 +62,8 @@ def load_completed(root="output/impute", draw=0) -> dict[str, dict[str, pd.DataF
 
     Refuses a run with its aggregates switched off (``--no-aggregate``: the parity check, whose levels do not hold
     together) and one drawn on other data than the pipeline's sources read now (:func:`_stale_levels`: a survey file,
-    a chain rule or a hand decision changed since the run)."""
+    a chain rule or a hand decision changed since the run), or one whose levels' EOD-trained bundles were fitted on
+    different weights, or on another than the levels' sources read (eodgdl.impute.bundle.weight_conflicts)."""
     pipelines = sorted({pipeline for entries in load_mappings().values() if isinstance(entries, dict)
                         for entry in entries.values() if isinstance(entry, dict)
                         for _, pipeline, _, _ in imputed_lookups(entry)})
@@ -79,6 +80,11 @@ def load_completed(root="output/impute", draw=0) -> dict[str, dict[str, pd.DataF
         stale = _stale_levels(provenance)
         if stale:
             raise ValueError(f"{folder}: drawn on other data than the survey's now ({'; '.join(stale)}): {rerun}")
+        from eodgdl.impute.bundle import weight_conflicts
+
+        conflicts = weight_conflicts(provenance["levels"])
+        if conflicts:
+            raise ValueError(f"{folder}: drawn with bundles of mixed weights ({'; '.join(conflicts)}): {rerun}")
         completed[pipeline] = {}
         for level in provenance["levels"]:
             frame = pd.read_parquet(folder / level / "completions.parquet")

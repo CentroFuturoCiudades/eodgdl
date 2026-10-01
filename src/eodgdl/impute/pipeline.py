@@ -16,7 +16,8 @@ aggregate's drawn values switched off (``aggregate=False``) each level reproduce
 
 A run records each level's scoring source and data versions (its chain's ``provenance``): ``eodgdl.tasha.load_completed``
 refuses to build from a run whose data changed since (:func:`eodgdl.impute.sources.changed_versions`), as it refuses one
-with the aggregates switched off.
+with the aggregates switched off. A run, and ``load_completed``, refuse levels whose EOD-trained bundles were fitted on
+different weights, or on another weight than their sources read (:func:`eodgdl.impute.bundle.weight_conflicts`).
 """
 
 import functools
@@ -25,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .aggregate import get_aggregate
+from .bundle import weight_conflicts
 from .chain import load_chain, parse_chain, retrain_chain, run_chain, step_spec, write_chain
 from .sources import get_source
 from .spec import load_task, read_yaml, stable_hash
@@ -186,6 +188,8 @@ def run_pipeline(pipeline, context=None, retrained=None, draws=None, aggregate=T
         results[level.name] = run_chain(chain, context=context, retrained=retrained, bundles={task: bundle for task, bundle in (bundles or {}).items() if task in chain.tasks} or None,
                                         bootstrap=boot, specs=specs, derive_functions=derive_functions, given=given)
         provenance[level.name] = {"chain": chain.name, **results[level.name].provenance, "given": dict(level.given)}
+        conflicts = weight_conflicts(provenance)
+        _check(not conflicts, f"{pipeline.name}: its levels mix weights ({'; '.join(conflicts)})")
     settings = {"pipeline": pipeline.name, "pipeline_hash": pipeline.hash, "draws": int(pipeline.draws if draws is None else draws),
                 "uncertainty": pipeline.uncertainty if uncertainty is ... else uncertainty, "aggregate": bool(aggregate), "levels": provenance}
     return PipelineResult(pipeline, results, settings)

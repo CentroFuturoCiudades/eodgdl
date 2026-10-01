@@ -188,6 +188,8 @@ def test_draws_complete_every_task(chain_source):
     # the provenance names the scoring source and the data versions it read (what tasha.load_completed checks)
     versions = result.provenance["versions"]
     assert result.provenance["source"] == "test.chain" and versions["data"] == "chain" and set(versions["features"]) == {"t1", "t2"}
+    # and each bundle's identity: its training source and data, its file's sha256 (none for a bundle handed in)
+    assert {key: result.provenance["bundles"]["t1"][key] for key in ("training_source", "sha256")} == {"training_source": T1.source, "sha256": None}
 
 
 def test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios(chain_source):

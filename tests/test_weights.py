@@ -112,3 +112,50 @@ def test_a_survey_source_reads_its_weight_from_a_file(stages, tmp_path, monkeypa
     expected = viv["ponderador"].astype(float).reindex(built.frame["folio_vivienda"]).to_numpy() * 2
     assert (built.frame["peso"].to_numpy() == expected).all()
 
+
+def _identity(source, weight=None):
+    return {"spec_hash": "s", "training_source": source, "versions": {"survey": "x", **({"weight": weight} if weight else {})}}
+
+
+def test_weight_conflicts_names_eod_bundles_trained_on_another_weight():
+    from eodgdl.impute.bundle import weight_conflicts
+
+    design = {"versions": {"survey": "x"}, "bundles": {"empleo": _identity("eod.persons"), "informality": _identity("enoe.workers")}}
+    tmg = {"versions": {"survey": "x", "weight": "f" * 64}, "bundles": {"educacion_jefe": _identity("eod.dwellings", "f" * 64),
+                                                                       "amai_banos": _identity("enigh.households")}}
+    assert weight_conflicts({"persons": design}) == [] and weight_conflicts({"dwellings": tmg}) == []     # ENOE, ENIGH exempt
+    # a TMG-weight bundle under a source that reads the design weight; a pipeline whose levels read different weights
+    stale = {**design, "bundles": {"empleo": _identity("eod.persons", "f" * 64)}}
+    assert any("empleo's bundle was trained on weight ffffffffffff, its source reads design" in p for p in weight_conflicts({"persons": stale}))
+    assert any(p.startswith("more than one weight") for p in weight_conflicts({"persons": design, "dwellings": tmg}))
+    assert weight_conflicts({"persons": {**design, "bundles": {"empleo": {"spec_hash": "s"}}}}) == ["persons: no training source recorded for empleo's bundle"]
+
+
+def test_a_bootstrap_set_of_another_weight_is_refused():
+    from eodgdl.impute.bundle import BundleMismatch, check_bootstrap, training_weight
+
+    metadata = {"spec_hash": "s", "selected": {"a": 1}}
+    bundle = {"task": "empleo", "metadata": {**metadata, "data_versions": {"training": {"survey": "x", "weight": "f" * 64}}}}
+    assert training_weight(bundle["metadata"]) == "f" * 64 and training_weight(metadata) == "design"
+    with pytest.raises(BundleMismatch, match="other training weight"):
+        check_bootstrap(bundle, [{"metadata": metadata}])          # a design-weight set beside a TMG-weight bundle
+    same = [{"metadata": {**metadata, "data_versions": {"training": {"weight": "f" * 64}}}}]
+    assert check_bootstrap(bundle, same) == same
+
+
+def test_load_completed_refuses_levels_of_mixed_weights(tmp_path, monkeypatch, weighted_source):
+    source, _ = weighted_source
+    monkeypatch.setenv("EODGDL_DATA_DIR", str(_weights(tmp_path / "tmg", [10.0, 20.0, 30.0])))
+    versions = {**source.data_versions(Context()), "features": {}}
+    folder = tmp_path / "root" / "tasha"
+    for name in ("persons", "dwellings"):
+        (folder / name).mkdir(parents=True)
+        pd.DataFrame({"folio_vivienda": [1], "completion": [0], "weight": 1.0}).to_parquet(folder / name / "completions.parquet", index=False)
+    level = {"source": "test.weighted", "versions": versions, "bundles": {"empleo": _identity("eod.persons", versions["weight"])}}
+    provenance = {"pipeline": "tasha", "draws": 1, "aggregate": True, "levels": {"persons": level, "dwellings": level}}
+    (folder / "provenance.json").write_text(json.dumps(provenance))
+    tasha.load_completed(tmp_path / "root")
+    mixed = {**level, "bundles": {"educacion_jefe": _identity("eod.dwellings")}}           # still on the design weight
+    (folder / "provenance.json").write_text(json.dumps({**provenance, "levels": {"persons": level, "dwellings": mixed}}))
+    with pytest.raises(ValueError, match="drawn with bundles of mixed weights"):
+        tasha.load_completed(tmp_path / "root")

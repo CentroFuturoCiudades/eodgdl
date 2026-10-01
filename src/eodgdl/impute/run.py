@@ -529,7 +529,7 @@ def bootstrap_sample(frame, group, rng):
     return frame.iloc[np.concatenate([order[starts[k]:starts[k + 1]] for k in drawn])].reset_index(drop=True)
 
 
-def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m):
+def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m, versions):
     from threadpoolctl import threadpool_limits
 
     sample = bootstrap_sample(frame, group, np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(m,))))
@@ -544,7 +544,7 @@ def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m):
             auxiliary[arm.name] = {feature: fit_level_model(sample, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels,
                                                             sample_weights=sample[weight], random_state=seed, missing_label=spec.missing_label)
                                    for feature in spec.auxiliary}
-    return make_bundle(spec, arms, auxiliary, levels, {"bootstrap": m, "bootstrap_seed": [seed, m], "selected": selected})
+    return make_bundle(spec, arms, auxiliary, levels, {"bootstrap": m, "bootstrap_seed": [seed, m], "selected": selected, "data_versions": {"training": versions}})
 
 
 def bootstrap_bundles(task, bundle, n, context=None, n_jobs=-1):
@@ -560,7 +560,7 @@ def bootstrap_bundles(task, bundle, n, context=None, n_jobs=-1):
     source = build_frame(spec, context)
     frame = select_rows(source.frame, keep=spec.selection.get("population"))
     levels, selected, seed = task_levels(spec), bundle["metadata"]["selected"], spec.selection["cv"]["seed"]
-    return Parallel(n_jobs=n_jobs)(delayed(_bootstrap_bundle)(spec, frame, source.weight, source.group, selected, levels, seed, m) for m in range(n))
+    return Parallel(n_jobs=n_jobs)(delayed(_bootstrap_bundle)(spec, frame, source.weight, source.group, selected, levels, seed, m, source.versions) for m in range(n))
 
 
 def write_bootstrap(spec, bundles, out):
