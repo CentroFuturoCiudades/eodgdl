@@ -7,6 +7,9 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **Next: the staged imputation pipeline** (decided 2026-09-30, end of session 9): one pipeline (within-survey →
+  aggregate → fusion → derive) replaces the chains `labour` and `nse` as what the TASHA build reads, so the dwelling's
+  worker count includes the drawn workers. The brief: `docs/handoff_pipeline.md`.
 - **`v0.7.0`** (session 9, 2026-09-30): the head's education (`educacion_jefe`) reads the other household members'
   highest education (`eod.household_education`) in an arm of its own (`con_hogar`, requires it; `sin_hogar` is the model
   as it was): CV -0.0465 against the single arm; one model reading it with the median where missing lost 0.030 on the
