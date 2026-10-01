@@ -170,13 +170,65 @@ display(Markdown(
     "have. Education counts as unobserved when it is missing or answered " + ", ".join(f"'{v}'" for v in SPEC.missing_values["escolaridad"]) + ".\n\n" + "\n".join(lines)
     + "\n\nBesides person and dwelling attributes, the arms use the work trip: destination type, mode, weekend work "
     "travel and household vehicles. They also use the destination's ámbito and its DENUE establishment mix, taken from "
-    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder), and the month of "
-    "the interview (@sec-month).\n\n"
+    "the destination's unit in the zone system, an urban or rural AGEB (`giro.destination` builder): the number of "
+    "establishments and the shares of their staff in large establishments and in each of the 20 SCIAN sectors, the "
+    "staff read as the midpoint of DENUE's size band (since v0.6.0; before, the shares of establishments per giro), and "
+    "the month of the interview (@sec-month). Where the worker lives adds nothing to these: the census profile of the "
+    "dwelling's AGEB (INEGI's ILMM auxiliary variables among it), AMAI's NSE by AGEB and the other household members' "
+    "education were tried and not taken (2026-09-30, `src/eodgdl/impute/tasks/giro.yaml`).\n\n"
     f"A worker who made no work trip on the survey day ({pct(no_trip_share)} of the reported workers, weighted) "
     "has no destination or mode: both take the level `sin_viaje`, a state the model learns from the reported workers who "
     "made none, not a missing value averaged over destinations as if they had commuted (until 2026-09-29; over every "
     "reported worker without a work trip, out of fold, that averaging predicted commerce 36% and services 41% against 42% "
     "and 34% observed, the level 43% and 34%: `src/eodgdl/impute/tasks/giro.yaml`)."
+))
+```
+
+## Why two arms {#sec-why-arms}
+
+```{python}
+#| label: why-arms
+educ_missing = SPEC.is_missing(WORKERS, "escolaridad")
+unknown_giro = WORKERS["giro_desconocido"].astype(bool)
+wts = WORKERS["ponderador"]
+share = lambda rows: float(np.average(educ_missing[rows], weights=wts[rows]))
+by_month_missing = {m: share(WORKERS["mes_entrevista"].astype(str).eq(m)) for m in ("1", "2", "3", "4")}
+# heads, spouses and partners are one person per dwelling: they answered for themselves where the dwelling's main
+# informant has their relationship
+_tables = _Context().eod()
+_roles = WORKERS[["folio_vivienda", "folio_habitante"]].merge(_tables.hab["parentesco"].astype(str).rename("role").reset_index(), how="left") \
+    .merge(_tables.viv["informante_principal"].astype(str).rename("informant").reset_index(), how="left")
+single = _roles["role"].isin(["Jefe del hogar", "Cónyuge", "Compañero"]).to_numpy()
+own = _roles["role"].eq(_roles["informant"]).to_numpy()
+self_share, proxy_share = share(single & own), share(single & ~own)
+usage = T("model_usage").set_index("giro_model_used")["weighted_share"]
+heldout_loss = {arm: SUMMARY["arms"][arm]["test_metrics"]["weighted_log_loss"] for arm in ARMS}
+assert share(unknown_giro) > 10 * share(~unknown_giro)
+assert by_month_missing["1"] < 0.05 < 0.15 < by_month_missing["4"] and abs(self_share - proxy_share) < 0.05
+assert heldout_loss["with_education"] < heldout_loss["without_education"]
+display(Markdown(
+    "Education goes unanswered with the giro: "
+    f"{pct(share(~unknown_giro))} of the workers who report a giro lack it (weighted), against {pct(share(unknown_giro))} of "
+    f"those who do not, so the arm without education scores {pct(usage['without_education'], 0)} of the imputed weight. "
+    f"It follows the interview month ({pct(by_month_missing['1'], 0)} of January's workers, {pct(by_month_missing['4'], 0)} of "
+    "April's), not the respondent: heads and spouses answering for themselves skip it "
+    f"({pct(self_share, 0)}) about as often as when another member answers for them ({pct(proxy_share, 0)}). It is the "
+    "capture, like the giro's own non-response (@sec-month).\n\n"
+    f"- **Education is worth using where it is observed.** On the held-out fold the arm with it scores a log loss of "
+    f"{heldout_loss['with_education']:.4f}, the arm without it {heldout_loss['without_education']:.4f} (@sec-evaluation).\n"
+    "- **Where it is not, a model without it predicts better than the model with it averaged over education.** With "
+    "education hidden on the same held-out fold (measured 2026-09-30 on v0.6.0's retrain), the with-education model "
+    "averaged by P(education | x) from an auxiliary model scored 0.9010, and averaged by the training shares 0.9104, "
+    "against the arm without education's 0.8958.\n"
+    "- **What it assumes.** A worker whose giro and education both went unanswered has the giro of the workers who "
+    "reported them, given the features, the month among them. The only check is the 673 workers who report a giro but not "
+    "their education: out of fold, the arm without education predicted their shares within 1.6 points (commerce 41.2% "
+    "against 42.8% observed), with a log loss of 0.696 against 0.893 for the rest. The held-out fold holds few such "
+    "workers, so the second arm's accuracy where it is used rests on that assumption.\n"
+    "- **Its training rows.** Each arm trains on every worker with a reported giro. For the arm with education, those "
+    "without it carry the missing label, a level it never scores; training it on the workers with education alone moved "
+    "its CV log loss on the rows it scores by +0.0002 (standard error 0.0007), so it stays as it is.\n\n"
+    "The measurements are in `src/eodgdl/impute/tasks/giro.yaml` (`arms`)."
 ))
 ```
 
@@ -405,12 +457,18 @@ for arm in ARMS:
                      "mean ECE": round(r["mean_ece"], 4), "share-weighted ECE": round(r["share_weighted_ece"], 4)})
 iso = pd.DataFrame(rows)
 trades = iso.pivot(index="arm", columns="probabilities")
-assert (trades[("log loss", "isotonic")] >= trades[("log loss", "selected")]).all() and (trades[("mean ECE", "isotonic")] < trades[("mean ECE", "selected")]).all()
+assert (trades[("log loss", "isotonic")] >= trades[("log loss", "selected")]).all()
+calibrates = trades[("mean ECE", "isotonic")] < trades[("mean ECE", "selected")]
+if calibrates.all():
+    trade = "It trades log loss for calibration error."
+else:
+    gains = " and ".join(f"the {arm.lower()} arm" for arm in calibrates.index[calibrates])
+    trade = (f"It never lowers the log loss; it lowers the mean calibration error only in {gains}." if gains else
+             "It lowers neither the log loss nor the mean calibration error.")
 display(Markdown(
     "One isotonic map per class is learned from out-of-fold probabilities on the training households and applied to the "
     "held-out ones. It is always evaluated and shipped only when the task says so "
-    f"(`evaluation.isotonic.ship: {str(SPEC.evaluation.get('isotonic', {}).get('ship', False)).lower()}`). The table "
-    "shows it trades log loss for calibration error."
+    f"(`evaluation.isotonic.ship: {str(SPEC.evaluation.get('isotonic', {}).get('ship', False)).lower()}`). " + trade
 ))
 display(iso)
 ```

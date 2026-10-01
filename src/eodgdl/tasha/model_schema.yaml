@@ -104,13 +104,16 @@ tables:
         required: true
         default: 7
         domain:
-          1: Lowest
-          2: Low
-          3: Lower-middle
-          4: Middle
-          5: Upper-middle
-          6: Highest
+          1: Lowest (AMAI E)
+          2: Low (AMAI D)
+          3: Lower-middle (AMAI D+)
+          4: Middle (AMAI C- and C)
+          5: Upper-middle (AMAI C+)
+          6: Highest (AMAI A/B)
           7: Not stated / unknown
+        notes: >-
+          The household's socioeconomic level on AMAI's scale, six classes with C- and C merged, as the model's
+          Monterrey inputs (PIMUS 2019) coded it; decided for Guadalajara 2026-09-30. A level, not a measured income.
 
       ExpansionFactor:
         dtype: float
@@ -172,12 +175,13 @@ tables:
         required: true
         default: O
         domain:
-          F: Full-time worker
-          P: Part-time worker
+          F: Employed, formal job (full or part time)
+          P: Employed, informal job (full or part time)
           O: Not employed
         notes: >-
-          P carries its standard TASHA meaning, part-time. Job formality is a
-          separate concept and lives in the Formality column.
+          P is an informal worker, not a part-time one: the convention of the model's Monterrey inputs (PIMUS 2019,
+          which did not survey part-time work), kept for Guadalajara by decision (2026-09-30). Hours are not
+          represented. Formality says the same of every worker (P exactly where Formality is I).
 
       Formality:
         dtype: str
@@ -189,9 +193,9 @@ tables:
           I: Informal job
           O: Not applicable, not employed, or unknown
         notes: >-
-          Kept separate from EmploymentStatus so that P can mean part-time.
-          Optional because a survey may have no signal for it — emit O
-          throughout and say so in the mappings rather than omitting the column.
+          Mirrors EmploymentStatus, which carries informality in P: I exactly where EmploymentStatus is P, F where it
+          is F and the job's formality is known, O for non-workers. Optional because a survey may have no signal for
+          it: emit O throughout and say so in the mappings rather than omitting the column.
 
       Occupation:
         dtype: str

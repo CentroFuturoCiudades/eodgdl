@@ -38,6 +38,37 @@ def load_harmonization(name):
     return read_yaml(HARMONIZATION_DIR / f"{name}.yaml")
 
 
+def named_transform(name, common=None):
+    """common.yaml's ``transforms[name]``: a map from a task's class slugs to the common levels."""
+    transforms = (common or load_harmonization("common")).get("transforms", {})
+    if name not in transforms:
+        raise ValueError(f"No transform {name!r} in harmonization/common.yaml; known: {sorted(transforms)}")
+    return {str(key): str(value) for key, value in transforms[name].items()}
+
+
+def resolve_map(definition, common=None):
+    """A variable's value map: its ``map``, or the named ``transform`` composed with the classes of the task named by
+    ``labels_of`` (survey label -> class slug -> level), which must cover every class."""
+    if "transform" not in definition:
+        return definition["map"]
+    from .spec import load_task
+
+    transform = named_transform(definition["transform"], common)
+    classes = load_task(definition["labels_of"]).classes
+    if set(classes.values()) != set(transform):
+        raise ValueError(f"transform {definition['transform']!r} maps {sorted(transform)}, not the classes of "
+                         f"{definition['labels_of']!r} ({sorted(set(classes.values()))})")
+    return {label: transform[slug] for label, slug in classes.items()}
+
+
+def _labels_versions(table):
+    """The classes of every task a table's variables read their labels from (``labels_of``), for the cache key."""
+    from .spec import load_task
+
+    tasks = sorted({definition["labels_of"] for definition in load_harmonization(table)["variables"].values() if "labels_of" in definition})
+    return {task: load_task(task).classes for task in tasks}
+
+
 def register_harmonization(name, table):
     """Register the feature builder ``name``: the variables of ``impute/harmonization/<table>.yaml``
     (:func:`apply_variables`), which replace the frame's columns of the same name (e.g. the survey's own
@@ -48,7 +79,8 @@ def register_harmonization(name, table):
         return apply_variables(frame, load_harmonization(table)["variables"])
 
     def versions(context, config):
-        return {"harmonization": load_harmonization(table), "common": load_harmonization("common")}
+        labels = _labels_versions(table)
+        return {"harmonization": load_harmonization(table), "common": load_harmonization("common"), **({"labels_of": labels} if labels else {})}
 
     register_builder(name, versions=versions, replaces=True)(build)
 
@@ -60,11 +92,11 @@ def _codes(values):
     return values.astype("string").str.strip()
 
 
-def _map_variable(values, definition, missing_label, name):
+def _map_variable(values, definition, missing_label, name, common=None):
     codes = _codes(values)
     if "floordiv" in definition:
         codes = codes // int(definition["floordiv"])
-    mapping = definition["map"]
+    mapping = resolve_map(definition, common)
     allowed = list(definition.get("allowed_unmapped", []))
     otherwise = definition.get("otherwise")
     if otherwise:
@@ -150,5 +182,5 @@ def apply_variables(frame, variables, common=None, missing_label=None):
                 values = frame[list(source)]
             out[name] = _number_variable(values, definition["number"], name)
         else:
-            out[name] = _map_variable(frame[definition["column"]], definition, missing_label, name)
+            out[name] = _map_variable(frame[definition["column"]], definition, missing_label, name, common)
     return out

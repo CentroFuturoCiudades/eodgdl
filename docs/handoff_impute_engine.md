@@ -7,6 +7,79 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **The staged imputation pipeline** (session 10, 2026-09-30, done; the brief: `docs/handoff_pipeline.md`): the
+  pipeline `tasha` (`impute/pipelines/tasha.yaml`, `pipeline.py`) replaces the chains `labour` and `nse` as what the
+  TASHA build reads. One chain per row level, each with its own seed: persons (`labour`), then the aggregate `workers`
+  (`aggregate.py`: each dwelling's reported workers aged 14+ plus the unanswered drawn `trabaja` in the same draw,
+  binned by `eod_viviendas.yaml`'s own `trabajadores_14`), then dwellings (`nse`) given it. The per-draw value enters
+  after the feature cache as a completion column (`run_chain(given=)`; `_conditionals` scores it like an upstream
+  value, `amai_puntos` reads it in place of the source's), so no cached frame goes stale. Parity: with the drawn workers
+  off (`--no-aggregate`) both levels' `scores.parquet` and `completions.parquet` equal `output/impute/{labour,nse}/
+  multiple_imputation/` exactly (`parity.py --ignore-columns 'trabajadores_14*' 'prob_trabajadores_14*'`; the JSONs
+  differ only in `chain_hash`, whose definition 2755200 changed after those runs, and the new `given`). With them on:
+  persons identical; per draw ~1,330 dwellings gain workers (1,480 drawn workers), the uncalibrated level moves up in
+  671 (625-731; 3.47% of the dwelling weight) and down in 15; bathrooms, bedrooms, points and levels move nowhere else,
+  the calibrated level only within an (AGEB, draw) holding a moved dwelling (552 up, 480 down per draw; calibrated
+  shares within 0.07 pp); `IncomeClass` at draw 0: 798 dwellings changed, class weights within 0.1 pp; people and trips
+  identical. `tasha/mappings.yaml` names `imputed: {pipeline: tasha, column}`; `tasha.load_completed` returns
+  `{pipeline: {level: frame}}` from `<root>/tasha/<level>/completions.parquet`; `_schema.completed_levels` replaces
+  `chain_levels`. `output/impute/tasha/` is written; `output/impute/labour/` is obsolete (no reader left).
+  `reports/imputation_empleo.qmd` reads the pipeline and has #sec-nse. Tests: `tests/test_pipeline.py` and
+  `test_given_features_enter_per_completion`. Not released (no bundle changed).
+- **`v0.7.0`** (session 9, 2026-09-30): the head's education (`educacion_jefe`) reads the other household members'
+  highest education (`eod.household_education`) in an arm of its own (`con_hogar`, requires it; `sin_hogar` is the model
+  as it was): CV -0.0465 against the single arm; one model reading it with the median where missing lost 0.030 on the
+  heads whose household skipped it (53% of the imputed, weighted). Retrained: held-out 1.420 -> 1.372 (each dwelling by
+  its arm), the NSE shares within 0.1 pp; parity: only `educacion_jefe` and `nse` moved. The census builder
+  `census.home` (census ratios, DENUE establishments per adult, AMAI's NSE by AGEB for the dwelling's AGEB) and the
+  household builder were measured on giro and educacion_jefe (numbers in the task YAMLs): nothing for giro, census and
+  AMAI -0.003 for education and -0.0008 beyond the household's, not taken. `eod.dwellings` gained
+  `jefe_folio_habitante`. `output/impute/` is its run (`rerun.sh ... educacion_jefe`), v0.6.0's kept as
+  `output/impute_v060/`; the NSE and figures reports re-rendered from it.
+- **TASHA gaps** (session 9): after imputation 10 required columns (+ `Formality`) still hold defaults for some rows:
+  `IncomeClass` 58% unknown, `DwellingType`/`License`/`TransitPass`/`FreeParking` not surveyed, `EmploymentStatus`
+  4,370 adults unanswered (the socio-economic block skipped; `StudentStatus` 3,954 of them), `Occupation` 9,484 workers
+  (giro's imputation not read by `tasha.build`), `EmploymentZone` 3,286 workers without a work trip, `SchoolZone`
+  2,965 students (mostly the Easter weeks, 3-16 April). The plan proposed to the user (pending decisions: one seeded
+  draw vs arg-max, the meaning of a worker's "0" zone, License/TransitPass sources): wire giro and informality by a
+  draw; an employment/student task first in the chain; income from ENIGH in the NSE chain; work and school location
+  models; dwelling type fused from the census sample questionnaire or ENIGH; parking from the trips' answers.
+- **Employment status** (session 9, 2026-09-30): task `empleo` (source `eod.persons`, 16+; target `situacion_laboral`:
+  trabaja / estudiante / hogar / jubilado / sin_trabajo; arms con_ocupacion / con_escolaridad / sin_ambas; builder
+  `eod.person_context`: trips, work/school trip, other members by answer, children). Held-out log loss 0.415 without
+  occupation or education (marginal 1.222), 0.228 with the occupation; workers F1 0.95, students 0.92. Of the 4,370
+  unanswered, 34% are imputed as working (59% among the answered; they are older, 4% made a work trip). Chain `labour`
+  (empleo -> giro -> informality, every step on `eod.labour` through the new step option `score_source`; sources may
+  declare `builders_as`); the TASHA build reads its draw for EmploymentStatus, StudentStatus, Formality, Occupation
+  (draw 0: 1,453 of the 4,370 workers, 337 students; employment 16+ 57.0% against 59.3% answered; informal 35.9%).
+  `output/impute/empleo/` (50 bootstrap bundles) and `output/impute/labour/` written in place; `reports/imputation_empleo.qmd`
+  reads both (who did not answer, arms, selection, held-out, calibration, the imputation, the chain's draws, limits). The giro -> sector
+  map is defined once, `transforms: giro_sector` in `harmonization/common.yaml`, read by both chains (`transform:
+  giro_sector`) and by eod.yaml's `sector` (`labels_of: giro`); rescored, both chains' outputs are identical (only the
+  chain hash, which now covers resolved transforms, moved).
+- **TASHA decisions** (2026-09-30, after comparing with Monterrey's `mappings/pimus2019_to_tasha.yaml`): `IncomeClass`
+  is the AMAI level (chain `nse`'s `nse_calibrado`, C- and C merged, as Monterrey); `EmploymentStatus` P is an
+  informal worker (Monterrey), from `sector_informality`, and `Formality` mirrors it; `Occupation` kept (to align with
+  the zonal employment crosswalk when it exists); AGEB zone codes kept; `PurposeOrigin` spelled correctly.
+  Implemented: mappings' `imputed: {chain, column}` key (status `imputed`, checked against the chain's levels),
+  `tasha.load_completed(root, draw)` (each chain's `multiple_imputation/completions.parquet`), `tasha build --impute
+  ROOT --draw N` writing `od_provenance.json`. Still at defaults: the 4,370 unanswered employment statuses,
+  `EmploymentZone`/`SchoolZone` "0", `DwellingType`, `License`, `TransitPass`, `FreeParking`.
+- **`v0.6.0`** (session 9, 2026-09-30): giro's destination features are the staff-weighted shares of the 20 SCIAN
+  sectors plus the staff share in large establishments (DENUE 2022-11, each establishment weighted by the midpoint of its
+  `per_ocu` band, 500 for the top one), replacing the five shares of establishments per giro; `denue_scian2` became
+  `denue_sectors` (code -> share column). Measured with `eodgdl impute compare` (three seeds, the bundle's winners; the
+  numbers in `giro.yaml`): sector shares by staff -0.0080 / -0.0064 CV log loss (with / without education), by
+  three-digit subsector -0.0098 / -0.0093 (not taken, the user's choice: 69 more features for about 0.002, small classes'
+  F1 lower); the three missing-value alternatives tried (the booster's NaN branch, the dwelling's AGEB for workers
+  without a work trip, zero establishments) did not help and were removed. Retrained: the same selections, the combined
+  held-out loss 0.8896 -> 0.8783 (with education 0.8894 -> 0.8776, without 0.9061 -> 0.8958), imputed shares within
+  0.5 pp, the informality rate 35.908% -> 35.932%; parity: only giro and `sector_informality` moved. The giro bundle
+  reinstalled, `tests/data/giro_parity.parquet` regenerated. `output/impute/` is its run (`rerun.sh ... giro`, 50 bootstrap
+  bundles, the other tasks copied from v0.5.1's root), v0.5.1's kept as `output/impute_v051/`; the giro, informality
+  and figures reports re-rendered from it. With the new features isotonic recalibration no longer lowers the
+  with-education arm's mean ECE (0.0187 -> 0.0191; the share-weighted ECE still falls), so the giro report's sentence
+  now follows the table.
 - **Paused** (session 8, 2026-09-29): none of the open questions below is needed for the delivery (none moves an
   imputed value, a bundle or a model input), and the user paused the work; reopen the variance question if a
   deliverable quotes the reports' intervals. Session 8 added the bootstrap caveat to `docs/impute.md`'s limits and

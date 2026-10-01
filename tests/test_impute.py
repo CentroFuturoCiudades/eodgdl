@@ -266,7 +266,8 @@ def test_feature_cache_hits_misses_and_keys(tmp_path, monkeypatch):
     features.build_frame(spec, context)
     features.build_frame(other, context)
     assert calls == {"source": 2, "builder": 5}
-    assert features.get_builder("giro.destination").reads_classes and not features.get_builder("harmonize.enigh").reads_classes
+    # no shipped builder reads the classes since giro's destination shares went by SCIAN sector (v0.6.0)
+    assert not features.get_builder("giro.destination").reads_classes and not features.get_builder("harmonize.enigh").reads_classes
 
 
 def test_spec_validation():
@@ -779,7 +780,8 @@ def test_harmonizations_are_builders_keyed_by_the_harmonization_code():
     for name in ("harmonize.eod", "harmonize.eod_viviendas", "harmonize.enoe", "harmonize.enigh"):
         builder = features.get_builder(name)
         assert builder.replaces and Path(builder.module_file).name == "harmonize.py"
-        assert set(builder.versions(None, {})) == {"harmonization", "common"}
+        # harmonize.eod also reads giro's classes (its `sector` maps the reported labels through them: labels_of)
+        assert set(builder.versions(None, {})) == {"harmonization", "common"} | ({"labels_of"} if name == "harmonize.eod" else set())
 
 
 def test_a_work_trip_level_for_the_workers_without_one(stages):
@@ -853,3 +855,61 @@ def test_eod_sources_on_the_survey(stages):
     # a category the survey does not hold (a label split at its comma, as eod.yaml's flow list did) fails loudly
     with pytest.raises(ValueError, match=r"not levels of trabajo_semana_pasada: \['Tenía trabajo', 'pero no trabajó'\]"):
         dwellings(context, {**config["eod.dwellings"], "employed_categories": ["Tiempo completo", "Tenía trabajo", "pero no trabajó"]})
+
+
+def test_household_education_is_the_best_other_member():
+    # a worker row reads everyone else in the dwelling aged 15+ whose education is known; a dwelling row, all but its head
+    from types import SimpleNamespace
+
+    from eodgdl.impute.sources import eod as eod_source
+
+    hab = pd.DataFrame({
+        "folio_vivienda": [1, 1, 1, 1, 2, 2, 3],
+        "folio_habitante": [1, 2, 3, 4, 1, 2, 1],
+        "edad": [45, 43, 20, 10, 30, 60, 50],
+        "escolaridad": ["Primaria", "Licenciatura o profesional", "No sabe", "Maestría o doctorado", "Secundaria", None, "Preparatoria o bachillerato"],
+    }).set_index(["folio_vivienda", "folio_habitante"])
+    context = SimpleNamespace(eod=lambda: SimpleNamespace(hab=hab))
+    config = eod_source.load_config()["eod.household_education"]
+    workers = pd.DataFrame({"folio_vivienda": [1, 1, 2, 3], "folio_habitante": [1, 2, 2, 1]})
+    out = eod_source.household_education(workers, context, config, None)["hogar_escolaridad_max"]
+    # 1/1: the spouse's licenciatura (the child's "No sabe" and the 10-year-old's answer do not count); 1/2: primaria;
+    # 2/2: the other's secundaria; 3/1: nobody else
+    assert out.iloc[:3].tolist() == [16.0, 6.0, 9.0] and np.isnan(out.iloc[3])
+    dwellings = pd.DataFrame({"folio_vivienda": [1, 2], "jefe_folio_habitante": ["2", "1"]})
+    assert eod_source.household_education(dwellings, context, config, None)["hogar_escolaridad_max"].isna().tolist() == [False, True]
+
+
+def test_census_ratios_sum_a_rural_ageb_over_its_published_localities():
+    from eodgdl.impute.sources.census import unit_ratio
+
+    urban = pd.DataFrame({"PDER_IMSS": [50, 1], "POBTOT": [100, 0]}, index=["1403900010010", "1403900010025"], dtype="Float64")
+    rural = pd.DataFrame({"PDER_IMSS": [10, pd.NA, 5], "POBTOT": [40, 3, 10]}, index=["140390100", "140390101", "140390102"], dtype="Float64")
+    rural_ageb = pd.Series(["140390001", "140390001", "140390001"], index=rural.index)
+    ratio = unit_ratio(urban, rural, rural_ageb, ["PDER_IMSS"], "POBTOT")
+    # an urban AGEB's own counts, no population none; the rural AGEB sums the localities whose counts are published
+    assert ratio["1403900010010"] == 0.5 and pd.isna(ratio["1403900010025"]) and ratio["140390001"] == 15 / 50
+
+
+def test_persons_labour_rows_and_person_context(stages):
+    """eod.persons holds everyone aged 16+ with their employment on the empleo levels; eod.labour the workers of every
+    age and the unanswered; eod.person_context counts the person's trips and the other members by their answer."""
+    from eodgdl.impute.sources import Context
+    from eodgdl.impute.sources.eod import labour, load_config, person_context, persons, workers
+
+    context = Context(tables=stages.revised)
+    config = load_config()
+    hab = stages.revised.hab
+    people = persons(context, config["eod.persons"])
+    assert len(people) == int(hab.edad.ge(16).sum())
+    assert people["situacion_laboral"].isna().sum() == hab.trabajo_semana_pasada.isna().sum() == 4_370
+    assert set(people["situacion_laboral"].dropna()) == set(config["eod.persons"]["labour_status"])
+    rows = labour(context, config["eod.labour"])
+    assert len(rows) == len(workers(context, config["eod.workers"])) + 4_370
+    columns = person_context(people, context, config["eod.person_context"], None)
+    trips = stages.revised.trips.groupby(level=["folio_vivienda", "folio_habitante"]).size()
+    keys = pd.MultiIndex.from_frame(people[["folio_vivienda", "folio_habitante"]].astype(int))
+    assert (columns["n_viajes"].to_numpy() == trips.reindex(keys).fillna(0).to_numpy()).all()
+    works = people["situacion_laboral"].eq("trabaja").fillna(False).astype(int)
+    # every working member 16+ is counted among the others but never oneself
+    assert (columns["hogar_otros_trabajan"].to_numpy() == (works.groupby(people["folio_vivienda"]).transform("sum") - works).to_numpy()).all()

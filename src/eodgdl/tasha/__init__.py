@@ -12,7 +12,7 @@ inside this subpackage and are meant to be read and edited by hand.
     tasha.gaps()                        # what is assumed, constant or unresolved
     tasha.check_mappings()              # mappings.yaml vs. model_schema.yaml
 
-    od = tasha.build(load_eod("data"))  # the three model input tables
+    od = tasha.build(load_eod("data"), completed=tasha.load_completed("output/impute"))  # the three tables
     tasha.validate_all(*od)             # contract violations: must be empty
     tasha.chain_report(od.trips)        # data-quality counts: read, don't fail
 """
@@ -22,6 +22,7 @@ from eodgdl.tasha.build import (
     build_households,
     build_people,
     build_trips,
+    load_completed,
 )
 from eodgdl.tasha._schema import (
     build_map,
@@ -66,6 +67,7 @@ __all__ = [
     "build_households",
     "build_people",
     "build_trips",
+    "load_completed",
     # Validation
     "validate",
     "validate_all",

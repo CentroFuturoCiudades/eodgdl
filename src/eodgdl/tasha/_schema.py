@@ -124,7 +124,7 @@ def build_map(column, table=None):
 
 
 def gaps():
-    """Every column whose mapping is assumed, constant or unresolved.
+    """Every column whose mapping is imputed, assumed, constant or unresolved.
 
     Also flags schema columns that mappings.yaml does not mention at all.
     """
@@ -228,6 +228,63 @@ def _check_sources(table, column, entry):
     return problems
 
 
+def imputed_lookups(entry):
+    """The (label, pipeline, column, values) of an entry's imputed lookups: its own ``imputed`` (with its own
+    ``values``, or the entry's where it has no ``source``) and an ``override``'s."""
+    found = []
+    imputed = entry.get("imputed")
+    if imputed:
+        values = imputed.get("values", entry.get("values") if entry.get("source") is None else None) or {}
+        found.append(("imputed", imputed["pipeline"], imputed["column"], values))
+    override = entry.get("override") or {}
+    if override.get("imputed"):
+        found.append(("override imputed", override["imputed"]["pipeline"], override["imputed"]["column"], override.get("values") or {}))
+    return found
+
+
+@functools.cache
+def completed_levels(pipeline, column):
+    """The levels an eodgdl.impute pipeline's completed ``column`` takes, in the chain of the level that holds it: a
+    task's classes (the column named by the task's output prefix), a derive step's declared levels or a given
+    column's (the levels of the tasks that read it); None when the impute extra is not installed."""
+    try:
+        from eodgdl.impute.chain import DeriveStep, load_chain
+        from eodgdl.impute.pipeline import load_pipeline
+        from eodgdl.impute.run import task_levels
+        from eodgdl.impute.spec import load_task
+    except ImportError:
+        return None
+    level = load_pipeline(pipeline).column_level(column)
+    spec = load_chain(level.chain)
+    if column in level.given:
+        readers = [load_task(task) for task in spec.tasks if column in load_task(task).features]
+        return frozenset(task_levels(readers[0])[column]) - {readers[0].missing_label}
+    for task in spec.tasks:
+        task_spec = load_task(task)
+        if task_spec.prefix == column:
+            return frozenset(task_spec.class_slugs)
+    for step in spec.steps:
+        if isinstance(step, DeriveStep) and column in step.config.get("levels", {}):
+            return frozenset(map(str, step.config["levels"][column]))
+    raise KeyError(f"pipeline {pipeline!r} has no output column {column!r}")
+
+
+def _check_imputed(table, column, entry):
+    """Every imputed lookup names a pipeline output and only keys its levels can take."""
+    problems = []
+    for label, pipeline, name, values in imputed_lookups(entry):
+        try:
+            levels = completed_levels(pipeline, name)
+        except (KeyError, FileNotFoundError, ValueError) as error:
+            problems.append(f"{table}.{column}: {label} {pipeline}.{name}: {error}")
+            continue
+        if levels is None:
+            continue
+        problems.extend(f"{table}.{column}: {label} {pipeline}.{name} has no level {key!r}, so the lookup entry can never match"
+                        for key in values if str(key) not in levels)
+    return problems
+
+
 def check_mappings():
     """Check mappings.yaml against model_schema.yaml and against the survey.
 
@@ -253,11 +310,13 @@ def check_mappings():
                     f"{table}.{column}: mapping has no values, constant or derivation"
                 )
             problems.extend(_check_sources(table, column, entry))
+            problems.extend(_check_imputed(table, column, entry))
             legal = domain(column, table)
             if not legal:
                 continue
             produced = set((entry.get("values") or {}).values())
             produced |= set(((entry.get("override") or {}).get("values") or {}).values())
+            produced |= {code for _, _, _, values in imputed_lookups(entry) for code in values.values()}
             for key in ("default", "constant"):
                 if key in entry:
                     produced.add(entry[key])
@@ -382,6 +441,12 @@ def _invariants(df, table):
                     f"households: HouseholdId must be dense and 0-based, but "
                     f"{len(ids)} rows run {lo}..{hi}"
                 )
+    if table == "people" and {"EmploymentStatus", "Formality"} <= set(df.columns):
+        # "P exactly where Formality is I", and no formality for a non-worker
+        disagree = int(((df.EmploymentStatus == "P") != (df.Formality == "I")).sum() + ((df.EmploymentStatus == "O") & (df.Formality != "O")).sum())
+        if disagree:
+            out.append(f"people: {disagree} rows where EmploymentStatus and Formality disagree; P is exactly an informal "
+                       "worker (Formality I), and a non-worker has Formality O")
     if table == "people" and {"EmploymentStatus", "Occupation"} <= set(df.columns):
         mismatch = int(((df.EmploymentStatus == "O") != (df.Occupation == "O")).sum())
         if mismatch:

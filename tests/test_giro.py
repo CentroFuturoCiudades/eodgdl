@@ -9,7 +9,6 @@ import pytest
 pytest.importorskip("sklearn")
 
 from eodgdl import giro
-from eodgdl.giro._config import DENUE_SCIAN2
 
 
 def test_config_and_levels():
@@ -24,19 +23,18 @@ def test_config_and_levels():
 
 def test_destination_is_its_zone_system_unit(monkeypatch):
     # An urban AGEB takes its own establishments, or its locality's when it has none; a rural AGEB takes every
-    # establishment DENUE places in it, whatever its locality, and never a locality's mix.
+    # establishment DENUE places in it, whatever its locality, and never a locality's mix. The shares are of staff.
     mxcensus = pytest.importorskip("mxcensus")
-    sector = {giro_: code for code, giro_ in reversed(DENUE_SCIAN2.items())}
-    rows = [  # (municipality, locality, AGEB, giro, large)
-        ("039", "0001", "1293", "comercio", False),
-        ("039", "0001", "1293", "industria", True),
-        ("039", "0001", "1308", "servicio", False),
-        ("097", "0194", "059A", "industria", True),  # in an unpopulated place: no census locality
-        ("097", "0520", "059A", "comercio", False),
+    rows = [  # (municipality, locality, AGEB, SCIAN sector, large)
+        ("039", "0001", "1293", "46", False),
+        ("039", "0001", "1293", "32", True),
+        ("039", "0001", "1308", "54", False),
+        ("097", "0194", "059A", "33", True),  # in an unpopulated place: no census locality
+        ("097", "0520", "059A", "46", False),
     ]
     denue = pd.DataFrame({
         "cve_ent": "14", "cve_mun": [r[0] for r in rows], "cve_loc": [r[1] for r in rows],
-        "ageb": [r[2] for r in rows], "codigo_act": [sector[r[3]] + "1111" for r in rows],
+        "ageb": [r[2] for r in rows], "codigo_act": [r[3] + "1111" for r in rows],
         "per_ocu": ["51 a 100 personas" if r[4] else "0 a 5 personas" for r in rows],
     })
     monkeypatch.setattr(mxcensus, "load_denue", lambda state, release: denue)
@@ -49,7 +47,9 @@ def test_destination_is_its_zone_system_unit(monkeypatch):
     assert out["destino_ambito"].tolist() == ["ageb_urbana", "ageb_urbana", "ageb_rural", "ageb_rural", "fuera_zm", "desconocido"]
     n = np.expm1(out["dest_establecimientos_log"]).round().tolist()
     assert n[:3] == [2, 3, 2] and np.isnan(n[3:]).all()   # 1312 has none: locality 1403900001's three
-    assert out["dest_share_industria"].iloc[2] == 0.5 and out["dest_share_grandes"].iloc[2] == 0.5
+    staff = 75.5 / (75.5 + 3)   # 51 a 100 personas against 0 a 5
+    assert out["dest_share_scian_31_33"].iloc[2] == staff and out["dest_share_grandes"].iloc[2] == staff
+    assert out["dest_share_scian_46"].iloc[1] == 3 / (3 + 75.5 + 3) and out["dest_share_scian_54"].iloc[1] == 3 / (3 + 75.5 + 3)
 
     with pytest.raises(AssertionError, match="outside the zone system"):
         giro.add_destination_features(od.assign(destino_cvegeo=["140390001", *od["destino_cvegeo"][1:]]), urban, rural)
@@ -63,8 +63,8 @@ BUNDLE = Path(__file__).resolve().parent.parent / "data" / giro.MODEL_FILE
 def test_scoring_reproduces_the_reference():
     # 384 workers of outputs/reference/od_giro_imputed.parquet, every marginalization pattern among them, with the
     # installed bundle's scores (regenerated 2026-09-29 for the bundle that reads the interview month, which the
-    # fixture gained, and again for the level sin_viaje its 131 workers without a work trip took): the engine scores
-    # them exactly so.
+    # fixture gained, and again for the level sin_viaje its 131 workers without a work trip took; 2026-09-30 for v0.6.0's
+    # staff-weighted SCIAN sector shares, which replaced the five giro shares): the engine scores them exactly so.
     from eodgdl.impute.run import score_frame
 
     fixture = pd.read_parquet(FIXTURE)

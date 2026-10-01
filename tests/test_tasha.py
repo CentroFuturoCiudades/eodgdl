@@ -66,7 +66,8 @@ def test_ambiguous_column_needs_a_table():
 
 def test_gaps_are_declared():
     gaps = tasha.gaps()
-    assert set(gaps.status) <= {"assumed", "not_surveyed", "pending"}
+    assert set(gaps.status) <= {"imputed", "assumed", "not_surveyed", "pending"}
+    assert {"IncomeClass", "EmploymentStatus", "Formality", "Occupation"} <= set(gaps.column[gaps.status == "imputed"])
     assert "DwellingType" in set(gaps.column)
 
 
@@ -322,3 +323,62 @@ def test_build_round_trips_through_csv(stages, tmp_path):
     back = pd.read_csv(path, dtype=dict.fromkeys(tasha.zone_columns("households"), str))
     assert tasha.validate(back, "households") == []
     assert back.HouseholdZone.equals(od.households.HouseholdZone)
+
+
+def test_imputed_columns_read_the_completed_dataset(stages):
+    # IncomeClass is the dwelling's AMAI level; a person without an employment answer takes the drawn situation; a
+    # worker is P where the draw is informal, with Formality I; a worker without a reported giro takes the drawn one;
+    # an unanswered person drawn as a student is S. Without a completed dataset they fall to the mapping's defaults.
+    viv, hab = stages.revised.viv, stages.revised.hab
+    reported = hab.trabajo_semana_pasada.isin(["Tiempo completo", "Medio tiempo", "Tenía trabajo, pero no trabajó"])
+    unanswered = hab.trabajo_semana_pasada.isna()
+    levels = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
+    nse = pd.DataFrame({"nse_calibrado": [levels[i % 7] for i in range(len(viv))]}, index=viv.index)
+    rows = hab.index[reported | unanswered]
+    n = len(rows)
+    situation = pd.Series("trabaja", index=rows)
+    drawn = situation.index.isin(hab.index[unanswered])
+    situation[drawn] = (["trabaja", "estudiante", "hogar"] * n)[: int(drawn.sum())]
+    labour = pd.DataFrame({"situacion_laboral": situation, "giro": "educacion",
+                           "informalidad": (["informal", "formal"] * n)[:n]}, index=rows)
+    od = eodgdl.tasha.build(stages.revised, completed={"tasha": {"dwellings": nse, "persons": labour}})
+    assert tasha.validate_all(*od) == []
+    expected = pd.Series(nse.nse_calibrado.to_numpy()).map(tasha.mapping("IncomeClass")["values"])
+    assert (od.households.IncomeClass.to_numpy() == expected.to_numpy()).all() and 7 not in set(od.households.IncomeClass)
+    p = od.people.set_index(hab.index)
+    workers = situation[situation == "trabaja"].index
+    assert (p.loc[workers, "EmploymentStatus"] == labour.loc[workers, "informalidad"].map({"informal": "P", "formal": "F"})).all()
+    assert ((p.EmploymentStatus == "P") == (p.Formality == "I")).all() and (p.Formality[p.EmploymentStatus == "O"] == "O").all()
+    others = situation.index[drawn & (situation != "trabaja").to_numpy()]
+    assert (p.loc[others, "EmploymentStatus"] == "O").all() and (p.loc[others, "Occupation"] == "O").all()
+    students = situation.index[drawn & (situation == "estudiante").to_numpy()]
+    assert len(students) and (p.loc[students, "StudentStatus"] == "S").all()
+    assert (p.loc[hab.index[reported & hab.giro_empresa.isna()], "Occupation"] == "G").all()     # educacion -> G
+    assert (p.loc[hab.index[reported & hab.giro_empresa.eq("Industria")], "Occupation"] == "M").all()   # the answer wins
+
+    plain = eodgdl.tasha.build(stages.revised)
+    assert (plain.households.IncomeClass == 7).all() and not (plain.people.EmploymentStatus == "P").any()
+    assert (plain.people.Formality == "O").all() and tasha.validate_all(*plain) == []
+    assert (plain.people.EmploymentStatus[unanswered.to_numpy()] == "O").all()
+
+
+def test_load_completed_reads_one_draw_of_every_level(tmp_path):
+    # <root>/tasha/<level>/completions.parquet, the draw asked for, indexed by the level's keys; a draw outside the
+    # pipeline's fails
+    import json
+
+    folder = tmp_path / "tasha"
+    persons = pd.DataFrame({"folio_vivienda": [1, 1, 2, 1, 1, 2], "folio_habitante": [1, 2, 1, 1, 2, 1], "completion": [0, 0, 0, 1, 1, 1],
+                            "weight": 0.5, "situacion_laboral": ["trabaja", "hogar", "trabaja", "trabaja", "trabaja", "estudiante"]})
+    dwellings = pd.DataFrame({"folio_vivienda": [1, 2, 1, 2], "completion": [0, 0, 1, 1], "weight": 0.5, "nse_calibrado": ["c", "d", "c_mas", "d"]})
+    for level, frame in (("persons", persons), ("dwellings", dwellings)):
+        (folder / level).mkdir(parents=True)
+        frame.to_parquet(folder / level / "completions.parquet", index=False)
+    (folder / "provenance.json").write_text(json.dumps({"pipeline": "tasha", "draws": 2, "levels": {"persons": {}, "dwellings": {}}}))
+    completed = tasha.load_completed(tmp_path, draw=1)
+    assert set(completed) == {"tasha"} and set(completed["tasha"]) == {"persons", "dwellings"}
+    assert completed["tasha"]["persons"]["situacion_laboral"].to_dict() == {(1, 1): "trabaja", (1, 2): "trabaja", (2, 1): "estudiante"}
+    assert completed["tasha"]["dwellings"]["nse_calibrado"].to_dict() == {1: "c_mas", 2: "d"}
+    assert completed["tasha"]["dwellings"].attrs["draw"] == 1
+    with pytest.raises(ValueError, match="outside its 2 completed datasets"):
+        tasha.load_completed(tmp_path, draw=2)

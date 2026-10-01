@@ -1,0 +1,401 @@
+---
+title: "Employment situation (empleo) imputation"
+subtitle: "How `eodgdl impute retrain empleo` fills in `trabajo_semana_pasada` for the persons who did not answer it, and how the pipeline `tasha` carries it, with giro and informality, into the TASHA build and into the dwellings' NSE"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import json
+import os
+from pathlib import Path
+
+
+def _find_root() -> Path:
+    """Walk up from the working dir to the repository (the directory holding data/)."""
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        if (base / "data" / "IMEPLAN_Base_Viviendas_Master.csv").exists():
+            return base.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl repository.")
+
+
+ROOT = _find_root()
+os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
+IMPUTE = Path(os.environ.get("EODGDL_IMPUTE_DIR", ROOT / "output" / "impute"))
+OUT = IMPUTE / "empleo"
+PIPE = IMPUTE / "tasha"                                  # the pipeline's completed datasets: persons/ and dwellings/
+NSE = IMPUTE / "nse" / "multiple_imputation"             # the chain nse's alone: the reported workers only
+assert (OUT / "summary.json").exists(), f"No retrain at {OUT}: run `uv run eodgdl impute retrain empleo --data data` first."
+assert (PIPE / "persons" / "completions.parquet").exists(), (
+    f"No completed datasets at {PIPE}: run `uv run eodgdl impute score tasha --data data --retrained output/impute`.")
+assert (NSE / "completions.parquet").exists(), (
+    f"No completed datasets at {NSE}: run `uv run eodgdl impute score nse --data data --retrained output/impute --draws 50 --bootstrap`.")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+
+from eodgdl.impute.chain import load_chain
+from eodgdl.impute.features import build_frame
+from eodgdl.impute.pipeline import load_pipeline
+from eodgdl.impute.sources import Context
+from eodgdl.impute.spec import load_task
+
+SPEC = load_task("empleo")
+PIPELINE = load_pipeline("tasha")
+CHAIN = load_chain(PIPELINE.level("persons").chain)
+SUMMARY = json.loads((OUT / "summary.json").read_text(encoding="utf-8"))
+ARMS = [arm.name for arm in SPEC.arms]
+ARM_LABEL = {"con_ocupacion": "With the occupation", "con_escolaridad": "With education", "sin_ambas": "With neither"}
+CLASSES = SPEC.class_slugs
+LABEL = {"trabaja": "Works", "estudiante": "Student", "hogar": "Home duties", "jubilado": "Retired",
+         "sin_trabajo": "Not working (none, seeking, unable)"}
+KEYS = ["folio_vivienda", "folio_habitante"]
+
+
+def T(name, arm=None):
+    """An evaluation table of the retrain."""
+    return pd.read_parquet(OUT / "evaluation" / (f"{name}__{arm}.parquet" if arm else f"{name}.parquet"))
+
+
+def pct(x, digits=1):
+    return f"{100 * x:.{digits}f}%"
+
+
+def fmt(n):
+    return f"{int(n):,}"
+
+
+def wmean(values, weights):
+    return float(np.average(np.asarray(values, dtype=float), weights=np.asarray(weights, dtype=float)))
+
+
+# The validated default categorical palette (dataviz skill), in fixed slot order: one slot per class.
+SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+CLASS_COLOR = dict(zip(CLASSES, SLOTS))
+INK, MUTED, GRID = "#1f1f1f", "#6b6b6b", "#e6e6e6"
+plt.rcParams.update({
+    "figure.dpi": 120, "font.size": 10, "axes.titlesize": 11, "axes.edgecolor": MUTED, "axes.labelcolor": INK,
+    "xtick.color": MUTED, "ytick.color": MUTED, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8, "axes.axisbelow": True, "legend.frameon": False,
+})
+
+PERSONS = build_frame(SPEC, Context()).frame
+UNKNOWN = PERSONS[SPEC.unknown_column].astype(bool)
+scores = pd.read_parquet(OUT / "scores.parquet")
+P = SPEC.probability_columns
+assert len(scores) == SUMMARY["rows"] == len(PERSONS) and int(scores["situacion_laboral_fue_imputado"].sum()) == SUMMARY["unknown"] == int(UNKNOWN.sum())
+assert np.allclose(scores[P].sum(axis=1), 1.0, atol=1e-8)
+```
+
+The survey asks every person whether they worked last week (`trabajo_semana_pasada`). Some did not answer, and for
+them the occupation, the employer's activity and most often the education are blank too: the questionnaire's
+socio-economic block was skipped. The imputation estimates
+
+$$P(S = s \mid X)$$
+
+for every person aged 16+ without an answer, over five situations: works (full time, part time, or had a job but did
+not work), student, home duties, retired, and not working (none, seeking work, unable to work). The TASHA build needs
+it twice: whether the person works (`EmploymentStatus`) and whether a non-answering person studies (`StudentStatus`).
+A person drawn as a worker then needs a giro and an informality, which the pipeline `tasha` draws with it
+(@sec-labour), and counts in their dwelling's AMAI level (@sec-nse).
+
+This report reads what the last retrain wrote to `output/impute/empleo/` and the pipeline's completed datasets in
+`output/impute/tasha/` (against the chain `nse`'s in `output/impute/nse/multiple_imputation/`). It trains nothing. The task is `src/eodgdl/impute/tasks/empleo.yaml`.
+
+# Who did not answer {#sec-who}
+
+```{python}
+#| label: who
+weights = PERSONS["ponderador"]
+month = PERSONS["mes_entrevista"].astype(str)
+by_month = pd.Series({m: wmean(UNKNOWN[month == m], weights[month == m]) for m in ("1", "2", "3", "4")})
+age = pd.cut(PERSONS["edad"].astype(float), [15, 24, 44, 64, 120], labels=["16-24", "25-44", "45-64", "65+"])
+ages = pd.DataFrame({"unanswered": age[UNKNOWN].value_counts(normalize=True), "answered": age[~UNKNOWN].value_counts(normalize=True)}).reindex(["16-24", "25-44", "45-64", "65+"])
+blank = {column: wmean(PERSONS.loc[UNKNOWN, column].isna(), weights[UNKNOWN]) for column in ("ocupacion", "escolaridad", "giro_empresa")}
+work_trip = {side: wmean(PERSONS.loc[rows, "viaje_trabajo"].eq("Sí"), weights[rows]) for side, rows in (("unanswered", UNKNOWN), ("answered", ~UNKNOWN))}
+assert SUMMARY["unknown"] == 4_370 and PERSONS.loc[UNKNOWN, "edad"].min() >= 16
+assert by_month["1"] < 0.05 < by_month[["2", "3", "4"]].min() and blank["giro_empresa"] > 0.98 and blank["ocupacion"] > 0.85
+assert ages.loc["65+", "unanswered"] > 2 * ages.loc["65+", "answered"] and work_trip["unanswered"] < 0.25 * work_trip["answered"]
+display(Markdown(
+    f"Of the {fmt(SUMMARY['rows'])} persons aged 16+, **{fmt(SUMMARY['unknown'])}** did not answer. The gap follows the "
+    f"fieldwork: {pct(by_month['1'])} of January's persons (weighted), {pct(by_month['2'])}, {pct(by_month['3'])} and "
+    f"{pct(by_month['4'])} of February's, March's and April's, as the giro's own non-response does "
+    "(`reports/imputation_giro.qmd` #sec-month). For those persons the occupation is blank "
+    f"{pct(blank['ocupacion'], 0)} of the time, the education {pct(blank['escolaridad'], 0)} and the giro "
+    f"{pct(blank['giro_empresa'])}. They are not the persons who answered: {pct(ages.loc['65+', 'unanswered'], 0)} are "
+    f"65 or older (against {pct(ages.loc['65+', 'answered'], 0)}), and {pct(work_trip['unanswered'])} made a trip to work on "
+    f"the survey day (against {pct(work_trip['answered'])}). The model reads both, so the imputed situations follow them."
+))
+ages.mul(100).round(1).rename_axis("age").rename(columns={"unanswered": "unanswered (%)", "answered": "answered (%)"})
+```
+
+# Predictors and arms {#sec-arms}
+
+```{python}
+#| label: arms
+usage = T("model_usage").set_index("situacion_laboral_model_used")
+lines = []
+for arm in SPEC.arms:
+    requires = f", used when `{'`, `'.join(arm.requires)}` is observed" if arm.requires else ", used for every other person"
+    lines.append(f"- **{ARM_LABEL[arm.name]}** ({len(arm.features)} features{requires}; "
+                 f"{pct(usage.loc[arm.name, 'weighted_share'])} of the imputed weight): " + ", ".join(f"`{f}`" for f in arm.features))
+assert abs(usage["weighted_share"].sum() - 1) < 1e-9 and usage.loc["sin_ambas", "weighted_share"] > 0.5
+display(Markdown(
+    "A person without an answer is scored by the first arm whose required covariates they have. The occupation "
+    "(where given, it nearly decides the answer) and the education go unanswered with the employment, so each has an arm "
+    "of its own, as giro's education does (`reports/imputation_giro.qmd` #sec-why-arms): a missing value is never read as "
+    "a category.\n\n" + "\n".join(lines)
+    + "\n\nBesides age, sex, relationship and marital status, the dwelling and the interview month, every arm reads the "
+    "survey day (whether the person left home, the trips, whether one went to work or to study), the weekend block "
+    "(which the unanswered persons did answer) and the household around the person: how many other members aged 16+ "
+    "work, study or keep house, and the children under 12 (`eod.person_context`)."
+))
+```
+
+# Selection {#sec-selection}
+
+```{python}
+#| label: selection-intro
+cv = SPEC.selection["cv"]
+families = SPEC.selection["families"]
+display(Markdown(
+    f"The persons with an answer are split by household ({cv['splits']} stratified groups, fold {cv['test_fold']} held out): "
+    f"**{fmt(SUMMARY['train_rows'])}** persons in {fmt(SUMMARY['train_groups'])} households train and "
+    f"**{fmt(SUMMARY['test_rows'])}** in {fmt(SUMMARY['test_groups'])} households are held out. Each arm tunes "
+    + ", ".join(f"**{name}**" for name in families) + f" under a {cv['splits']}-fold household-grouped CV with the person "
+    "weights, each fold scored as the bundle scores an imputed person, and keeps the simplest configuration within one "
+    "standard error of the best."
+))
+rows = []
+for arm in ARMS:
+    for _, r in T("selection", arm).iterrows():
+        rows.append({"arm": ARM_LABEL[arm], "family": r["model"],
+                     "parameters": ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in json.loads(r["best_params"]).items()),
+                     "CV log loss": round(r["weighted_log_loss"], 4), "Δ vs best": round(r["mean_diff_vs_best"], 4),
+                     "selected": "✓" if r["selected"] else ""})
+pd.DataFrame(rows)
+```
+
+# Held-out evaluation {#sec-evaluation}
+
+```{python}
+#| label: tbl-heldout
+#| tbl-cap: "Held-out metrics of each arm (weighted), with 95% household-bootstrap intervals. Each arm is evaluated on every held-out person."
+rows = []
+for arm in ARMS:
+    u = T("test_uncertainty", arm).set_index("metric")
+    for metric in ("weighted_log_loss", "marginal_log_loss", "weighted_accuracy", "weighted_f1_macro"):
+        rows.append({"arm": ARM_LABEL[arm], "metric": metric, "estimate": round(u.loc[metric, "estimate"], 4),
+                     "95% interval": f"{u.loc[metric, 'ci_low']:.4f} – {u.loc[metric, 'ci_high']:.4f}"})
+pd.DataFrame(rows)
+```
+
+```{python}
+#| label: heldout-text
+u = {arm: T("test_uncertainty", arm).set_index("metric")["estimate"] for arm in ARMS}
+hybrid = T("test_metrics__hybrid").iloc[0]
+confusion = T("confusion", "sin_ambas").set_index("observed")[CLASSES]
+works_recall = confusion.loc["trabaja", "trabaja"] / confusion.loc["trabaja"].sum()
+others = [c for c in CLASSES if c != "trabaja"]
+not_works_recall = confusion.loc[others, others].to_numpy().sum() / confusion.loc[others].to_numpy().sum()
+cm = T("class_metrics", "sin_ambas").set_index("class")
+assert all(u[arm]["relative_improvement_over_marginal"] > 0.5 for arm in ARMS)
+assert u["con_ocupacion"]["weighted_log_loss"] < u["sin_ambas"]["weighted_log_loss"]
+assert cm.loc["trabaja", "f1"] > 0.9 and cm.loc["estudiante", "f1"] > 0.85 and cm.loc[["hogar", "jubilado", "sin_trabajo"], "f1"].max() < 0.75
+assert works_recall > 0.9 and not_works_recall > 0.9
+display(Markdown(
+    f"With neither the occupation nor the education, the arm most unanswered persons get, the held-out log loss is "
+    f"{u['sin_ambas']['weighted_log_loss']:.4f}, {pct(u['sin_ambas']['relative_improvement_over_marginal'])} below the "
+    f"marginal baseline ({u['sin_ambas']['marginal_log_loss']:.4f}), at a weighted accuracy of "
+    f"{pct(u['sin_ambas']['weighted_accuracy'])}; with the occupation, {u['con_ocupacion']['weighted_log_loss']:.4f} and "
+    f"{pct(u['con_ocupacion']['weighted_accuracy'])}. The classes TASHA separates are the ones the model gets right: "
+    f"workers F1 {cm.loc['trabaja', 'f1']:.2f}, students {cm.loc['estudiante', 'f1']:.2f}; and read as works or not, the arm "
+    f"without either finds {pct(works_recall)} of the workers and {pct(not_works_recall)} of the others. Home duties, "
+    f"retired and not working are confused with one another (F1 {cm.loc['hogar', 'f1']:.2f}, {cm.loc['jubilado', 'f1']:.2f}, "
+    f"{cm.loc['sin_trabajo', 'f1']:.2f}), which TASHA codes alike (O). Each held-out person scored by the arm that would "
+    f"score them: log loss {hybrid['weighted_log_loss']:.4f}, accuracy {pct(hybrid['weighted_accuracy'])}; the held-out "
+    "persons almost all answered the occupation, so that figure is the first arm's."
+))
+rows = []
+for slug in CLASSES:
+    rows.append({"class": LABEL[slug], "precision": round(cm.loc[slug, "precision"], 3), "recall": round(cm.loc[slug, "recall"], 3),
+                 "F1": round(cm.loc[slug, "f1"], 3)})
+pd.DataFrame(rows)
+```
+
+## Calibration {#sec-calibration}
+
+```{python}
+#| label: calibration
+cal = T("calibration__hybrid").set_index("class").reindex(CLASSES)
+assert cal["gap_pp"].abs().max() < 3 and cal["ece"].max() < 0.03
+display(Markdown(
+    "Summed over the held-out persons, each class's predicted share against the observed one (one-vs-rest, each person "
+    f"by their arm): the largest gap is {cal['gap_pp'].abs().max():.1f} points ({LABEL[cal['gap_pp'].abs().idxmax()].lower()}), "
+    f"and the expected calibration error stays at or below {cal['ece'].max():.3f}."
+))
+cal[["observed_share", "predicted_share", "gap_pp", "ece", "calibration_slope"]].rename(index=LABEL).round(4)
+```
+
+# The imputation {#sec-imputation}
+
+```{python}
+#| label: imputation
+shares = T("shares").set_index("class").reindex(CLASSES)
+imputed = scores[scores["situacion_laboral_fue_imputado"].astype(bool)].merge(PERSONS[KEYS + ["edad"]], on=KEYS)
+imputed_age = pd.cut(imputed["edad"].astype(float), [15, 24, 44, 64, 120], labels=["16-24", "25-44", "45-64", "65+"])
+works_by_age = pd.Series({band: wmean(imputed.loc[imputed_age == band, "prob_situacion_laboral_trabaja"], imputed.loc[imputed_age == band, "ponderador"])
+                          for band in ["16-24", "25-44", "45-64", "65+"]})
+assert shares.loc["trabaja", "imputed"] < shares.loc["trabaja", "observed_known"] and shares.loc["jubilado", "imputed"] > shares.loc["jubilado", "observed_known"]
+assert works_by_age["65+"] < works_by_age["25-44"]
+display(Markdown(
+    f"Over the unanswered persons the summed probabilities give {pct(shares.loc['trabaja', 'imputed'])} working, against "
+    f"{pct(shares.loc['trabaja', 'observed_known'])} among those who answered, and {pct(shares.loc['jubilado', 'imputed'])} "
+    f"retired (against {pct(shares.loc['jubilado', 'observed_known'])}): the unanswered are older and travelled to work less "
+    "(@sec-who). By age, the imputed probability of working is "
+    + ", ".join(f"{pct(works_by_age[band], 0)} at {band}" for band in works_by_age.index) + ". Reweighting the answered "
+    "persons to the unanswered profile (`shift_weighted`) moves no share by more than "
+    f"{(shares['shift_weighted'] - shares['imputed']).abs().max() * 100:.1f} points. Over every person aged 16+, the final "
+    f"share working is {pct(shares.loc['trabaja', 'final'])}."
+))
+shares[["observed_known", "imputed", "shift_weighted", "imputed_hard", "final"]].rename(index=LABEL).mul(100).round(2)
+```
+
+# The pipeline `tasha` and the TASHA build {#sec-labour}
+
+```{python}
+#| label: labour
+completions = pd.read_parquet(PIPE / "persons" / "completions.parquet")
+PIPE_PROVENANCE = json.loads((PIPE / "provenance.json").read_text(encoding="utf-8"))
+provenance = PIPE_PROVENANCE["levels"]["persons"]
+drawn = completions.merge(PERSONS.loc[UNKNOWN, KEYS], on=KEYS)
+per_draw = drawn.groupby("completion").agg(workers=("situacion_laboral", lambda s: int(s.eq("trabaja").sum())),
+                                           students=("situacion_laboral", lambda s: int(s.eq("estudiante").sum())))
+workers = completions[completions["situacion_laboral"].eq("trabaja")]
+informal = workers.groupby("completion").apply(lambda d: float(np.average(d["informalidad"].eq("informal"), weights=d["weight"])))
+assert provenance["draws"] == completions["completion"].nunique() == PIPELINE.draws and provenance["uncertainty"] == "bootstrap"
+assert completions.groupby("completion").size().nunique() == 1
+assert [step.score_source for step in CHAIN.steps] == ["eod.labour"] * 3
+display(Markdown(
+    "The pipeline `tasha` (`src/eodgdl/impute/pipelines/tasha.yaml`) runs the persons first, with the chain `labour` "
+    f"(`src/eodgdl/impute/chains/labour.yaml`): it scores the employment, then the giro, then the "
+    "informality given the giro's sector (`giro_sector`, `harmonization/common.yaml`) on the same rows: every person who "
+    f"worked last week or did not say ({fmt(completions.groupby('completion').size().iloc[0])} persons). It draws "
+    f"{provenance['draws']} completed datasets, each with its own bootstrap refit of the three models, so a dataset "
+    "carries the models' uncertainty too and its values hold together: a person drawn as a worker has a giro and an "
+    "informality drawn for them. The giro and informality models were trained on workers, so their values are "
+    "P(· | x, works) and the TASHA build reads them only where the person works, reported or drawn "
+    "(`src/eodgdl/tasha/mappings.yaml`: EmploymentStatus, StudentStatus, Formality, Occupation).\n\n"
+    f"Across the datasets, between {per_draw['workers'].min():,} and {per_draw['workers'].max():,} of the "
+    f"{fmt(SUMMARY['unknown'])} unanswered persons are drawn as workers (mean {per_draw['workers'].mean():,.0f}) and "
+    f"between {per_draw['students'].min():,} and {per_draw['students'].max():,} as students; the informal share of all "
+    f"workers runs from {pct(informal.min())} to {pct(informal.max())}. `eodgdl tasha build` reads dataset 0 by default "
+    "(`--draw N` another, each an equally valid completed survey) and records which in `od_provenance.json`."
+))
+per_draw.describe().loc[["mean", "std", "min", "max"]].round(1)
+```
+
+# The drawn workers in the dwellings' NSE {#sec-nse}
+
+```{python}
+#| label: nse
+from eodgdl.impute.spec import load_task as _load_task
+
+ORDER = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
+alone = pd.read_parquet(NSE / "completions.parquet")
+joint = pd.read_parquet(PIPE / "dwellings" / "completions.parquet")
+alone_provenance = json.loads((NSE / "provenance.json").read_text(encoding="utf-8"))
+dwelling_provenance = PIPE_PROVENANCE["levels"]["dwellings"]
+# the same models, draws and seed: only the workers aged 14+ differ between the two
+assert PIPE_PROVENANCE["aggregate"] and dwelling_provenance["bundles"] == alone_provenance["bundles"]
+assert dwelling_provenance["draws"] == alone_provenance["draws"] and dwelling_provenance["seed"] == alone_provenance["seed"]
+assert (joint[["folio_vivienda", "completion"]].to_numpy() == alone[["folio_vivienda", "completion"]].to_numpy()).all()
+DWELLINGS = build_frame(_load_task("educacion_jefe"), Context()).frame.set_index("folio_vivienda")
+dwelling = joint["folio_vivienda"]
+w = DWELLINGS["ponderador"].reindex(dwelling).to_numpy(float)
+ageb = DWELLINGS["ageb"].astype(str).reindex(dwelling).to_numpy()
+reported = DWELLINGS["trabajadores_14_n"].reindex(dwelling).to_numpy(int)
+assert (joint["trabajadores_14_n"].to_numpy() >= reported).all()
+assert (alone["amai_puntos"].notna()).all()
+counted = joint["trabajadores_14"] != DWELLINGS["trabajadores_14"].reindex(dwelling).to_numpy()
+# nothing moves but where a draw's worker level changed, and the calibration only re-ranks within an AGEB and draw
+for column in ("educacion_jefe", "amai_banos", "amai_dormitorios", "amai_puntos", "nse"):
+    assert not ((joint[column].astype(str) != alone[column].astype(str)) & ~counted).any(), column
+assert not (joint["educacion_jefe"] != alone["educacion_jefe"]).any()
+moved_points = pd.Series((joint["amai_puntos"] != alone["amai_puntos"]).to_numpy())
+cell = moved_points.groupby([joint["completion"].to_numpy(), ageb]).transform("any").to_numpy()
+moved_calibrated = (joint["nse_calibrado"] != alone["nse_calibrado"]).to_numpy()
+assert not (moved_calibrated & ~cell).any()
+
+rank = {level: i for i, level in enumerate(ORDER)}
+step = joint["nse"].map(rank) - alone["nse"].map(rank)
+calibrated_step = joint["nse_calibrado"].map(rank) - alone["nse_calibrado"].map(rank)
+per_draw = pd.DataFrame({"raised count": (joint["trabajadores_14_n"].to_numpy() > reported), "level up": step > 0, "level down": step < 0,
+                         "calibrated up": calibrated_step > 0, "calibrated down": calibrated_step < 0, "completion": joint["completion"]}).groupby("completion").sum()
+D = joint["completion"].nunique()
+
+
+def shares(frame, column, levels):
+    return pd.Series({level: np.average(frame[column].astype(str).eq(level), weights=w) for level in levels})
+
+
+rows = []
+for column, levels in (("trabajadores_14", ["0", "1", "2", "3", "4 o más"]), ("amai_banos", ["0", "1", "2_o_mas"]),
+                       ("amai_dormitorios", ["1", "2", "3", "4_o_mas"]), ("nse", ORDER), ("nse_calibrado", ORDER)):
+    before = shares(alone.assign(trabajadores_14=DWELLINGS["trabajadores_14"].reindex(dwelling).to_numpy()), column, levels)
+    after = shares(joint, column, levels)
+    rows += [{"column": column, "level": level, "chain nse (%)": 100 * before[level], "pipeline (%)": 100 * after[level],
+              "change (pp)": 100 * (after[level] - before[level])} for level in levels]
+table = pd.DataFrame(rows)
+display(Markdown(
+    "The dwellings' AMAI level counts the members aged 14+ who worked last week (15 points a worker), and the two ENIGH "
+    "models read the same count. The chain `nse` alone counts the reported workers only. The pipeline runs the persons "
+    "first and adds to each dwelling, in each completed dataset, the members whose employment was not answered and is "
+    "drawn as working (`eodgdl.impute.aggregate`, after the feature cache), so dataset d of the dwellings reads dataset d "
+    "of the persons. Each level keeps its chain's seed and models: with the drawn workers switched off "
+    "(`eodgdl impute score tasha --no-aggregate`) the pipeline reproduces both chains' completed datasets exactly.\n\n"
+    f"Per dataset the count rises in {per_draw['raised count'].mean():,.0f} dwellings "
+    f"({per_draw['raised count'].min():,}-{per_draw['raised count'].max():,}), "
+    f"and their uncalibrated level moves up in {per_draw['level up'].mean():,.0f} "
+    f"({pct(np.average(step > 0, weights=w), 2)} of the dwelling weight) and down in {per_draw['level down'].mean():,.0f} "
+    "(the bathrooms and bedrooms drawn given more workers). Nothing else moves, but the AGEB calibration: its levels "
+    "follow the ranking of points within each AGEB to AMAI's mix there, so a dwelling that gains points can push a "
+    f"neighbour down. Per dataset the calibrated level moves up in {per_draw['calibrated up'].mean():,.0f} dwellings and "
+    f"down in {per_draw['calibrated down'].mean():,.0f}, and the calibrated shares stay AMAI's: `IncomeClass`, the TASHA "
+    "column, is the calibrated level of one dataset."
+))
+table.round(2).style.hide(axis="index").format(precision=2)
+```
+
+# Assumptions and limits {#sec-limits}
+
+- **The skipped answers resemble the given ones, given the features.** The skip follows the interview month, not the
+  respondent, which makes it look like the capture rather than the person; the month is a feature. It cannot be
+  checked on the skipped block itself: no labelled person shares its pattern.
+- **Few held-out persons are scored as the unanswered are.** The persons who answered almost all gave their
+  occupation, so the arms without it are evaluated on persons who had it and are scored without it.
+- **Hours are not imputed.** TASHA's `EmploymentStatus` carries informality in P (Monterrey's convention), so a
+  part-time / full-time split is neither needed nor produced.
+- **Persons under 16** all answered; the task does not score them.

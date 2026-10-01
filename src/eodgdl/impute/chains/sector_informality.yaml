@@ -11,8 +11,7 @@ steps:
       uses:
         giro:
           as: sector
-          transform: {comercio: comercio, servicio: servicios_transporte, educacion: servicios_transporte,
-                      industria: manufactura_construccion, gobierno: gobierno}
+          transform: giro_sector   # harmonization/common.yaml (transforms)
 
 # Diagnostics (eodgdl impute evaluate sector_informality; eodgdl.impute.diagnostics), read by
 # reports/imputation_informality.qmd.

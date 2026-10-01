@@ -30,7 +30,8 @@ so everything here works offline and from an installed wheel.
 ```python
 from eodgdl import load_eod, tasha
 
-od = tasha.build(load_eod("data"))       # ODTables(households, people, trips)
+completed = tasha.load_completed("output/impute", draw=0)   # the pipeline tasha, one completed dataset
+od = tasha.build(load_eod("data"), completed=completed)    # ODTables(households, people, trips)
 assert tasha.validate_all(*od) == []
 od.trips.to_csv("output/od_trips.csv", index=False)
 ```
@@ -40,6 +41,18 @@ or in one step:
 ```bash
 eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
 ```
+
+The imputed columns (`IncomeClass`; `EmploymentStatus` and `StudentStatus` where
+unanswered, `EmploymentStatus`'s `P`, `Formality`, a worker's unreported `Occupation`) read
+one completed dataset of the eodgdl.impute pipeline `tasha` (persons and dwellings drawn
+jointly, so a dwelling's AMAI level counts its members drawn as workers): `tasha build` takes
+`--impute ROOT` (default `output/impute`) and `--draw N` (default 0), reads each level's
+`ROOT/tasha/<level>/completions.parquet` (`persons`, `dwellings`; every value drawn,
+`eodgdl impute score tasha`) and writes `od_provenance.json` with the draw and the bundles; a
+mapping names the pipeline and the column (`imputed: {pipeline: tasha, column: ...}`); in Python,
+`tasha.build(tables, completed=tasha.load_completed(root, draw))`. A different draw is
+another equally valid completed survey; `--no-impute` leaves those columns at their
+mapping's defaults.
 
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
@@ -116,8 +129,9 @@ takes:
 | `constant`   | the whole column is this one value                          |
 | `derivation` | prose, for what a lookup cannot express                     |
 | `override`   | a second lookup applied on top of `values`, with its `when` |
+| `imputed`    | `{chain, column[, values]}`: codes from one completed dataset of an eodgdl.impute chain |
 | `note`       | caveats: lossy collapses, judgement calls, open questions   |
-| `status`     | `ok` (default) / `assumed` / `not_surveyed` / `pending`     |
+| `status`     | `ok` (default) / `imputed` / `assumed` / `not_surveyed` / `pending` |
 
 Then re-run the checker. It reads the mapping in both directions — against the
 contract, and against the survey the mapping claims to read:
@@ -197,15 +211,22 @@ else.
 - **`DwellingType`** (pending) — no source exists. The dwellings file has no
   dwelling-type question and no address fields, so there is no interior-unit
   proxy either; `tenencia_vivienda` is tenure, not dwelling class. Constant `1`.
-- **`IncomeClass`** (pending) — 10,432 of 17,901 dwellings (58%) refused or did
-  not know and land in class 7. The band merge is provisional; an imputation
-  model from AGEB census characteristics, vehicles, education and household size
-  is the next step.
+- **`IncomeClass`** (imputed) — the AMAI socioeconomic level (decided 2026-09-30, as the
+  model's Monterrey inputs coded it, C- and C merged), from the chain `nse`: every
+  dwelling's level is imputed in part (bathrooms and bedrooms are not surveyed). The
+  reported income is no longer read (58% refused or did not know).
+- **`EmploymentStatus`** (imputed) — P is an informal worker, the Monterrey convention
+  (decided 2026-09-30), not part-time; part-time hours are not represented. The 4,370
+  people aged 16+ who did not answer take the drawn situation (task `empleo`), and every
+  worker's informality is drawn, all in one completed dataset of the chain `labour`.
+- **`StudentStatus`** (imputed) — an unanswered person drawn as a student is S.
+- **`Occupation`** (imputed) — a worker who did not report the giro (9,484, plus the
+  unanswered drawn as workers) takes the chain's drawn giro.
 - **`FreeParking`** (pending) — constant `O`, but this survey does carry
   `estacionamiento_lugar` and `pago_estacionamiento` on every trip, so a real
   value is derivable.
-- **`Formality`** (not surveyed) — no formality or social-security question in
-  the EOD. Constant `O`, recorded rather than silently omitted.
+- **`Formality`** (imputed) — no formality question in the EOD; the drawn informality,
+  `I` exactly where `EmploymentStatus` is `P`.
 - **`License`** (assumed) — age proxy, `edad >= 18`.
 - **`TransitPass`** (not surveyed) — constant `N`.
 

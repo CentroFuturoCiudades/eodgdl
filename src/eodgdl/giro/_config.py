@@ -35,7 +35,7 @@ _DESTINATION = TASK.builder_config["giro.destination"]
 DENUE_STATE_CODE = _DESTINATION["state_code"]
 DENUE_RELEASE = str(_DESTINATION["denue_release"])
 DESTINATION_AMBITO_LEVELS = list(TASK.declared_levels["destino_ambito"])
-DENUE_SCIAN2 = {str(code): str(giro) for code, giro in _DESTINATION["denue_scian2"].items()}
+DENUE_SECTORS = {str(code): str(suffix) for code, suffix in _DESTINATION["denue_sectors"].items()}
 
 
 @functools.cache

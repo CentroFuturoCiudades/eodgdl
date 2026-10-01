@@ -37,6 +37,12 @@ def main() -> None:
     build_p.add_argument(
         "--suffix", default="", help="Filename suffix, e.g. _v2 for od_trips_v2.csv"
     )
+    build_p.add_argument("--impute", default="output/impute",
+                         help="Root of the eodgdl.impute outputs whose completed datasets fill the imputed columns "
+                              "(default: output/impute; the pipeline's <root>/tasha/<level>/)")
+    build_p.add_argument("--draw", type=int, default=0, help="Which completed dataset (default 0)")
+    build_p.add_argument("--no-impute", action="store_true",
+                         help="Leave the imputed columns at their mapping's default (IncomeClass 7, no P, Formality O)")
 
     review_p = sub.add_parser("review", help="Review sheets: the trip chains pending a fix, to edit by hand")
     review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
@@ -96,7 +102,7 @@ def main() -> None:
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
 
-    imp_p = sub.add_parser("impute", help="Imputation tasks and chains (eodgdl.impute): score, retrain, evaluate, compare")
+    imp_p = sub.add_parser("impute", help="Imputation tasks, chains and pipelines (eodgdl.impute): score, retrain, evaluate, compare")
     imp_sub = imp_p.add_subparsers(dest="impute_cmd", required=True)
     for name, help_text in (("score", "Score a task's or a chain's rows with the fitted bundles"),
                             ("retrain", "Select, evaluate, refit and score a task (or every task of a chain); write the bundles and evaluation tables"),
@@ -105,7 +111,7 @@ def main() -> None:
         cmd_p = imp_sub.add_parser(name, help=help_text)
         cmd_p.add_argument("task", metavar="chain" if name == "evaluate" else "task",
                            help="Chain (src/eodgdl/impute/chains/<chain>.yaml)" if name == "evaluate" else
-                           "Task (src/eodgdl/impute/tasks/<task>.yaml)" + (" or chain (impute/chains/<chain>.yaml)" if name != "compare" else ""))
+                           "Task (src/eodgdl/impute/tasks/<task>.yaml)" + (", chain (impute/chains/<chain>.yaml) or pipeline (impute/pipelines/<pipeline>.yaml)" if name != "compare" else ""))
         cmd_p.add_argument("--data", default=None, help="Local data directory (else $EODGDL_DATA_DIR or fetch)")
         cmd_p.add_argument("--refresh", action="store_true", help="Rebuild the cached feature frames")
         if name in ("retrain", "compare"):
@@ -114,14 +120,16 @@ def main() -> None:
             default = "output/impute" if name == "evaluate" else None
             cmd_p.add_argument("--retrained", default=default, help="Take each task's bundle from <dir>/<task>/ when a retrain wrote one there, else the installed one"
                                                                      + (" (default output/impute; also where the upstream scenarios are read)" if default else ""))
-    imp_sub.choices["score"].add_argument("--out", default=None, help="For a task, the parquet of keys and outputs (default: output/impute/<task>_scores.parquet); for a chain, a directory (default: output/impute/<chain>/)")
+    imp_sub.choices["score"].add_argument("--out", default=None, help="For a task, the parquet of keys and outputs (default: output/impute/<task>_scores.parquet); for a chain or a pipeline, a directory (default: output/impute/<name>/)")
     imp_sub.choices["retrain"].add_argument("--out", default="output/impute", help="Each task is written to <out>/<task>/, where --retrained <out> finds it (default: output/impute)")
     imp_sub.choices["retrain"].add_argument("--bootstrap", type=int, default=0, metavar="B",
                                             help="Also refit the selected configurations on B cluster bootstraps of the training rows (<out>/<task>/bootstrap/), for a chain's uncertainty: bootstrap")
     imp_sub.choices["score"].add_argument("--draws", type=int, default=None, metavar="M",
-                                          help="For a chain: M multiple imputations (propagation draws), every value drawn; written to <out> (default: output/impute/<chain>/multiple_imputation/)")
+                                          help="For a chain: M multiple imputations (propagation draws), every value drawn; written to <out> (default: output/impute/<chain>/multiple_imputation/). For a pipeline: M instead of its draws")
     imp_sub.choices["score"].add_argument("--bootstrap", action="store_true",
                                           help="For a chain: draw each imputation's models from the tasks' bootstrap bundles under --retrained (uncertainty: bootstrap; needs draws)")
+    imp_sub.choices["score"].add_argument("--no-aggregate", action="store_true",
+                                          help="For a pipeline: leave the drawn values out of its aggregates (each level then reproduces its chain alone: the parity check)")
     imp_sub.choices["evaluate"].add_argument("--out", default=None, help="Directory (default: <retrained>/<chain>/); tables go to <out>/evaluation/")
     imp_cmp = imp_sub.choices["compare"]
     imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
@@ -205,11 +213,21 @@ def _tasha(args) -> int:
 
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
-        od = tasha.build(load_eod(args.data))
+        completed = None if args.no_impute else tasha.load_completed(args.impute, args.draw)
+        od = tasha.build(load_eod(args.data), completed=completed)
         for table, df in zip(tasha.tables(), od):
             path = out / f"od_{table}{args.suffix}.csv"
             df.to_csv(path, index=False)
             print(f"wrote {path}  ({len(df):,} rows)")
+        if completed is not None:
+            import json
+
+            # which completed dataset filled the imputed columns, and the bundles behind it
+            provenance = {"impute_root": str(args.impute), "draw": args.draw,
+                          "pipelines": {pipeline: next(iter(levels.values())).attrs["provenance"] for pipeline, levels in completed.items()}}
+            path = out / f"od_provenance{args.suffix}.json"
+            path.write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"wrote {path}  (draw {args.draw} of {', '.join(completed)})")
         print()
         _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")
@@ -373,6 +391,7 @@ def _impute(args) -> int:
         os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
     from eodgdl.impute import run
     from eodgdl.impute.chain import is_chain, load_chain, retrain_chain, run_chain, write_chain
+    from eodgdl.impute.pipeline import is_pipeline, load_pipeline, retrain_pipeline, run_pipeline, write_pipeline
     from eodgdl.impute.sources import Context
     from eodgdl.impute.spec import load_task
 
@@ -387,6 +406,18 @@ def _impute(args) -> int:
         print(f"wrote {len(tables)} tables to {out}")
         return 0
 
+    if is_pipeline(args.task) and args.impute_cmd in ("score", "retrain"):
+        pipeline = load_pipeline(args.task)
+        if args.impute_cmd == "score":
+            out = Path(args.out or f"output/impute/{pipeline.name}")
+            result = run_pipeline(pipeline, context=context, retrained=args.retrained, draws=args.draws, aggregate=not args.no_aggregate)
+            write_pipeline(result, out)
+            sizes = ", ".join(f"{name} {len(level.frame):,} rows" for name, level in result.levels.items())
+            print(f"{pipeline.name} ({result.provenance['draws']} draws, aggregate {'on' if result.provenance['aggregate'] else 'off'}): {sizes}; wrote {out}")
+        else:
+            for task, (path, digest) in retrain_pipeline(pipeline, args.out, context=context, n_jobs=args.jobs, bootstrap=args.bootstrap).items():
+                print(f"{task}: wrote {path} (sha256 {digest})")
+        return 0
     if is_chain(args.task) and args.impute_cmd in ("score", "retrain"):
         chain = load_chain(args.task)
         if args.impute_cmd == "score":

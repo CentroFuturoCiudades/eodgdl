@@ -1,0 +1,33 @@
+# The completed datasets the TASHA build reads (src/eodgdl/tasha/mappings.yaml, `imputed: {pipeline: tasha, ...}`): the
+# persons' labour situation and the dwellings' AMAI level, drawn jointly, so that a dwelling's workers aged 14+ include
+# the members whose employment was not answered and is drawn `trabaja` (before 2026-09-30 the chain nse counted the
+# reported workers only: about 690 dwellings per draw one uncalibrated NSE level low).
+#
+# Stages, each draw d conditioned on the draw d before it:
+#   1. within the survey (MAR given the observed covariates): empleo -> giro on the persons; educacion_jefe on the dwellings
+#   1->2. aggregate: trabajadores_14 = reported workers aged 14+ plus the drawn ones, capped at "4 o más"
+#   2. data fusion (conditional independence): informality | giro's sector (ENOE); amai_banos -> amai_dormitorios
+#      (ENIGH) | the education points and the completed trabajadores_14
+#   3. derive: AMAI points (with the completed count), NSE level, AGEB calibration
+# Only the aggregate crosses levels, so the pipeline runs one chain per level (each with its own seed, as the chain
+# alone): persons, the aggregate, dwellings. With the aggregate's drawn workers switched off (`eodgdl impute score tasha
+# --no-aggregate`) each level reproduces its chain's multiple imputations exactly.
+
+pipeline: tasha
+draws: 50                     # completion d of every level is completed dataset d
+uncertainty: bootstrap        # draw d scored with bootstrap bundle d mod B of every task (retrain --bootstrap B)
+levels:
+  persons:
+    chain: labour             # eod.labour: empleo -> giro -> informality
+  dwellings:
+    chain: nse                # eod.dwellings: educacion_jefe -> amai_banos -> amai_dormitorios -> points, level, calibration
+    given:                    # per draw, after the feature cache (eodgdl.impute.aggregate)
+      trabajadores_14:
+        aggregate: workers
+        from: persons
+        key: folio_vivienda
+        base: trabajadores_14_n          # eod.dwellings's reported count: members aged 14+ who worked last week
+        task: empleo                     # plus the persons whose employment was not answered ...
+        value: trabaja                   # ... drawn as working ...
+        min_age: {column: edad, value: 14}   # ... aged 14+ (every unanswered person is 16+)
+        harmonize: {table: eod_viviendas, variable: trabajadores_14}   # the source's own bins: "0" .. "4 o más"

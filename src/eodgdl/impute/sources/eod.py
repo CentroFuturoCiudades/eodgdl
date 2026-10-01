@@ -76,6 +76,73 @@ def workers(context, config):
     return _as_strings(frame).reset_index(drop=True)
 
 
+def _persons(context, config):
+    """Every interviewed person aged ``min_age`` or more with the dwelling's columns and ``mes_entrevista`` (as
+    :func:`workers`), and ``situacion_laboral``: the employment answer on the task's levels (``labour_status``), NA
+    where unanswered."""
+    tables = context.eod()
+    frame = tables.hab.reset_index()
+    dwelling_columns = [column for column in config["dwelling_columns"] if column not in frame.columns]
+    frame = frame.merge(tables.viv[dwelling_columns], left_on="folio_vivienda", right_index=True, how="left", validate="many_to_one")
+    frame = frame[frame["edad"].ge(config["min_age"])].copy()
+    status = {str(label): slug for slug, labels in config["labour_status"].items() for label in labels}
+    unknown = set(status) - set(schema_levels("trabajo_semana_pasada"))
+    if unknown:
+        raise ValueError(f"labour_status labels that are not levels of trabajo_semana_pasada: {sorted(unknown)}")
+    unmapped = set(frame["trabajo_semana_pasada"].dropna().astype(str)) - set(status)
+    if unmapped:
+        raise ValueError(f"trabajo_semana_pasada answers missing from labour_status: {sorted(unmapped)}")
+    frame["situacion_laboral"] = frame["trabajo_semana_pasada"].astype("string").map(status).astype("string")
+    frame["mes_entrevista"] = frame["fecha"].dt.month.astype("string")
+    return frame
+
+
+@register_source("eod.persons", config=load_config()["eod.persons"], versions=_survey_versions, schema_levels=schema_levels)
+def persons(context, config):
+    """Persons aged ``min_age``+ (:func:`_persons`): the employment task's training rows."""
+    return _as_strings(_persons(context, config)).reset_index(drop=True)
+
+
+@register_source("eod.labour", config=load_config()["eod.labour"], versions=_survey_versions, schema_levels=schema_levels)
+def labour(context, config):
+    """Persons aged ``min_age``+ who worked last week or did not answer (:func:`_persons`): the rows the chain
+    ``labour`` completes, a worker's giro and informality read only where the person works."""
+    frame = _persons(context, config)
+    frame = frame[frame["situacion_laboral"].isna() | frame["situacion_laboral"].eq(config["worker_status"])]
+    return _as_strings(frame).reset_index(drop=True)
+
+
+@register_builder("eod.person_context", config=load_config()["eod.person_context"], versions=_survey_versions)
+def person_context(frame, context, config, spec):
+    """The person's survey day and household: ``n_viajes`` (trips), ``viaje_trabajo`` / ``viaje_estudio`` ("Sí" if a
+    trip had that motive), and the other members aged ``min_age``+ who answered: ``hogar_otros_trabajan``,
+    ``hogar_otros_estudian``, ``hogar_otros_hogar``; and ``hogar_menores`` (members under ``child_age``)."""
+    tables = context.eod()
+    keys = ["folio_vivienda", "folio_habitante"]
+    motive = tables.trips["motivo_viaje"].astype("string")
+    by_person = pd.DataFrame({"n_viajes": motive.groupby(level=keys).size(),
+                              "viaje_trabajo": motive.eq(config["work_motive"]).groupby(level=keys).any(),
+                              "viaje_estudio": motive.eq(config["school_motive"]).groupby(level=keys).any()}).reset_index()
+    rows = frame[keys].merge(by_person, on=keys, how="left", validate="one_to_one")
+    hab = tables.hab.reset_index()
+    answer = hab["trabajo_semana_pasada"].astype("string")
+    adults = hab["edad"].ge(config["min_age"])
+    roles = pd.DataFrame({"folio_vivienda": hab["folio_vivienda"], "folio_habitante": hab["folio_habitante"],
+                          **{column: (adults & answer.isin(labels)).astype(int) for column, labels in config["household_roles"].items()},
+                          "hogar_menores": hab["edad"].lt(config["child_age"]).astype(int)})
+    totals = roles.groupby("folio_vivienda").sum(numeric_only=True).drop(columns="folio_habitante")
+    own = rows[keys].merge(roles, on=keys, how="left", validate="one_to_one")
+    household = totals.reindex(rows["folio_vivienda"]).reset_index(drop=True)
+    columns = pd.DataFrame({
+        "n_viajes": rows["n_viajes"].fillna(0).astype(float),
+        "viaje_trabajo": rows["viaje_trabajo"].fillna(False).map({True: "Sí", False: "No"}),
+        "viaje_estudio": rows["viaje_estudio"].fillna(False).map({True: "Sí", False: "No"}),
+    })
+    for column in [*config["household_roles"], "hogar_menores"]:
+        columns[column] = (household[column] - own[column].fillna(0)).astype(float).to_numpy()   # the others
+    return columns
+
+
 def work_trip_destination(trips, purpose, keys=("folio_vivienda", "folio_habitante")):
     """Most frequent destination type, destination code / zone and main mode of each person's trips with motive
     ``purpose``; persons without such a trip are absent."""
@@ -107,6 +174,22 @@ def work_trip(frame, context, config, spec):
     return columns
 
 
+@register_builder("eod.household_education", config=load_config()["eod.household_education"], versions=_survey_versions)
+def household_education(frame, context, config, spec):
+    """``hogar_escolaridad_max``: the highest education (``years``: the level's years of schooling) among the other
+    members of the row's dwelling aged ``min_age`` or more whose education is known; NA without one. The row's own
+    person is ``folio_habitante`` (a person row) or ``jefe_folio_habitante`` (a dwelling row: the head)."""
+    hab = context.eod().hab.reset_index()
+    years = hab["escolaridad"].astype("string").map({str(level): float(value) for level, value in config["years"].items()})
+    members = hab.loc[hab["edad"].ge(config["min_age"]) & years.notna(), ["folio_vivienda", "folio_habitante"]].assign(years=years)
+    person = "folio_habitante" if "folio_habitante" in frame.columns else "jefe_folio_habitante"
+    rows = frame[["folio_vivienda", person]].reset_index(drop=True).rename(columns={person: "self"}).reset_index(names="row")
+    pairs = rows.merge(members, on="folio_vivienda")
+    others = pairs[pairs["folio_habitante"].astype("string") != pairs["self"].astype("string")]
+    best = others.groupby("row")["years"].max()
+    return pd.DataFrame({"hogar_escolaridad_max": best.reindex(rows["row"]).to_numpy(dtype=float)})
+
+
 # the workers' variables on the common levels (they replace the survey's own ocupacion, escolaridad, municipio,
 # estado_civil, parentesco in the task frame), and the dwellings' NSE variables
 register_harmonization("harmonize.eod", "eod")
@@ -126,8 +209,8 @@ def dwelling_levels(column):
 @register_source("eod.dwellings", config=load_config()["eod.dwellings"], versions=_survey_versions, schema_levels=dwelling_levels)
 def dwellings(context, config):
     """One row per dwelling (``viv``) with its head's columns (``head_columns``, ``weekend_*``; ``jefe_fuente`` says
-    whether the head was reported or is the oldest member) and ``trabajadores_14_n``, the members aged 14+ who
-    worked last week; categoricals as plain strings."""
+    whether the head was reported or is the oldest member; ``jefe_folio_habitante`` is the head's person number) and
+    ``trabajadores_14_n``, the members aged 14+ who worked last week; categoricals as plain strings."""
     tables = context.eod()
     hab = tables.hab.reset_index()
     frame = tables.viv.reset_index()
@@ -137,7 +220,7 @@ def dwellings(context, config):
     heads = pd.concat([reported.assign(jefe_fuente="observado"), oldest.assign(jefe_fuente="mayor_edad")])
     head_columns = dict(config["head_columns"])
     head_columns.update({column: column for column in hab.columns if column.startswith(tuple(config["head_prefixes"]))})
-    heads = heads[["folio_vivienda", "jefe_fuente", *head_columns]].rename(columns=head_columns)
+    heads = heads[["folio_vivienda", "jefe_fuente", "folio_habitante", *head_columns]].rename(columns={**head_columns, "folio_habitante": "jefe_folio_habitante"})
     frame = frame.merge(heads, on="folio_vivienda", how="left", validate="one_to_one")
     working = hab["edad"].ge(config["worker_min_age"]) & _employed(hab, config["employed_categories"])
     workers = working.groupby(hab["folio_vivienda"]).sum().rename("trabajadores_14_n")

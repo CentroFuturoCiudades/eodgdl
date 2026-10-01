@@ -1,0 +1,23 @@
+# The labour situation of every EOD person who worked last week or did not say (source eod.labour): the employment
+# situation where unanswered (task empleo), then the giro (task giro) and the informality given its sector (task
+# informality), all scored on eod.labour, each drawn jointly within a completed dataset. A row's giro and informality
+# mean something only where its employment is `trabaja` (reported, or drawn): the TASHA build reads them so
+# (src/eodgdl/tasha/mappings.yaml: EmploymentStatus, StudentStatus, Formality, Occupation). giro and informality do not
+# read the employment (each was trained on workers: their scores are P(. | x, works)). sector_informality stays the
+# chain the informality diagnostics evaluate, on the reported workers alone.
+
+chain: labour
+mode: sequential
+propagation: draws
+draws: 50
+steps:
+  - empleo:
+      score_source: eod.labour
+  - giro:
+      score_source: eod.labour
+  - informality:
+      score_source: eod.labour
+      uses:
+        giro:
+          as: sector
+          transform: giro_sector   # harmonization/common.yaml (transforms)

@@ -26,13 +26,15 @@ def _task_points(values, task):
 def amai_points(completions, base, config):
     """``amai_puntos``: the points of each task's value (``tasks``) plus those of the dwelling's own answers
     (``observed``: column -> {answer: points}); missing where an observed answer is missing, so the level cut from them
-    is too and the chain stops, naming the dwellings (no EOD dwelling lacks one)."""
+    is too and the chain stops, naming the dwellings (no EOD dwelling lacks one). An answer the completions carry (a
+    pipeline's given column: the workers aged 14+ with the drawn ones) is read from the completion, else from the
+    source."""
     total = np.zeros(len(completions))
     for task in config["tasks"]:
         total += _task_points(completions[task], task)
     rows = base.iloc[completions["row"].to_numpy()]
     for column, points in config["observed"].items():
-        answer = rows[column].astype("string")
+        answer = pd.Series(completions[column].to_numpy() if column in completions else rows[column].to_numpy()).astype("string")
         mapped = answer.map({str(k): float(v) for k, v in points.items()})
         unmapped = set(answer.dropna()) - set(map(str, points)) - {config.get("missing_label", "no_especificado")}
         assert not unmapped, f"{column}: answers without AMAI points: {sorted(unmapped)}"

@@ -1,7 +1,7 @@
 """Compare two roots of ``eodgdl.impute`` outputs, file by file and model by model: the parity check of the engine's
 reviews (``docs/handoff_impute_engine.md`` §0).
 
-    uv run python scripts/impute/parity.py ROOT_A ROOT_B [--models] [--tolerance 1e-12] [--data data] [--strict]
+    uv run python scripts/impute/parity.py ROOT_A ROOT_B [--models] [--tolerance 1e-12] [--data data] [--strict] [--ignore-columns PATTERN ...]
 
 A root has the layout of ``output/impute/`` (``scripts/impute/rerun.sh ROOT`` writes one): ``<task>/`` retrains (the
 bundle, ``scores.parquet``, ``scenarios.parquet``, ``evaluation/*.parquet``, ``summary.json``), ``<chain>/`` runs
@@ -209,6 +209,13 @@ def compare_models(root_a, root_b, tolerance):
     return rows
 
 
+def drop_columns(frame, patterns):
+    """``frame`` without the columns matching any of the shell ``patterns``."""
+    import fnmatch
+
+    return frame.drop(columns=[column for column in frame.columns if any(fnmatch.fnmatchcase(column, pattern) for pattern in patterns)])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("root_a", type=Path)
@@ -217,6 +224,9 @@ def main():
     parser.add_argument("--tolerance", type=float, default=1e-12, help="Absolute below one, relative above (default 1e-12)")
     parser.add_argument("--data", default=None, help="Local data directory for --models (else $EODGDL_DATA_DIR or fetch)")
     parser.add_argument("--strict", action="store_true", help="Exit 1 on any difference beyond the tolerance, held-out tables included")
+    parser.add_argument("--ignore-columns", nargs="+", default=[], metavar="PATTERN",
+                        help="Drop the columns matching these shell patterns from every parquet of both roots before comparing (e.g. a "
+                             "pipeline level's given columns against its chain run alone: 'trabajadores_14*' 'prob_trabajadores_14*')")
     args = parser.parse_args()
     if args.data:
         os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
@@ -228,7 +238,7 @@ def main():
     files_b = {path.relative_to(root_b) for path in root_b.rglob("*.parquet")}
     counts, reports = {"identical": 0, "within": 0, "different": 0}, {"heldout": [], "other": []}
     for relative in sorted(files_a & files_b):
-        status, details = compare_frames(pd.read_parquet(root_a / relative), pd.read_parquet(root_b / relative), args.tolerance)
+        status, details = compare_frames(*(drop_columns(pd.read_parquet(root / relative), args.ignore_columns) for root in (root_a, root_b)), args.tolerance)
         counts[status] += 1
         if status != "identical":
             heldout = is_heldout_table(relative, retrains)

@@ -35,6 +35,20 @@ levels:
   banos: ["0", "1", "2 o más"]
   dormitorios: ["1", "2", "3", "4 o más"]
 
+# Named value maps between a task's classes and the common levels, defined once and read wherever they apply: by a
+# chain's `uses: {transform: <name>}` (eodgdl.impute.chain) and by a harmonization variable's `transform: <name>` with
+# `labels_of: <task>` (the survey's labels -> the task's class slugs -> this map).
+transforms:
+  # giro's five classes (tasks/giro.yaml) onto the four informality sectors: education is a service; industry is
+  # manufacturing and construction (ENOE's agriculture, mining and utilities join it: enoe.yaml). Read by the chains
+  # sector_informality and labour (the drawn giro) and by eod.yaml's `sector` (the reported giro).
+  giro_sector:
+    comercio: comercio
+    servicio: servicios_transporte
+    educacion: servicios_transporte
+    industria: manufactura_construccion
+    gobierno: gobierno
+
 # Cut points: left-closed bins, the last one open.
 age:
   bins: [0, 3, 5, 6, 8, 12, 15, 18, 25, 50, 60, 65]

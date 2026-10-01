@@ -59,7 +59,7 @@ SUMMARY = {task: json.loads((OUT / task / "summary.json").read_text(encoding="ut
 CHAIN_SUMMARY = json.loads((OUT / "nse" / "evaluation" / "summary.json").read_text(encoding="utf-8"))
 LEVELS = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
 LEVEL_LABEL = dict(zip(LEVELS, ["E", "D", "D+", "C-", "C", "C+", "A/B"]))
-ARM_LABEL = {"all": "Single arm", "con_ingreso": "With income", "sin_ingreso": "Without income"}
+ARM_LABEL = {"con_hogar": "With the household's education", "sin_hogar": "Without it", "con_ingreso": "With income", "sin_ingreso": "Without income"}
 
 
 def T(task, name, arm=None):
@@ -127,23 +127,43 @@ display(Markdown(
 ```{python}
 #| label: education
 s = SUMMARY["educacion_jefe"]
-sel = s["arms"]["all"]["selected"]
-params = ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in sel["best_params"].items())
-m = s["arms"]["all"]["test_metrics"]
-u = s["arms"]["all"]["test_uncertainty"]
-assert u["relative_improvement_over_marginal"] > 0                  # "below the weighted-marginal baseline"
+EDUCATION = load_task("educacion_jefe")
+first, last = (arm.name for arm in EDUCATION.arms)
+hybrid = T("educacion_jefe", "test_metrics__hybrid").iloc[0]
+usage = T("educacion_jefe", "model_usage").set_index("educacion_jefe_model_used")["weighted_share"]
+assert all(s["arms"][arm]["test_uncertainty"]["relative_improvement_over_marginal"] > 0 for arm in (first, last))   # "below the weighted-marginal baseline"
+assert s["arms"][first]["test_metrics"]["weighted_log_loss"] < s["arms"][last]["test_metrics"]["weighted_log_loss"]
+from eodgdl.impute.features import build_frame as _build_frame
+from eodgdl.impute.sources import Context as _Context
+
+_heads = _build_frame(EDUCATION, _Context()).frame
+_unknown = _heads["educacion_jefe_desconocido"].astype(bool)
+_gap = _heads["hogar_escolaridad_max"].isna()
+gap_known, gap_unknown = (float(np.average(_gap[rows_], weights=_heads.loc[rows_, "ponderador"])) for rows_ in (~_unknown, _unknown))
+assert gap_unknown > 2 * gap_known
+rows = []
+for arm in (first, last):
+    entry = s["arms"][arm]
+    rows.append({"arm": ARM_LABEL[arm], "family": entry["selected"]["model"],
+                 "parameters": ", ".join(f"{k.removeprefix('classifier__')}={v}" for k, v in entry["selected"]["best_params"].items()),
+                 "CV log loss": round(entry["selected"]["weighted_log_loss"], 4), "held-out log loss": round(entry["test_metrics"]["weighted_log_loss"], 4),
+                 "held-out accuracy": round(entry["test_metrics"]["weighted_accuracy"], 4), "share of the imputed weight": round(usage.get(arm, 0.0), 3)})
 display(Markdown(
     f"The head of each of the {fmt(s['rows'])} dwellings is the reported *Jefe del hogar*, else the oldest member. "
     f"{fmt(s['known'])} heads report an education that maps to AMAI's classes; {fmt(s['unknown'])} do not "
     "(missing or *No sabe*). Those are imputed from the head's age, sex and marital status, the dwelling's size, "
-    "tenure, income, cars and internet, the head's weekend travel, and the dwelling's centrality. The model trains "
-    "with the dwelling weight. "
-    f"Selected: **{sel['model']}** ({params}), "
-    f"CV log loss {sel['weighted_log_loss']:.4f}, each fold scored as the imputed dwellings are (an unanswered income "
-    f"averaged over the reported ones: @sec-income). On held-out households, scored the same way, the log loss is {m['weighted_log_loss']:.4f}, "
-    f"{pct(u['relative_improvement_over_marginal'])} below the weighted-marginal baseline, at a weighted accuracy of "
-    f"{pct(m['weighted_accuracy'])}."
+    "tenure, income, cars and internet, the head's weekend travel, the dwelling's centrality and, where another member "
+    "of the dwelling aged 15+ answered, the highest education among them (mostly the spouse's). The model trains with "
+    "the dwelling weight, each CV fold scored as the imputed dwellings are (an unanswered income averaged over the "
+    "reported ones: @sec-income).\n\n"
+    "The household's education has an arm of its own because it goes unanswered with the head's: it is unknown for "
+    f"{pct(gap_unknown, 0)} of the heads imputed (weighted), the whole household skipped, against {pct(gap_known, 0)} of "
+    "the heads with a known education. Read with the median where missing, one model lost 0.030 in log loss on those "
+    "heads; the arm without it is the model as it was before v0.7.0 (`src/eodgdl/impute/tasks/educacion_jefe.yaml`). "
+    f"On held-out households, each scored by the arm that would score it, the log loss is {hybrid['weighted_log_loss']:.4f} "
+    f"at a weighted accuracy of {pct(hybrid['weighted_accuracy'])}. The table evaluates each arm on every held-out household."
 ))
+display(pd.DataFrame(rows))
 display(T("educacion_jefe", "shares").set_index("class").mul(100).round(2))
 ```
 

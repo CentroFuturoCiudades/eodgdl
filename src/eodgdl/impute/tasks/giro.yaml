@@ -29,9 +29,13 @@ features:
     person: [sexo_nacimiento, edad, escolaridad, municipio, estado_civil, parentesco, personas_en_vivienda, ocupacion,
              trabajo_semana_pasada, centralidad]
     # Work-trip destination: its type, its ámbito and the DENUE establishment mix of the destination's unit in the
-    # zone system (an urban or rural AGEB), one share per giro.
-    destination: [destino_trabajo, destino_ambito, dest_establecimientos_log, dest_share_grandes, dest_share_comercio,
-                  dest_share_servicio, dest_share_educacion, dest_share_industria, dest_share_gobierno]
+    # zone system (an urban or rural AGEB): the number of establishments, and the shares of their staff in large
+    # establishments and in each SCIAN sector (builders.giro.destination).
+    destination: [destino_trabajo, destino_ambito, dest_establecimientos_log, dest_share_grandes,
+                  dest_share_scian_11, dest_share_scian_21, dest_share_scian_22, dest_share_scian_23, dest_share_scian_31_33,
+                  dest_share_scian_43, dest_share_scian_46, dest_share_scian_48_49, dest_share_scian_51, dest_share_scian_52,
+                  dest_share_scian_53, dest_share_scian_54, dest_share_scian_55, dest_share_scian_56, dest_share_scian_61,
+                  dest_share_scian_62, dest_share_scian_71, dest_share_scian_72, dest_share_scian_81, dest_share_scian_93]
     # Mode of the work trip, weekend work destination, household vehicles.
     mobility: [modo_trabajo, weekend_dest_trabajar, n_autos_camionetas]
     # The interview's month (the eod.workers source). The capture changed through the fieldwork: from April a work trip's
@@ -39,8 +43,11 @@ features:
     # workers against 41-43% of March's and April's. Added 2026-09-29: CV log loss -0.0013 (with education) and -0.0020
     # (without), paired over three seeds.
     interview: [mes_entrevista]
-  numeric: [edad, dest_establecimientos_log, dest_share_grandes, dest_share_comercio, dest_share_servicio,
-            dest_share_educacion, dest_share_industria, dest_share_gobierno]
+  numeric: [edad, dest_establecimientos_log, dest_share_grandes,
+            dest_share_scian_11, dest_share_scian_21, dest_share_scian_22, dest_share_scian_23, dest_share_scian_31_33,
+            dest_share_scian_43, dest_share_scian_46, dest_share_scian_48_49, dest_share_scian_51, dest_share_scian_52,
+            dest_share_scian_53, dest_share_scian_54, dest_share_scian_55, dest_share_scian_56, dest_share_scian_61,
+            dest_share_scian_62, dest_share_scian_71, dest_share_scian_72, dest_share_scian_81, dest_share_scian_93]
 
 levels:
   # Every level a categorical feature can take (the missing label is appended): declared here, or else the eodgdl
@@ -63,6 +70,31 @@ levels:
 arms:
   # In order: a row to impute is scored by the first arm whose `requires` it has observed. `features` lists groups
   # or features; `exclude` removes some.
+  #
+  # Why two (measured 2026-09-30, v0.6.0's features; reports/imputation_giro.qmd #sec-arms recomputes the counts):
+  # education goes unanswered with the giro. 2.5% of the workers who report a giro lack it (weighted) against 46.5% of
+  # those who do not, so the arm without education scores 47% of the imputed weight. It follows the interview month
+  # (1% of January's workers, 26% of April's), not the respondent (heads and spouses answering for themselves skip it
+  # as often as when another member answers for them): the capture, like the giro's own non-response.
+  # - Education is worth using where it is observed: on the retrain's held-out fold the arm with it scores 0.8776, the
+  #   arm without it 0.8958.
+  # - Where it is not, a model without it predicts better than the model with it averaged over education: with
+  #   education hidden on the held-out fold, averaged by P(education | x) from an auxiliary model 0.9010, by the
+  #   training shares 0.9104, against 0.8958.
+  # - Assumed: a worker whose giro and education both went unanswered has the giro of the workers who reported them,
+  #   given the features (the month among them). The 673 workers who report a giro but not their education are the only
+  #   check: out of fold, the arm without education predicts their shares within 1.6 pp (commerce 41.2% against 42.8%),
+  #   log loss 0.696 against 0.893 for the rest.
+  # - Each arm trains on every worker with a reported giro, the with-education arm too (its 673 without education
+  #   carry the missing label, a level it never scores): training it on the workers with education only changed its
+  #   CV log loss on the rows it scores by +0.0002 (se 0.0007, worse on 8 of 15 folds over three seeds).
+  # - Tried and not taken (2026-09-30, paired CV, three seeds, the bundle's winners; with / without education): where
+  #   the worker lives adds nothing. The dwelling AGEB's census profile (builder census.home: affiliation to IMSS, ISSSTE
+  #   and the state's, education, employment, women's participation, sex ratio, 60+, cars, internet, computers,
+  #   population, DENUE establishments per adult) +0.0023 / +0.0026; INEGI's ILMM subset of it +0.0017 / +0.0004;
+  #   AMAI's NSE by AGEB -0.0000 / -0.0002; both +0.0029 / +0.0016. The highest education among the other household
+  #   members (eod.household_education) -0.0006 / -0.0006 (se 0.0006 / 0.0008), within noise. Imputing education
+  #   first and reading it here is averaging over P(education | x), which the arm without education beats (above).
   with_education:
     features: [person, destination, mobility, interview]
     requires: [escolaridad]
@@ -107,28 +139,47 @@ builders:
     state_code: 14              # DENUE and census state (Jalisco)
     denue_release: "202211"     # November 2022: the DENUE snapshot closest to (and before) the OD fieldwork of Jan-Apr 2023
     small_establishment_levels: ["0 a 5 personas", "6 a 10 personas"]   # DENUE `per_ocu` strata counted as small
-    # DENUE `codigo_act` first two digits (SCIAN sector) -> giro slug, for the establishment-mix shares.
-    denue_scian2:
-      11: industria    # Agricultura, cría y explotación de animales, aprovechamiento forestal, pesca y caza (primary production)
-      21: industria    # Minería
-      22: industria    # Generación, transmisión y distribución de energía eléctrica, agua y gas
-      23: industria    # Construcción
-      31: industria    # Industrias manufactureras
-      32: industria    # Industrias manufactureras
-      33: industria    # Industrias manufactureras
-      43: comercio     # Comercio al por mayor
-      46: comercio     # Comercio al por menor
-      48: servicio     # Transportes, correos y almacenamiento
-      49: servicio     # Transportes, correos y almacenamiento
-      51: servicio     # Información en medios masivos
-      52: servicio     # Servicios financieros y de seguros
-      53: servicio     # Servicios inmobiliarios y de alquiler
-      54: servicio     # Servicios profesionales, científicos y técnicos
-      55: servicio     # Corporativos
-      56: servicio     # Servicios de apoyo a los negocios y manejo de residuos
-      61: educacion    # Servicios educativos
-      62: servicio     # Servicios de salud y de asistencia social
-      71: servicio     # Servicios de esparcimiento culturales y deportivos
-      72: servicio     # Servicios de alojamiento temporal y de preparación de alimentos
-      81: servicio     # Otros servicios excepto actividades gubernamentales
-      93: gobierno     # Actividades legislativas, gubernamentales y de justicia
+    # The shares weight each establishment by its staff: the midpoint of its `per_ocu` band, 500 for the open top band
+    # (an assumption; 300 or 1000 move the CV log loss by 0.001-0.002, in no consistent direction). `weighting:
+    # establishments` counts each once, as up to v0.5.1.
+    weighting: employment
+    employment_by_size: {"0 a 5 personas": 3, "6 a 10 personas": 8, "11 a 30 personas": 20.5, "31 a 50 personas": 40.5,
+                         "51 a 100 personas": 75.5, "101 a 250 personas": 175.5, "251 y más personas": 500}
+    # DENUE `codigo_act` first two digits (SCIAN sector) -> suffix of its share column `dest_share_scian_<suffix>`; the
+    # sectors SCIAN spreads over several codes share one. Every sector DENUE holds must be here.
+    #
+    # Since v0.6.0 (2026-09-30) one share per sector, weighted by staff, replaces the five shares of establishments per
+    # giro (SCIAN sector -> giro: 11, 21-23, 31-33 industria; 43, 46 comercio; 61 educacion; 93 gobierno; the rest
+    # servicio). Paired CV log loss against those (eodgdl impute compare, three seeds, the bundle's winners), with
+    # education / without: staff-weighted giro shares -0.0018 / -0.0021; establishment-weighted sector shares -0.0054 /
+    # -0.0025; staff-weighted sector shares -0.0080 / -0.0064 (worse on 0 and 3 of 15 folds); the same by three-digit
+    # subsector (89 shares) -0.0098 / -0.0093, not taken: 69 more features for about 0.002, and the small classes'
+    # F1 fell (educacion 0.48 -> 0.40 held out). Retrained, the same selections: held-out log loss 0.8896 -> 0.8783,
+    # accuracy 63.7% -> 63.9%, the imputed shares within 0.4 pp, the informality rate 35.91% -> 35.93%.
+    # Missing values were left as they are (the median inside the pipelines, `destino_ambito` and `sin_viaje` telling
+    # the cases apart): the booster's own missing branch +0.0015 / +0.0020, the dwelling's AGEB for a worker without a
+    # work trip +0.0015 / +0.0023, zero establishments for a unit with none -0.0001 / +0.0004.
+    denue_sectors:
+      11: "11"      # Agricultura, cría y explotación de animales, aprovechamiento forestal, pesca y caza
+      21: "21"      # Minería
+      22: "22"      # Generación, transmisión y distribución de energía eléctrica, agua y gas
+      23: "23"      # Construcción
+      31: "31_33"   # Industrias manufactureras
+      32: "31_33"   # Industrias manufactureras
+      33: "31_33"   # Industrias manufactureras
+      43: "43"      # Comercio al por mayor
+      46: "46"      # Comercio al por menor
+      48: "48_49"   # Transportes, correos y almacenamiento
+      49: "48_49"   # Transportes, correos y almacenamiento
+      51: "51"      # Información en medios masivos
+      52: "52"      # Servicios financieros y de seguros
+      53: "53"      # Servicios inmobiliarios y de alquiler
+      54: "54"      # Servicios profesionales, científicos y técnicos
+      55: "55"      # Corporativos
+      56: "56"      # Servicios de apoyo a los negocios y manejo de residuos
+      61: "61"      # Servicios educativos
+      62: "62"      # Servicios de salud y de asistencia social
+      71: "71"      # Servicios de esparcimiento culturales y deportivos
+      72: "72"      # Servicios de alojamiento temporal y de preparación de alimentos
+      81: "81"      # Otros servicios excepto actividades gubernamentales
+      93: "93"      # Actividades legislativas, gubernamentales y de justicia

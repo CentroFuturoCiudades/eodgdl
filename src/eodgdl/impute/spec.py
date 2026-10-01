@@ -90,8 +90,13 @@ class TaskSpec:
         return self.bundle_file or f"{self.name}.joblib"
 
     def builders_for(self, source):
-        """The feature builders run on ``source``'s frame."""
+        """The feature builders run on ``source``'s frame: the task's per-source list for it, else for the source it
+        declares ``builders_as`` (a source of the same rows' kind, e.g. eod.labour as eod.workers)."""
         if isinstance(self.builders, dict):
+            if source not in self.builders:
+                from .sources import get_source
+
+                source = get_source(source).config.get("builders_as", source)
             return list(self.builders.get(source, []))
         return list(self.builders)
 
@@ -211,7 +216,10 @@ def parse_task(raw):
     for builder in spec.builder_config:
         _check(builder in spec.all_builders, f"{name}: configuration for builder {builder!r}, which the task does not use")
     if isinstance(spec.builders, dict):
-        _check(set(spec.builders) <= {spec.source, spec.score_source}, f"{name}: builders for sources the task neither trains nor scores on")
+        from .sources import get_source
+
+        scored_as = get_source(spec.score_source).config.get("builders_as", spec.score_source)
+        _check(set(spec.builders) <= {spec.source, spec.score_source, scored_as}, f"{name}: builders for sources the task neither trains nor scores on")
 
     return spec
 

@@ -64,8 +64,8 @@ variables:
     bins: household_size
   sector:
     column: giro_empresa   # reported; the chains fill it from the giro model's probabilities instead
-    map: {Comercio: comercio, Servicio: servicios_transporte, Educación: servicios_transporte, Industria: manufactura_construccion,
-          Gobierno/sector público: gobierno}
+    labels_of: giro        # the survey's labels -> giro's class slugs (tasks/giro.yaml) -> common.yaml's giro_sector
+    transform: giro_sector
   lugar_trabajo:
     column: destino_trabajo   # destination type of the work trips (eod.work_trip); NA without a work trip
     map:

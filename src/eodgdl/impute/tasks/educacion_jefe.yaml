@@ -16,7 +16,7 @@ target:
 missing_label: no_especificado
 
 features:
-  builders: [harmonize.eod_viviendas]
+  builders: [harmonize.eod_viviendas, eod.household_education]
   groups:
     head: [edad_jefe, sexo_jefe, estado_civil_jefe]
     dwelling: [personas_en_vivienda, tenencia_vivienda, ingreso_hogar, n_autos_camionetas, tiene_internet]
@@ -24,7 +24,9 @@ features:
     travel: [weekend_mode_auto_particular, weekend_mode_camion_autobus, weekend_mode_a_pie, salio_casa_ayer,
              weekend_dest_visitar, weekend_dest_compras_bienes_servicios]
     place: [centralidad]
-  numeric: [edad_jefe]
+    # the highest education among the dwelling's other members aged 15+ (eod.household_education): mostly the spouse's
+    household: [hogar_escolaridad_max]
+  numeric: [edad_jefe, hogar_escolaridad_max]
 
 levels:
   declared:
@@ -36,7 +38,20 @@ levels:
   schema_columns: {estado_civil_jefe: estado_civil}
 
 arms:
-  all:
+  # In order: a dwelling is scored by the first arm whose `requires` it has observed. Since v0.7.0 (2026-09-30) the
+  # household's education, where another member answered, is a second source of the head's (paired CV log loss,
+  # eodgdl impute compare, three seeds, the bundle's winner: -0.0465, se 0.0020, better on every fold). It is its own
+  # arm because its gaps follow the head's: another member's education is unknown for 16% of the heads with a known
+  # education and for 53% of those imputed (both weighted), the whole household skipped. One model reading it with the
+  # median where missing lost 0.030 on those heads (grouped CV, three seeds); the arm without it is the model as it was.
+  # With the arms: -0.059 on the heads whose household answered, nothing elsewhere.
+  # Tried and not taken: the dwelling AGEB's census profile and AMAI's NSE by AGEB (builder census.home): -0.0026 and
+  # -0.0028 alone, -0.0032 together, -0.0008 beyond the household's education; AMAI's table is also the NSE chain's
+  # calibration target and benchmark, which a feature would no longer leave independent.
+  con_hogar:
+    features: [head, dwelling, travel, place, household]
+    requires: [hogar_escolaridad_max]
+  sin_hogar:
     features: [head, dwelling, travel, place]
 
 selection:

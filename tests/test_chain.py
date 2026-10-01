@@ -396,3 +396,66 @@ def test_diagnostics_of_a_distribution_chain(diagnostics_on_synthetic_tasks, mon
     mi = tables["multiple_imputation"].set_index("level")
     assert set(mi["models"]) == {"single fit"} and mi.loc["alto", "estimate"] + mi.loc["bajo", "estimate"] == pytest.approx(1.0)
     assert (mi["fmi"].between(0, 1)).all() and summary["draws"] == 40
+
+
+def test_a_step_can_score_its_task_on_other_rows():
+    from eodgdl.impute.chain import step_spec
+
+    chain = parse_chain({"chain": "t", "steps": [{"giro": {"score_source": "eod.labour"}}, "informality"]})
+    assert step_spec(chain, "giro").score_source == "eod.labour"
+    assert step_spec(chain, "informality").score_source == "eod.workers"
+    # a source declaring builders_as runs the task's builders for that source
+    informality = step_spec(parse_chain({"chain": "u", "steps": [{"informality": {"score_source": "eod.labour"}}]}), "informality")
+    assert informality.builders_for("eod.labour") == informality.builders_for("eod.workers")
+
+
+def test_the_giro_sector_map_is_defined_once():
+    # the chains' transform and the reported giro's harmonized sector are common.yaml's giro_sector, over giro's classes
+    from eodgdl.impute.chain import load_chain
+    from eodgdl.impute.harmonize import apply_variables, load_harmonization, named_transform
+    from eodgdl.impute.spec import load_task
+
+    giro_sector = named_transform("giro_sector")
+    giro = load_task("giro")
+    assert set(giro_sector) == set(giro.class_slugs)
+    assert set(giro_sector.values()) <= set(load_harmonization("common")["levels"]["sector"])
+    for name in ("sector_informality", "labour"):
+        [use] = [use for step in load_chain(name).steps if getattr(step, "task", None) == "informality" for use in step.uses]
+        assert dict(use.transform) == giro_sector
+    labels = pd.DataFrame({"giro_empresa": [*giro.classes, None]})
+    sector = apply_variables(labels, {"sector": load_harmonization("eod")["variables"]["sector"]})["sector"]
+    assert sector.tolist() == [giro_sector[slug] for slug in giro.classes.values()] + ["no_especificado"]
+
+
+def test_given_features_enter_per_completion(chain_source):
+    # a pipeline gives a chain per-completion values (an aggregate of another level's draws): given the source's own
+    # values the chain reproduces its run without them exactly; values changed in one completion move only that
+    # completion's draws of the tasks that read them
+    from eodgdl.impute.features import build_frame
+
+    context, bundles = chain_source
+    frame = build_frame(T3, context).frame
+    for steps in (["t1", {"t3": {"uses": {"t1": {"as": "u1", "transform": U1}}}}], ["t1", "t3"]):   # with and without uses
+        spec = chain(steps, propagation="draws", draws=4, seed=9)
+        plain = run_chain(spec, context=context, bundles=bundles, specs=SPECS)
+        own = pd.DataFrame({"k": np.repeat(frame["k"].to_numpy(), 4), "completion": np.tile(np.arange(4), len(frame)),
+                            "u2": np.repeat(frame["u2"].to_numpy(), 4)})
+        same = run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=own)
+        pd.testing.assert_frame_equal(same.completions.drop(columns="u2"), plain.completions)
+        pd.testing.assert_frame_equal(same.frame[plain.frame.columns], plain.frame)
+        assert same.provenance["given"] == ["u2"] and {"prob_u2_p", "prob_u2_q"} <= set(same.frame.columns)
+        flipped = own.copy()
+        changed = (flipped["completion"] == 1).to_numpy()
+        flipped.loc[changed, "u2"] = flipped.loc[changed, "u2"].map({"p": "q", "q": "p"})
+        moved = run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=lambda base: flipped)   # or a function of the source frame
+        assert moved.completions["t1"].equals(plain.completions["t1"])                                    # t1 does not read u2
+        differs = (moved.completions["t3"] != plain.completions["t3"]).to_numpy()
+        assert differs.any() and not differs[~changed].any()
+
+    spec = chain(["t1", "t3"], propagation="draws", draws=2)
+    with pytest.raises(ValueError, match="need propagation: draws"):
+        run_chain(chain(["t1", "t3"]), context=context, bundles=bundles, specs=SPECS, given=own)
+    with pytest.raises(ValueError, match="no given value for"):
+        run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=own[own["completion"] == 0])
+    with pytest.raises(ValueError, match="does not declare"):
+        run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=own[own["completion"] < 2].assign(u2="r"))
