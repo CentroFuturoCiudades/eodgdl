@@ -220,12 +220,15 @@ rest still read the clone. The release ritual (a registry sha256, `REF`, version
 releases in five days) was the most frequent non-scientific chore. Four steps, the suite and output parity green at
 each (`scripts/impute/parity.py`, the manifests):
 
-1. **Drop distribution — done (uncommitted).** `src/eodgdl/data/` (Pooch, `registry.txt`, `_catalog.py`, `_registry.py`,
+1. **Drop distribution — done (db5d3eb).** `src/eodgdl/data/` (Pooch, `registry.txt`, `_catalog.py`, `_registry.py`,
    `_paths.py`) replaced by `src/eodgdl/data.py`: `data_dir()`, `models_dir()`, `cache_dir()` (`<clone>/.cache/`, the
    feature cache moved there from the platform cache dir), `resolve()` (`*.joblib` → `models/`), the input files' names.
    `eodgdl info|fetch` removed, `pooch` / `platformdirs` dropped from the dependencies, the reweight spec's `imputed`
    bundle checked against `models/` instead of a catalog list. The "second release" of H is now a commit; tags mark
-   milestones (Zenodo at paper time, with the published outputs).
+   milestones (Zenodo at paper time, with the published outputs). The import line it changed in `eod.py` moved the
+   `eod_loader` version key, so `output/impute/tasha` was re-scored at db5d3eb (completions identical to the v0.9.0
+   run's, now with its manifest). A content key for the loader (the hash of `load_eod()`'s tables, not of its source)
+   would spare such re-runs: a candidate for step 3.
 2. **One `config.yaml`**: the weight choice (today a hand edit of `impute/sources/eod.yaml` that `run.sh` checks), seeds,
    draws, bootstrap B, read by the code; it makes the hand-switch guards hold by construction.
 3. **The Snakefile** (`workflow/`, rules at stage level: load → EOD parquet, zones, reweight inputs, retrain per task,
