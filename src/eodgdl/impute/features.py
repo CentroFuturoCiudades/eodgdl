@@ -108,12 +108,12 @@ def build_frame(spec, context, overrides=None, role="train"):
     ``score_source``, where the target column may be absent: every row unknown). ``overrides`` ({builder: {key:
     value}}) changes a builder's configuration for this call. Returns a
     :class:`~eodgdl.impute.sources.SourceFrame`."""
-    from .sources import SourceFrame, file_digest, get_source
+    from .sources import SourceFrame, file_digest, get_source, with_weight
 
     source = get_source(spec.source if role == "train" else spec.score_source)
-    versions = source.versions(context, source.config)
+    versions = source.data_versions(context)
     key = _key(source=source.name, module=file_digest(source.module_file), config=source.config, versions=versions)
-    frame = _cached(context, "sources", source.name, key, lambda: source.build(context, source.config))
+    frame = _cached(context, "sources", source.name, key, lambda: with_weight(source.build(context, source.config), source.config))
     keys = source.keys
     for name in spec.builders_for(source.name):
         builder = get_builder(name)

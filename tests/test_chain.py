@@ -176,6 +176,8 @@ def test_bootstrap_models_score_each_draw_with_its_own(chain_source):
         run_chain(chain(steps, propagation="draws", draws=2, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap={"t1": boot["t1"]})
     with pytest.raises(ValueError, match="differ in size"):
         run_chain(chain(steps, propagation="draws", draws=2, uncertainty="bootstrap"), context=context, bundles=bundles, specs=SPECS, bootstrap={"t1": boot["t1"], "t2": boot["t2"][:1]})
+    with pytest.raises(ValueError, match="without uncertainty: bootstrap"):          # a run labelled single fit is one
+        run_chain(chain(steps, propagation="draws", draws=2), context=context, bundles=bundles, specs=SPECS, bootstrap=boot)
 
 
 def test_draws_complete_every_task(chain_source):
@@ -183,6 +185,11 @@ def test_draws_complete_every_task(chain_source):
     result = run_chain(chain(["t1", "t2"], mode="parallel", propagation="draws", draws=3, seed=2), context=context, bundles=bundles, specs=SPECS)
     assert {"t1", "t2"} <= set(result.completions.columns)      # no later step reads t2, yet each draw completes it
     assert set(result.completions["t2"]) <= set(T2.class_slugs)
+    # the provenance names the scoring source and the data versions it read (what tasha.load_completed checks)
+    versions = result.provenance["versions"]
+    assert result.provenance["source"] == "test.chain" and versions["data"] == "chain" and set(versions["features"]) == {"t1", "t2"}
+    # and each bundle's identity: its training source and data, its file's sha256 (none for a bundle handed in)
+    assert {key: result.provenance["bundles"]["t1"][key] for key in ("training_source", "sha256")} == {"training_source": T1.source, "sha256": None}
 
 
 def test_arms_and_marginalized_features_are_joined_over_a_rows_scenarios(chain_source):
@@ -228,6 +235,18 @@ def test_derive_steps_draw_from_streams_of_their_own(chain_source):
     pd.testing.assert_frame_equal(run(), completions)                                                # seeded
     draws = np.random.default_rng(3).random(len(completions))                                         # the chain's own stream
     assert not np.allclose(completions["a"], completions["b"]) and not np.allclose(completions["a"], draws)
+
+
+def test_derive_steps_add_columns_of_their_own(chain_source):
+    # a derive step may not overwrite what the completions hold; levels declared as YAML numbers are labels
+    context, bundles = chain_source
+    again = lambda completions, base, config: pd.DataFrame({"t1": completions["t1"]})
+    with pytest.raises(ValueError, match="gives t1, which the completions already hold"):
+        run_chain(chain(["t1", {"derive": "again"}], propagation="draws", draws=2), context=context, bundles=bundles, specs=SPECS, derive_functions={"again": again})
+    number = lambda completions, base, config: pd.DataFrame({"n": np.where(completions["t1"].eq("a"), "1", "2")})
+    result = run_chain(chain(["t1", {"derive": "number", "levels": {"n": [1, 2]}}], propagation="draws", draws=2), context=context, bundles=bundles,
+                       specs=SPECS, derive_functions={"number": number})
+    np.testing.assert_allclose(result.frame["prob_n_1"] + result.frame["prob_n_2"], 1.0)
 
 
 def test_parallel_chain_scores_each_task_alone_and_derives_per_completion(chain_source):
@@ -280,6 +299,8 @@ def test_chain_validation():
     with pytest.raises(ValueError, match=r"expected score of \['t2'\], which declare no target scores"):
         chain(["t1", "t2", {"derive": "pair"}], mode="parallel", propagation="expected")
     chain(["t1", {"derive": "points"}, "t2"], propagation="expected")      # t2's value is read by no later step
+    with pytest.raises(ValueError, match="draws 0 is not a number of imputations"):
+        chain(["t1"], propagation="draws", draws=0)
 
 
 def test_undeclared_levels_fail_and_runs_are_written(chain_source, tmp_path):
@@ -375,6 +396,8 @@ def test_diagnostics_of_a_task_chain(diagnostics_on_synthetic_tasks, tmp_path):
     assert ((mi["ci_low"] <= mi["estimate"]) & (mi["estimate"] <= mi["ci_high"])).all()
     out = diagnostics.write_evaluation(tables, summary, tmp_path / "t")
     assert (out / "multiple_imputation.parquet").exists() and (out / "summary.json").exists()
+    with pytest.raises(ValueError, match="no evaluation: section"):
+        diagnostics.evaluate_chain(chain(["t1"]), retrained=None, context=context)
 
 
 def test_diagnostics_of_a_distribution_chain(diagnostics_on_synthetic_tasks, monkeypatch):
@@ -443,7 +466,7 @@ def test_given_features_enter_per_completion(chain_source):
         same = run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=own)
         pd.testing.assert_frame_equal(same.completions.drop(columns="u2"), plain.completions)
         pd.testing.assert_frame_equal(same.frame[plain.frame.columns], plain.frame)
-        assert same.provenance["given"] == ["u2"] and {"prob_u2_p", "prob_u2_q"} <= set(same.frame.columns)
+        assert same.provenance["given_columns"] == ["u2"] and {"prob_u2_p", "prob_u2_q"} <= set(same.frame.columns)
         flipped = own.copy()
         changed = (flipped["completion"] == 1).to_numpy()
         flipped.loc[changed, "u2"] = flipped.loc[changed, "u2"].map({"p": "q", "q": "p"})
@@ -459,3 +482,7 @@ def test_given_features_enter_per_completion(chain_source):
         run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=own[own["completion"] == 0])
     with pytest.raises(ValueError, match="does not declare"):
         run_chain(spec, context=context, bundles=bundles, specs=SPECS, given=own[own["completion"] < 2].assign(u2="r"))
+    # a feature an upstream task fills is the chain's own: a given value would replace the upstream's unannounced
+    filled = chain(["t1", {"t3": {"uses": {"t1": {"as": "u1", "transform": U1}}}}], propagation="draws", draws=2)
+    with pytest.raises(ValueError, match=r"given columns \['u1'\] clash"):
+        run_chain(filled, context=context, bundles=bundles, specs=SPECS, given=own[own["completion"] < 2].assign(u1="ua"))

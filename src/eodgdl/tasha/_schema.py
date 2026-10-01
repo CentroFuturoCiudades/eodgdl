@@ -233,10 +233,13 @@ def imputed_lookups(entry):
     ``values``, or the entry's where it has no ``source``) and an ``override``'s."""
     found = []
     imputed = entry.get("imputed")
+    override = entry.get("override") or {}
+    for label, lookup in (("imputed", imputed), ("override imputed", override.get("imputed"))):
+        if lookup and not {"pipeline", "column"} <= set(lookup):
+            raise ValueError(f"{label} names {sorted(lookup)}: it needs a pipeline and a column ({{pipeline: tasha, column: ...}})")
     if imputed:
         values = imputed.get("values", entry.get("values") if entry.get("source") is None else None) or {}
         found.append(("imputed", imputed["pipeline"], imputed["column"], values))
-    override = entry.get("override") or {}
     if override.get("imputed"):
         found.append(("override imputed", override["imputed"]["pipeline"], override["imputed"]["column"], override.get("values") or {}))
     return found
@@ -271,8 +274,12 @@ def completed_levels(pipeline, column):
 
 def _check_imputed(table, column, entry):
     """Every imputed lookup names a pipeline output and only keys its levels can take."""
+    try:
+        lookups = imputed_lookups(entry)
+    except ValueError as error:
+        return [f"{table}.{column}: {error}"]
     problems = []
-    for label, pipeline, name, values in imputed_lookups(entry):
+    for label, pipeline, name, values in lookups:
         try:
             levels = completed_levels(pipeline, name)
         except (KeyError, FileNotFoundError, ValueError) as error:
@@ -316,7 +323,10 @@ def check_mappings():
                 continue
             produced = set((entry.get("values") or {}).values())
             produced |= set(((entry.get("override") or {}).get("values") or {}).values())
-            produced |= {code for _, _, _, values in imputed_lookups(entry) for code in values.values()}
+            try:
+                produced |= {code for _, _, _, values in imputed_lookups(entry) for code in values.values()}
+            except ValueError:   # a malformed imputed lookup, which _check_imputed has named
+                pass
             for key in ("default", "constant"):
                 if key in entry:
                     produced.add(entry[key])

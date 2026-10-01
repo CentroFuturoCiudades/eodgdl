@@ -2,7 +2,9 @@
 
 Imports nothing from the rest of the package: the point is that the files stand on their
 own. Every problem is a string; the list is empty when the set is loadable and every
-constraint is feasible.
+constraint is feasible. Attributes are read as numbers, not 0/1 flags: the tool parses
+every non-key column with float.Parse and sums weight x value, so a fractional attribute
+(the imputed Employed) counts as that fraction of a record.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ KEYS = {
     "persons": ("PersonRecords.csv", ["PersonID", "HouseholdID"]),
     "trips": ("TripRecords.csv", ["HouseholdID", "PersonID"]),
 }
+TOLERANCE = 1e-6   # float32's resolution at 1, the tool's attribute precision
 PARTITIONS = {
     "persons": [
         (["Male", "Female"], "Persons", "=="),
@@ -97,7 +100,9 @@ def check(out_dir):
             if not all(c in df.columns for c in parts + [total]):
                 continue
             s = df[parts].sum(axis=1)
-            bad = ~(s == df[total]) if op == "==" else ~(s <= df[total])
+            # attributes are floats (the tool parses them as float32): an imputed probability
+            # and its complement sum to 1 only up to rounding
+            bad = ~((s - df[total]).abs() <= TOLERANCE) if op == "==" else ~(s <= df[total] + TOLERANCE)
             if bad.any():
                 problems.append(f"{KEYS[table][0]}: {'+'.join(parts)} {op} {total} fails on {int(bad.sum())} rows")
 

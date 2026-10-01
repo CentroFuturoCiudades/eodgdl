@@ -11,10 +11,10 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    fetch_p = sub.add_parser("fetch", help="Pre-download data files from the mirror")
+    fetch_p = sub.add_parser("fetch", help="Pre-download data files and model bundles from the mirror")
     fetch_p.add_argument(
         "--dataset",
-        choices=["survey", "zones", "all"],
+        choices=["survey", "zones", "models", "all"],
         default="all",
         help="Which file group to fetch (default: all)",
     )
@@ -101,6 +101,21 @@ def main() -> None:
     rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
+    ri_p = rew_sub.add_parser("import-weight", help="Bring TMG.SurveyReweight's household weight into the data, with its sidecar")
+    ri_p.add_argument("updated", help="The tool's UpdatedExpansionFactorsFile (one UpdatedExpansionFactor per household record)")
+    ri_p.add_argument("--year", type=int, required=True, help="The constraint set it was fitted to (2020 or 2023)")
+    ri_p.add_argument("--reweight", default="output/reweight", help="The reweight set handed over (default: output/reweight/)")
+    ri_p.add_argument("--data", default="data", help="Where to write the weight and its sidecar (default: data/)")
+    ri_p.add_argument("--tool-commit", default=None, help="TMG.SurveyReweight's commit, if known")
+    ri_p.add_argument("--configuration", default=None, help="The exported model system (.xmsys), if handed back")
+    ri_p.add_argument("--report", default=None, help="The tool's ConstraintReportFile, if handed back")
+    ri_p.add_argument("--notes", default=None, help="Anything else known about the run")
+
+    pipe_p = sub.add_parser("pipeline", help="The whole processing: verify the stages' manifests")
+    pipe_sub = pipe_p.add_subparsers(dest="pipeline_cmd", required=True)
+    pv_p = pipe_sub.add_parser("verify", help="Walk every manifest under ROOT and TMG's weight sidecar; list every broken link")
+    pv_p.add_argument("root", nargs="?", default="output", help="Where the stages wrote (default: output/)")
+    pv_p.add_argument("--data", default=None, help="The data directory holding the weight sidecar (default: $EODGDL_DATA_DIR)")
 
     imp_p = sub.add_parser("impute", help="Imputation tasks, chains and pipelines (eodgdl.impute): score, retrain, evaluate, compare")
     imp_sub = imp_p.add_subparsers(dest="impute_cmd", required=True)
@@ -129,7 +144,8 @@ def main() -> None:
     imp_sub.choices["score"].add_argument("--bootstrap", action="store_true",
                                           help="For a chain: draw each imputation's models from the tasks' bootstrap bundles under --retrained (uncertainty: bootstrap; needs draws)")
     imp_sub.choices["score"].add_argument("--no-aggregate", action="store_true",
-                                          help="For a pipeline: leave the drawn values out of its aggregates (each level then reproduces its chain alone: the parity check)")
+                                          help="For a pipeline: leave the drawn values out of its aggregates (each level then reproduces its chain alone: the parity "
+                                               "check); written to <out> (default: output/impute/<pipeline>/no_aggregate/, apart from what tasha build reads)")
     imp_sub.choices["evaluate"].add_argument("--out", default=None, help="Directory (default: <retrained>/<chain>/); tables go to <out>/evaluation/")
     imp_cmp = imp_sub.choices["compare"]
     imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
@@ -140,9 +156,9 @@ def main() -> None:
 
     if args.cmd == "fetch":
         from eodgdl.data import POOCH
-        from eodgdl.data._catalog import FILES, SURVEY_FILES, ZONE_FILES
+        from eodgdl.data._catalog import FILES, MODEL_FILES, SURVEY_FILES, ZONE_FILES
 
-        fnames = {"survey": SURVEY_FILES, "zones": ZONE_FILES, "all": FILES}[args.dataset]
+        fnames = {"survey": SURVEY_FILES, "zones": ZONE_FILES, "models": MODEL_FILES, "all": FILES}[args.dataset]
         for fname in fnames:
             path = POOCH.fetch(fname, progressbar=True)
             print(f"  {fname} → {path}")
@@ -150,12 +166,14 @@ def main() -> None:
 
     elif args.cmd == "info":
         from eodgdl.data._paths import get_pooch_cache_dir
-        from eodgdl.data._registry import _BASE_URL
+        from eodgdl.data._registry import _BASE_URL, _MODELS_URL
 
         print(f"Cache directory : {get_pooch_cache_dir()}")
         print(f"Mirror base URL : {_BASE_URL}")
+        print(f"Models URL      : {_MODELS_URL}")
         print("Overrides: $EODGDL_CACHE_DIR (cache), $EODGDL_DATA_DIR (local data dir),")
-        print("           $EODGDL_BASE_URL (mirror base).")
+        print("           $EODGDL_MODELS_DIR (local models dir; default: models/ beside the data dir),")
+        print("           $EODGDL_BASE_URL (mirror base), $EODGDL_MODELS_URL (models base).")
 
     elif args.cmd == "tasha":
         raise SystemExit(_tasha(args))
@@ -168,6 +186,11 @@ def main() -> None:
 
     elif args.cmd == "impute":
         raise SystemExit(_impute(args))
+
+    elif args.cmd == "pipeline":
+        from eodgdl.manifest import verify
+
+        raise SystemExit(_report(verify(args.root, args.data), "every stage's outputs, inputs and upstream links hold"))
 
 
 def _report(problems: list[str], ok_message: str) -> int:
@@ -209,8 +232,12 @@ def _tasha(args) -> int:
         return 0
 
     if args.tasha_cmd == "build":
+        import os
+
         from eodgdl import load_eod
 
+        if args.data:   # the survey load_completed checks the completed datasets against: the one built from
+            os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
         completed = None if args.no_impute else tasha.load_completed(args.impute, args.draw)
@@ -219,15 +246,28 @@ def _tasha(args) -> int:
             path = out / f"od_{table}{args.suffix}.csv"
             df.to_csv(path, index=False)
             print(f"wrote {path}  ({len(df):,} rows)")
+        path = out / f"od_provenance{args.suffix}.json"
         if completed is not None:
             import json
 
             # which completed dataset filled the imputed columns, and the bundles behind it
             provenance = {"impute_root": str(args.impute), "draw": args.draw,
                           "pipelines": {pipeline: next(iter(levels.values())).attrs["provenance"] for pipeline, levels in completed.items()}}
-            path = out / f"od_provenance{args.suffix}.json"
             path.write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"wrote {path}  (draw {args.draw} of {', '.join(completed)})")
+        elif path.exists():   # an imputed build's record, which these tables no longer are
+            path.unlink()
+            print(f"removed {path}  (the tables take the mappings' defaults)")
+        from eodgdl.data import SURVEY_FILES, resolve
+        from eodgdl.impute.sources.eod import survey_versions
+        from eodgdl.manifest import MANIFEST, write_manifest
+
+        tables = [out / f"od_{table}{args.suffix}.csv" for table in tasha.tables()] + ([path] if completed is not None else [])
+        upstream = {pipeline: Path(args.impute) / pipeline for pipeline in (completed or {})}
+        path = write_manifest(out, "tasha_build", inputs={name: resolve(name) for name in SURVEY_FILES}, upstream=upstream,
+                              parameters={"draw": None if completed is None else args.draw, "suffix": args.suffix},
+                              versions=survey_versions(), outputs=tables, name=f"od{args.suffix}_{MANIFEST}")
+        print(f"wrote {path}")
         print()
         _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")
@@ -372,13 +412,26 @@ def _reweight(args) -> int:
     from eodgdl import reweight
 
     if args.reweight_cmd == "build":
+        import os
+        from pathlib import Path
+
         from eodgdl import load_eod
 
+        if args.data:   # the imputed attributes' model file: models/ beside the data directory
+            os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         files = reweight.build(load_eod(args.data), data_dir=args.data)
-        for path in reweight.write(files, args.out):
+        for path in reweight.write(files, args.out, data_dir=args.data):
             print(f"wrote {path}")
         print()
         return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
+
+    if args.reweight_cmd == "import-weight":
+        from eodgdl.reweight.weight import import_weight
+
+        for path in import_weight(args.updated, args.reweight, args.data, args.year, tool_commit=args.tool_commit,
+                                  configuration=args.configuration, report=args.report, notes=args.notes):
+            print(f"wrote {path}")
+        return 0
 
     return _report(reweight.check(args.directory), "the set is loadable and every constraint is feasible")
 
@@ -391,7 +444,7 @@ def _impute(args) -> int:
         os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
     from eodgdl.impute import run
     from eodgdl.impute.chain import is_chain, load_chain, retrain_chain, run_chain, write_chain
-    from eodgdl.impute.pipeline import is_pipeline, load_pipeline, retrain_pipeline, run_pipeline, write_pipeline
+    from eodgdl.impute.pipeline import is_pipeline, load_pipeline, retrain_pipeline, run_pipeline, write_pipeline, write_pipeline_manifest
     from eodgdl.impute.sources import Context
     from eodgdl.impute.spec import load_task
 
@@ -409,9 +462,11 @@ def _impute(args) -> int:
     if is_pipeline(args.task) and args.impute_cmd in ("score", "retrain"):
         pipeline = load_pipeline(args.task)
         if args.impute_cmd == "score":
-            out = Path(args.out or f"output/impute/{pipeline.name}")
+            # with the aggregates off, not a completed dataset to build from: apart from what tasha build reads
+            out = Path(args.out or f"output/impute/{pipeline.name}" + ("/no_aggregate" if args.no_aggregate else ""))
             result = run_pipeline(pipeline, context=context, retrained=args.retrained, draws=args.draws, aggregate=not args.no_aggregate)
             write_pipeline(result, out)
+            write_pipeline_manifest(result, out, args.retrained)
             sizes = ", ".join(f"{name} {len(level.frame):,} rows" for name, level in result.levels.items())
             print(f"{pipeline.name} ({result.provenance['draws']} draws, aggregate {'on' if result.provenance['aggregate'] else 'off'}): {sizes}; wrote {out}")
         else:
@@ -422,10 +477,10 @@ def _impute(args) -> int:
         chain = load_chain(args.task)
         if args.impute_cmd == "score":
             default = f"output/impute/{chain.name}"
-            if args.draws or args.bootstrap:
+            if args.draws is not None or args.bootstrap:
                 from eodgdl.impute.chain import parse_chain
 
-                changed = {**({"propagation": "draws", "draws": args.draws} if args.draws else {}), **({"uncertainty": "bootstrap"} if args.bootstrap else {})}
+                changed = {**({"propagation": "draws", "draws": args.draws} if args.draws is not None else {}), **({"uncertainty": "bootstrap"} if args.bootstrap else {})}
                 chain, default = parse_chain({**chain.raw, **changed}), f"{default}/multiple_imputation"
             out = Path(args.out or default)
             result = run_chain(chain, context=context, retrained=args.retrained)
@@ -450,11 +505,12 @@ def _impute(args) -> int:
         if args.bootstrap:
             paths = run.write_bootstrap(spec, run.bootstrap_bundles(spec, result.bundle, args.bootstrap, context=context, n_jobs=args.jobs), Path(args.out) / spec.name)
             print(f"wrote {len(paths)} bootstrap bundles to {paths[0].parent}")
+        run.write_retrain_manifest(spec, Path(args.out) / spec.name, args.bootstrap)
         for arm, entry in result.summary["arms"].items():
             chosen = entry["selected"]
             print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "
                   f"held-out {entry['test_metrics']['weighted_log_loss']:.4f}")
-        print(f"wrote {path} (sha256 {digest}); to install it, copy it under data/ and update src/eodgdl/data/registry.txt")
+        print(f"wrote {path} (sha256 {digest}); to install it, copy it under models/ and update src/eodgdl/data/registry.txt")
         return 0
     import yaml
 

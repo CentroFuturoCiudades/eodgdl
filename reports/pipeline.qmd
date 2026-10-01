@@ -1,0 +1,195 @@
+---
+title: "The processing pipeline"
+subtitle: "From the shipped survey to the TASHA tables, the reweighting by TMG.SurveyReweight included: the stages, what each recorded, and the one-pass compromise measured"
+author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
+date: today
+lang: en
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    tbl-cap-location: top
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import json
+import os
+from pathlib import Path
+
+
+def _find_root() -> Path:
+    """Walk up from the working dir to the repository (the directory holding data/)."""
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        if (base / "data" / "IMEPLAN_Base_Viviendas_Master.csv").exists():
+            return base.resolve()
+    raise FileNotFoundError("Could not locate the eodgdl repository.")
+
+
+ROOT = _find_root()
+os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
+DATA = Path(os.environ["EODGDL_DATA_DIR"])
+RUN = Path(os.environ.get("EODGDL_PIPELINE_ROOT", ROOT / "output"))     # where the stages wrote (scripts/pipeline/run.sh ROOT)
+REWEIGHT = RUN / "reweight"
+assert (REWEIGHT / "manifest.json").exists(), f"No reweight inputs with a manifest at {REWEIGHT}: run `uv run eodgdl reweight build --data data`."
+
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+
+from eodgdl.manifest import read_manifest, verify
+from eodgdl.reweight.weight import WEIGHT_CSV, read_sidecar
+
+fmt = lambda x: f"{x:,.0f}"
+```
+
+This report reads what a run of the processing wrote under ``{python} str(RUN.relative_to(ROOT)) if RUN.is_relative_to(ROOT) else str(RUN)``
+and checks it. The plan and its decisions are in `docs/handoff_reproducible_pipeline.md`; the reference for each stage
+is `docs/pipeline.md`. Nothing here trains or scores a model.
+
+# The stages
+
+```{mermaid}
+flowchart LR
+  S0["0 · load_eod()<br/>survey + revisions"] --> S1["1 · empleo<br/>design weight"]
+  S1 --> S2["2 · reweight inputs<br/>output/reweight"]
+  S0 --> S2
+  S2 --> S3["3 · TMG.SurveyReweight<br/>(external)"]
+  S3 --> S4["4 · every task retrained<br/>TMG weight"]
+  S0 --> S4
+  S4 --> S5["5 · pipeline tasha<br/>50 draws"]
+  S5 --> S6["6 · TASHA build"]
+```
+
+| stage | weight | writes | manifest |
+|---|---|---|---|
+| 0. load | — | nothing | its `versions` in every later manifest |
+| 1. employment before reweighting | design | inside stage 2 | stage 2's `inputs` (the bundle's sha256) |
+| 2. reweight inputs | — | `reweight/` | `reweight/manifest.json` |
+| 3. household weight | — | `data/EOD_peso_hogar_TMG.csv` | its sidecar `EOD_peso_hogar_TMG.yaml` |
+| 4. final models | TMG | `impute/<task>/` | `impute/<task>/manifest.json` |
+| 5. completed datasets | TMG | `impute/tasha/` | `impute/tasha/manifest.json` |
+| 6. TASHA tables | TMG | `od_*.csv` | `od_manifest.json` |
+
+# What the run recorded {#sec-manifests}
+
+```{python}
+#| label: manifests
+manifests = sorted(RUN.rglob("manifest.json")) + sorted(RUN.rglob("*_manifest.json"))
+rows = []
+for path in manifests:
+    m = read_manifest(path)
+    rows.append({"stage": m["stage"], "where": str(path.parent.relative_to(RUN)) or ".", "commit": (m["code"]["commit"] or "")[:9],
+                 "dirty": m["code"]["dirty"], "eodgdl": m["code"]["eodgdl"], "outputs": len(m["outputs"]),
+                 "upstream": ", ".join(sorted(m["upstream"])) or "—", "outputs digest": m["outputs_digest"][:12]})
+manifest_table = pd.DataFrame(rows)
+problems = verify(RUN, DATA)
+assert problems == [], "\n".join(problems)          # every output, input and upstream link holds
+STAGES = set(manifest_table["stage"])
+manifest_table
+```
+
+`eodgdl pipeline verify` finds every recorded output, input and upstream link intact: `{python} len(manifests)`
+manifest(s), stages `{python} ", ".join(sorted(STAGES))`. A manifest links to an upstream stage by the digest of its
+outputs, so a rebuild that reproduces the same files keeps the link, and one that does not breaks it.
+
+# Stage 1: employment before reweighting {#sec-stage1}
+
+```{python}
+#| label: stage1
+persons = pd.read_csv(REWEIGHT / "PersonRecords.csv")
+fractional = persons[(persons.Employed > 0) & (persons.Employed < 1)]
+assert len(fractional) == 4_370                                  # the unanswered, and nobody else
+assert np.allclose(fractional.Employed + fractional.NotEmployed, 1.0, atol=1e-12)
+reweight_manifest = read_manifest(REWEIGHT)
+bundle = reweight_manifest["inputs"]["od_empleo_design_model.joblib"]
+assert bundle["sha256"] == "247d18fc175b98ebd0698648af6cb36dda671a822205889925141a815f6e97f2"   # v0.9.0's empleo bundle
+
+p, w = fractional.Employed, fractional.ExpansionFactor
+quantiles = p.quantile([0.1, 0.25, 0.5, 0.75, 0.9]).round(3)
+weighted_share = float((p * w).sum() / w.sum())
+
+diagnostic = pd.read_csv(REWEIGHT / "Constraints" / "diagnostic_2020.csv")
+activity = diagnostic[diagnostic.target_column.isin(["Employed", "NotEmployed"])].groupby("target_column")[["target", "survey_at_design_weight"]].sum()
+# the diagnostic expands persons at their dwelling's weight (viv.ponderador), as the tool expands them at the household's
+dwelling_weight = persons.HouseholdID.map(pd.read_csv(REWEIGHT / "HouseholdRecords.csv").set_index("HouseholdID").ExpansionFactor)
+answered_only = float((persons.Employed.where(persons.Employed == 1, 0) * dwelling_weight).sum())
+activity["as non-workers"] = [answered_only, float(activity[["survey_at_design_weight"]].sum().iloc[0] - answered_only)]
+assert round(answered_only) == 2_252_572                          # the set before stage 1 (output/reweight/README.md)
+activity["ratio"] = activity.survey_at_design_weight / activity.target
+activity["ratio as non-workers"] = activity["as non-workers"] / activity.target
+assert round(activity.loc["Employed", "survey_at_design_weight"]) == 2_366_943
+```
+
+The 4,370 persons aged 16+ who did not answer the activity question enter the reweight records with their probability
+of working from `od_empleo_design_model.joblib` (sha256 `{python} bundle["sha256"][:12]`…, read from
+`{python} bundle["path"]`): median `{python} f"{quantiles[0.5]:.3f}"`, from `{python} f"{quantiles[0.1]:.3f}"` (10th
+percentile) to `{python} f"{quantiles[0.9]:.3f}"` (90th), `{python} f"{weighted_share:.1%}"` working at the person design
+weight (`hab.ponderador`). The tool reads attributes as floats and sums weight × value, so each counts as that fraction of a worker.
+
+```{python}
+#| label: tbl-activity
+#| tbl-cap: "The activity targets of the 2020 set against the survey at its design weight (`viv.ponderador`), with the unanswered by their probability of working and, before stage 1, as non-workers."
+activity.rename(columns={"survey_at_design_weight": "survey"}).round(3).style.format({"target": fmt, "survey": fmt, "as non-workers": fmt, "ratio": "{:.3f}", "ratio as non-workers": "{:.3f}"})
+```
+
+# Stage 3: the weight {#sec-stage3}
+
+```{python}
+#| label: stage3
+sidecar = read_sidecar(DATA)
+WEIGHT = sidecar is not None
+text = ("The TMG weight has not come back yet: stages 4–6 below wait for it. `scripts/pipeline/run.sh` stops at stage 3 "
+        "and names what to hand over and what must come back.") if not WEIGHT else (
+        f"`{WEIGHT_CSV}` (sha256 `{sidecar['weight_sha256'][:12]}`…) was fitted on the reweight inputs with outputs digest "
+        f"`{sidecar['reweight_inputs']['outputs_digest'][:12]}`… (commit `{(sidecar['reweight_inputs']['commit'] or '')[:9]}`), constraint set "
+        f"{sidecar['reweight_inputs']['constraint_year']}; the tool's commit: {sidecar['tool']['commit'] or 'not recorded'}; configuration "
+        f"{'hashed' if sidecar['configuration_sha256'] else 'not handed back'}; constraint report {'hashed' if sidecar['constraint_report_sha256'] else 'not handed back'}. "
+        "The check above holds, so these are the inputs written now.")
+display(Markdown(text))
+```
+
+# The one-pass compromise {#sec-one-pass}
+
+```{python}
+#| label: one-pass
+EMPLEO = RUN / "impute" / "empleo"
+stage4 = None
+if WEIGHT and (EMPLEO / "manifest.json").exists():
+    from eodgdl.impute.bundle import training_weight
+    import joblib
+
+    stage4 = joblib.load(EMPLEO / "od_empleo_model.joblib")
+    if training_weight(stage4["metadata"]) != sidecar["weight_sha256"]:
+        stage4 = None
+if stage4 is None:
+    display(Markdown("Stage 4 has not run on the TMG weight yet. When it has, this section compares the two `empleo` "
+                     "models on the 4,370 unanswered (shares, and the `Employed` total each implies under the TMG weight) "
+                     "and `scripts/impute/parity.py` between the design-weight and the TMG-weight roots measures what the "
+                     "weight moved in every task's drawn shares and held-out metrics."))
+else:
+    from eodgdl.data import resolve
+    from eodgdl.impute.run import score_task
+
+    keys = ["folio_vivienda", "folio_habitante"]
+    design = score_task("empleo", path=resolve("od_empleo_design_model.joblib")).set_index(keys)["prob_situacion_laboral_trabaja"]
+    final = score_task("empleo", bundle=stage4).set_index(keys)["prob_situacion_laboral_trabaja"]
+    weights = pd.read_csv(DATA / WEIGHT_CSV).set_index("folio_vivienda")["peso"]
+    unanswered = pd.MultiIndex.from_arrays([fractional.PersonID // 10, fractional.PersonID % 10], names=keys)
+    tmg = weights.reindex(unanswered.get_level_values(0)).to_numpy()
+    compare = pd.DataFrame({"stage 1 (design)": design.reindex(unanswered).to_numpy(), "stage 4 (TMG)": final.reindex(unanswered).to_numpy()})
+    summary = pd.DataFrame({"mean": compare.mean(), "employed at the TMG weight": (compare.mul(tmg, axis=0)).sum()})
+    display(summary.round(3))
+```

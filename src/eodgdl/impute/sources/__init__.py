@@ -3,7 +3,13 @@ column) in the source's configuration, and the :class:`Context` a run shares (th
 cache).
 
 A source is registered with :func:`register_source` in a module listed in ``SOURCE_MODULES``; its configuration is
-the entry of the same name in that module's YAML (``keys``, ``weight``, ``group`` and whatever the builder reads)."""
+the entry of the same name in that module's YAML (``keys``, ``weight``, ``group`` and whatever the builder reads).
+
+A source's ``weight`` names a column of its rows (``weight: ponderador``, the survey's design weight) or a column of a
+weight file under the data directory, joined on a key (``weight: {file: EOD_peso_hogar_TMG.csv, column: peso,
+key: folio_vivienda}``; ``key`` defaults to ``folio_vivienda``): every row must find its weight there, and the file's
+sha256 is one of the source's data ``versions`` (:meth:`Source.data_versions`), so the feature cache, a bundle's
+training data version and :func:`changed_versions` all move when the weight's values do."""
 
 import functools
 import hashlib
@@ -42,7 +48,13 @@ class Source:
 
     @property
     def weight(self):
-        return self.config["weight"]
+        """The weight column of the source's rows (a weight file's column joins them under its own name)."""
+        weight = self.config["weight"]
+        return weight if isinstance(weight, str) else weight["column"]
+
+    def data_versions(self, context):
+        """The data versions the source's rows depend on: its own (``versions``) and its weight file's sha256."""
+        return {**self.versions(context, self.config), **weight_versions(self.config)}
 
     @property
     def group(self):
@@ -64,6 +76,78 @@ def get_source(name):
     if name not in _SOURCES:
         raise ValueError(f"No source {name!r}; known: {sorted(_SOURCES)}")
     return _SOURCES[name]
+
+
+def changed_versions(name, recorded, context=None):
+    """The data versions of source ``name`` that now differ from ``recorded`` (what a run recorded: a chain's
+    ``provenance["versions"]``), the eodgdl version aside (it moves with every release, the data only when they do): an
+    empty list when the run read the data the source reads now."""
+    source = get_source(name)
+    current = source.data_versions(context or Context())
+    return sorted(key for key in current if key != "eodgdl" and recorded.get(key) != current[key])
+
+
+def weight_file(config):
+    """The weight file a source configuration names, ``{file, column, key}``, or None where ``weight`` is a column of
+    the source's own rows."""
+    weight = config["weight"]
+    if isinstance(weight, str):
+        return None
+    unknown = set(weight) - {"file", "column", "key"}
+    if unknown or not {"file", "column"} <= set(weight):
+        raise ValueError(f"a weight file is {{file, column, key}} (key optional); got {weight}")
+    return {"key": "folio_vivienda", **weight}
+
+
+def weight_versions(config):
+    """``{"weight": sha256}`` of the weight file a source configuration names, or nothing (a column of its rows: the
+    survey files' versions already cover it)."""
+    weight = weight_file(config)
+    if weight is None:
+        return {}
+    from eodgdl.data import resolve
+
+    return {"weight": file_digest(str(resolve(weight["file"])))}
+
+
+def with_weight(frame, config):
+    """``frame`` with the weight column of the weight file ``config`` names joined on its key (unchanged where the
+    weight is a column of the rows). Fails where the file repeats a key, holds a weight that is not a positive number,
+    leaves a row without a weight, or names a column the rows already hold."""
+    import numpy as np
+    import pandas as pd
+
+    weight = weight_file(config)
+    if weight is None:
+        return frame
+    from eodgdl.data import resolve
+
+    path, key, column = resolve(weight["file"]), weight["key"], weight["column"]
+    sidecar = path.with_suffix(".yaml")       # TMG's weight records its own sha256 (eodgdl.reweight.weight)
+    if sidecar.exists():
+        from ..spec import read_yaml
+
+        recorded = read_yaml(sidecar).get("weight_sha256")
+        if recorded is not None and recorded != file_digest(str(path)):
+            raise ValueError(f"{path.name}: not the weight its sidecar {sidecar.name} records")
+    table = pd.read_csv(path)
+    missing = {key, column} - set(table.columns)
+    if missing:
+        raise ValueError(f"{path.name}: no column {sorted(missing)}")
+    if column in frame.columns:
+        raise ValueError(f"{path.name}: the weight column {column!r} is already a column of the source's rows")
+    if table[key].duplicated().any():
+        raise ValueError(f"{path.name}: {int(table[key].duplicated().sum())} repeated {key} values")
+    values = pd.to_numeric(table[column], errors="coerce")
+    if not (np.isfinite(values) & (values > 0)).all():
+        raise ValueError(f"{path.name}: {int((~(np.isfinite(values) & (values > 0))).sum())} weights that are not positive numbers")
+    table = pd.DataFrame({key: table[key].astype(frame[key].dtype), column: values.astype(float)})
+    joined = frame.merge(table, on=key, how="left", validate="many_to_one")
+    unweighted = joined[column].isna()
+    if unweighted.any():
+        examples = ", ".join(map(str, joined.loc[unweighted, key].drop_duplicates().head(5)))
+        raise ValueError(f"{path.name}: no weight for {int(unweighted.sum())} rows (e.g. {key} {examples})")
+    return joined
 
 
 def module_config(module_file):

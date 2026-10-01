@@ -278,7 +278,9 @@ comparison.mul(100).round(1)
 
 ```{python}
 #| label: completion
+from eodgdl.impute.chain import derive_config
 from eodgdl.impute.derive import get_derive
+from eodgdl.impute.sources import get_source
 
 # AMAI's points for an incomplete and a complete level (the AMAI 2022 rule's questionnaire), and ENIGH's codes
 PAIRS = {"primaria": ("03", "04", 6), "secundaria": ("05", "06", 12), "preparatoria": ("07", "08", 23), "licenciatura": ("09", "10", 36)}
@@ -302,11 +304,11 @@ def rederived(points):
     try:
         for index, step in enumerate(CHAIN.steps):
             if hasattr(step, "name"):
-                values = get_derive(step.name)(frame, dwellings, {**step.config, "propagation": CHAIN.propagation, "seed": np.random.SeedSequence(CHAIN.seed, spawn_key=(index,))})
+                values = get_derive(step.name)(frame, dwellings, derive_config(step, index, CHAIN, get_source("eod.dwellings").weight))
                 frame[values.columns] = values.to_numpy()
     finally:
         amai._task_points = original
-    weights = dwellings["ponderador"].to_numpy()[frame["row"].to_numpy()] * frame["weight"].to_numpy()
+    weights = dwellings[get_source("eod.dwellings").weight].to_numpy()[frame["row"].to_numpy()] * frame["weight"].to_numpy()
     return {column: pd.Series(weights, index=frame[column].astype(str)).groupby(level=0).sum().reindex(LEVELS) / weights.sum() for column in ("nse", "nse_calibrado")}
 
 

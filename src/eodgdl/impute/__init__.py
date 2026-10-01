@@ -7,7 +7,7 @@ declared category levels, missing label, classes and column names come from the 
 The workflow: a **task** (``impute/tasks/<task>.yaml``) is trained (``run.retrain`` + ``run.write_retrain``, written to
 ``<root>/<task>/``), compared (``run.compare``) and scored (``run.score_task``); a **chain** (``impute/chains/<chain>.yaml``)
 scores its tasks in sequence (``chain.run_chain``) and is diagnosed (``diagnostics.evaluate_chain``). Every mode takes
-its bundles from ``bundle.load_bundle``: ``retrained=<root>`` reads a retrain's, else the installed data file.
+its bundles from ``bundle.load_bundle``: ``retrained=<root>`` reads a retrain's, else the installed model file (``models/``).
 
 - :mod:`~eodgdl.impute.spec`: task specs and their hashes, the YAML reader
 - :mod:`~eodgdl.impute.sources`, :mod:`~eodgdl.impute.features`: source frames, feature builders, the feature cache

@@ -1,6 +1,6 @@
 [project]
 name = "eodgdl"
-version = "0.8.0"
+version = "0.10.0"
 description = "IMEPLAN Guadalajara EOD 2023 origin-destination survey: loader, schemas, and TAZ zone tools"
 readme = "README.md"
 authors = [
@@ -32,9 +32,12 @@ notebook = [
     "colorcet>=3.1",
     "mxcensus>=0.1.0",
 ]
-# Extra for eodgdl.reweight: the census targets come from INEGI through mxcensus.
+# Extra for eodgdl.reweight: the census targets come from INEGI through mxcensus; the records' imputed employment
+# scores an eodgdl.impute bundle (scikit-learn, at the version the bundles were fitted under).
 reweight = [
-    "mxcensus>=0.1.0",
+    "mxcensus>=0.4.0",
+    "scikit-learn>=1.9.0",
+    "joblib>=1.5",
 ]
 # Extra for the imputation engine (eodgdl.impute) and the giro model on it (eodgdl.giro): scikit-learn pipelines,
 # DENUE and the census (for the zone system's units) through mxcensus.

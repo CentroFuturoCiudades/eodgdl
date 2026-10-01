@@ -10,7 +10,9 @@
 #   scripts/impute/rerun.sh ROOT [TASK ...]      (from the repository root; ~30 minutes for the seven tasks)
 #
 # TASK ...: the tasks to retrain (default: all seven). A task not retrained into ROOT scores from its installed bundle
-# in the chains (--retrained falls back to it); `evaluate sector_informality` needs giro's retrain in ROOT.
+# in the chains (--retrained falls back to it); `evaluate sector_informality` needs giro's retrain in ROOT. With
+# BOOTSTRAP > 0 the chains' multiple imputations and the pipeline read every one of their tasks' bootstrap bundles from
+# ROOT (an installed bundle has none): retrain a subset only into a ROOT that holds the other tasks' retrains.
 # Environment: DATA (default data), JOBS (the CV workers of a retrain, default -1: every core), BOOTSTRAP (the bootstrap
 # bundles per task, default 50; 0 writes none, and the chains' multiple imputations and the pipeline are then skipped).
 #

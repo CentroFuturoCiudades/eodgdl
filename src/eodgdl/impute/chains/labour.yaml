@@ -10,6 +10,7 @@ chain: labour
 mode: sequential
 propagation: draws
 draws: 50
+seed: 43                     # not nse's 42: the pipeline tasha draws both, and one seed would give both levels the same uniforms
 steps:
   - empleo:
       score_source: eod.labour

@@ -8,13 +8,14 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from eodgdl.data._catalog import CONAPO_CSV, VMRC_CSV
+from eodgdl.data._catalog import CENSUS_FILES, CONAPO_CSV, SURVEY_FILES, VMRC_CSV, ZONE_FILES
 from eodgdl.reweight._spec import constraint_index, load_spec
 from eodgdl.reweight.records import (
     build_households,
     build_people,
     build_trips,
     build_zones,
+    imputed_scores,
     record_geography,
 )
 from eodgdl.reweight.targets import (
@@ -55,12 +56,13 @@ def years():
 
 
 def build(tables, data_dir=None):
-    """Everything the tool reads, from `load_eod`'s tables and the census."""
+    """Everything the tool reads, from `load_eod`'s tables, the imputed attributes' models
+    (spec.yaml's `imputed`) and the census."""
     viv, hab, trips, legs = tables
     zone_system, zone_labels = build_zones(viv)
     records = ReweightFiles(
         zone_system, zone_labels,
-        build_households(viv), build_people(hab, trips, legs), build_trips(trips, legs),
+        build_households(viv), build_people(hab, trips, legs, imputed_scores(tables)), build_trips(trips, legs),
         {}, pd.DataFrame(), {}, pd.DataFrame(),
     )
     universe = census_universe(viv, trips)  # raises if the zone assignment disagrees with the survey
@@ -116,8 +118,9 @@ def diagnostic(records, constraints, index):
     return out[["file", "target_column", *geo_cols, "target", "survey_at_design_weight", "records", "ratio"]]
 
 
-def write(files, out_dir):
-    """Write the set under `out_dir`; returns the paths written."""
+def write(files, out_dir, data_dir=None):
+    """Write the set under `out_dir` with its manifest (:func:`write_manifest`); returns the
+    paths written."""
     out_dir = Path(out_dir)
     (out_dir / "Constraints").mkdir(parents=True, exist_ok=True)
     written = []
@@ -145,4 +148,25 @@ def write(files, out_dir):
     with resources.as_file(readme) as src:
         shutil.copy(src, out_dir / "README.md")
         written.append(out_dir / "README.md")
+    written.append(write_manifest(out_dir, data_dir, written))
     return written
+
+
+def write_manifest(out_dir, data_dir, outputs):
+    """Stage 2's manifest (eodgdl.manifest): the survey files, the zone polygons, the CONAPO /
+    VMRC / ENDUTIH tables and the imputed attributes' model files read, the survey's data versions, the
+    constraint years and the sha256 of `outputs`. The census comes through mxcensus, whose
+    version and registry the manifest's `environment` records."""
+    from eodgdl.data import resolve
+    from eodgdl.impute.sources.eod import survey_versions
+    from eodgdl.manifest import write_manifest as write
+    from eodgdl.reweight._spec import TABLES, attributes
+
+    local = lambda name: Path(data_dir) / name if data_dir is not None and (Path(data_dir) / name).exists() else resolve(name)
+    inputs = {name: local(name) for name in [*SURVEY_FILES, *ZONE_FILES, *CENSUS_FILES]}
+    for table in TABLES:
+        for entry in attributes(table).values():
+            if "imputed" in entry:
+                inputs[entry["imputed"]["bundle"]] = resolve(entry["imputed"]["bundle"])
+    return write(out_dir, "reweight_inputs", inputs=inputs, parameters={"years": list(years())},
+                 versions=survey_versions(), outputs=outputs)

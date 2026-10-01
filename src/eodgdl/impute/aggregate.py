@@ -29,18 +29,12 @@ def get_aggregate(name):
 
 
 def harmonized(frame, table, variable):
-    """``variable`` of ``impute/harmonization/<table>.yaml`` computed on ``frame`` with every definition it reads
-    (``from``, a ``column`` naming another variable), so a per-draw value takes the source's own bins and levels."""
-    from .harmonize import apply_variables, load_harmonization
+    """``variable`` of ``impute/harmonization/<table>.yaml`` computed on ``frame`` as the source computes it, with the
+    earlier definitions it reads (:func:`~eodgdl.impute.harmonize.needed_variables`), so a per-draw value takes the
+    source's own bins and levels."""
+    from .harmonize import apply_variables, load_harmonization, needed_variables
 
-    definitions = load_harmonization(table)["variables"]
-    order, pending = [], [variable]
-    while pending:
-        name = pending.pop()
-        order.insert(0, name)
-        definition = definitions[name]
-        pending += [read for read in (definition.get("from"), definition.get("column")) if read in definitions and read not in order]
-    return apply_variables(frame, {name: definitions[name] for name in order})[variable]
+    return apply_variables(frame, needed_variables(load_harmonization(table)["variables"], variable))[variable]
 
 
 @register_aggregate("workers")
@@ -54,6 +48,9 @@ def workers(upstream, base, config, counted=True):
     spec = load_task(config["task"])
     key, age = config["key"], config["min_age"]
     persons = upstream.base
+    if spec.unknown_column not in persons.columns:
+        raise ValueError(f"workers: the upstream source frame (its chain's first task's) has no {spec.unknown_column}: "
+                         f"{config['task']} must be the first task of the chain it aggregates")
     drawable = persons[spec.unknown_column].astype(bool) & persons[age["column"]].ge(age["value"])
     eligible = persons.loc[drawable.to_numpy(), list(upstream.keys)]
     completions = upstream.completions

@@ -26,7 +26,10 @@ batched call. A parallel chain with derive steps forms its completions the same 
 
 A downstream task is trained on the upstream target as observed in its training source, not on imputed values, so
 retraining an upstream task does not invalidate it; what must agree is the downstream feature's declared levels and
-the values the upstream fills it with (checked on every run). ``provenance`` records the bundles each run used.
+the values the upstream fills it with (checked on every run). ``provenance`` records the bundles each run used
+(:func:`eodgdl.impute.bundle.bundle_identity`: their files' sha256 and the data, weight included, they were trained on),
+and a chain refuses EOD-trained bundles fitted on another weight than its source reads
+(:func:`eodgdl.impute.bundle.weight_conflicts`).
 
 A draws chain may also be ``given`` per-completion features from outside it (a pipeline's aggregate of another row
 level's draws, :mod:`eodgdl.impute.pipeline`): they enter after the feature cache, as columns of the completions, and
@@ -41,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 from .arms import set_class_probabilities
-from .bundle import as_v2, load_bootstrap, load_bundle
+from .bundle import as_v2, bootstrap_paths, bundle_identity, bundle_path, check_bootstrap, load_bootstrap, load_bundle, weight_conflicts
 from .features import build_frame
 from .run import expected_score_column, output_columns, score_frame, task_levels
 from .sources import Context, get_source
@@ -150,7 +153,9 @@ def parse_chain(raw, load=None):
     uncertainty = raw.get("uncertainty")
     _check(uncertainty in (None, "bootstrap"), f"{name}: uncertainty {uncertainty!r} is not 'bootstrap'")
     _check(uncertainty is None or propagation == "draws", f"{name}: bootstrap uncertainty draws a model per imputation, so it needs propagation: draws")
-    chain = ChainSpec(name, mode, propagation, int(raw.get("draws", 50)), int(raw.get("seed", 42)), steps, raw, uncertainty)
+    draws = int(raw.get("draws", 50))
+    _check(draws >= 1, f"{name}: draws {draws} is not a number of imputations")
+    chain = ChainSpec(name, mode, propagation, draws, int(raw.get("seed", 42)), steps, raw, uncertainty)
     if propagation == "expected":   # every value a later step reads is an expected score
         needed = _needed(chain)
         unscored = [task for task in chain.tasks if task in needed and not load(task).scores]
@@ -361,20 +366,31 @@ def _check_levels(chain, step, column, completions, base, keys, levels):
                          f"completions ({len(rows)} {'row' if len(rows) == 1 else 'rows'}, e.g. {examples})")
 
 
-def _derive(step, index, chain, completions, base, keys, derive_functions):
-    """Run a derive step (``index``: its position in the chain) on every completion (its columns added to
-    ``completions`` in place) and aggregate each new column per row: ``{prob_<column>_<level> or <column>_media:
-    values}``; a categorical value outside its levels stops the chain (:func:`_check_levels`). The step's ``seed`` is a
-    stream of its own, spawned from the chain's seed by its position, apart from the draws'."""
+def derive_config(step, index, chain, weight):
+    """The configuration a derive step (``index``: its position in the chain) runs with: its own, the chain's
+    propagation and its ``seed``, a stream of its own spawned from the chain's seed by its position, apart from the
+    draws'. ``weight: source`` reads ``weight``, the scoring source's weight column, so a derive step weighs as the
+    source does (:attr:`eodgdl.impute.sources.Source.weight`)."""
+    config = {**step.config, "propagation": chain.propagation, "seed": np.random.SeedSequence(chain.seed, spawn_key=(index,))}
+    if config.get("weight") == "source":
+        config["weight"] = weight
+    return config
+
+
+def _derive(step, index, chain, completions, base, keys, derive_functions, weight):
+    """Run a derive step (``index``: its position in the chain; :func:`derive_config`) on every completion (its columns
+    added to ``completions`` in place) and aggregate each new column per row: ``{prob_<column>_<level> or
+    <column>_media: values}``; a categorical value outside its levels stops the chain (:func:`_check_levels`)."""
     from .derive import get_derive
 
     function = (derive_functions or {}).get(step.name) or get_derive(step.name)
-    seed = np.random.SeedSequence(chain.seed, spawn_key=(index,))
-    values = function(completions, base, {**step.config, "propagation": chain.propagation, "seed": seed})
+    values = function(completions, base, derive_config(step, index, chain, weight))
     derived = {}
     for column in values.columns:
+        _check(column not in completions.columns, f"{chain.name}: the derive step {step.name!r} gives {column}, which the completions already hold "
+                                                  "(a task's value, a given column or an earlier derive step's)")
         completions[column] = values[column].to_numpy()
-        levels = step.config.get("levels", {}).get(column)
+        levels = [str(level) for level in step.config.get("levels", {}).get(column) or []] or None   # a YAML number is a label too
         if not pd.api.types.is_numeric_dtype(completions[column]):
             _check_levels(chain, step, column, completions, base, keys, levels)
         aggregated = _aggregate(completions[column], completions["weight"].to_numpy(), completions["row"].to_numpy(), len(base), levels)
@@ -405,13 +421,16 @@ def _bootstrap_conditional(chain, step, spec, frame, models, completions, specs,
 def _given_columns(chain, given, base, keys, specs, completions):
     """``given`` (a frame of the source's keys, ``completion`` and feature columns, or a function of ``base`` returning
     one) aligned to ``completions``: ``{column: values}``, one value per completion. Every completion must have one, a
-    column must not shadow a task's output, and a categorical feature's values must be levels its tasks declare."""
+    column must not shadow a task's output or a feature an upstream task fills (``uses``), and a categorical feature's
+    values must be levels its tasks declare."""
+    _check(chain.propagation == "draws", f"{chain.name}: given features vary by completion, so they need propagation: draws")
     if callable(given):
         given = given(base)
-    _check(chain.propagation == "draws", f"{chain.name}: given features vary by completion, so they need propagation: draws")
     columns = [column for column in given.columns if column not in (*keys, "completion")]
-    clash = set(columns) & ({spec.prefix for spec in specs.values()} | set(completions.columns))
-    _check(not clash, f"{chain.name}: given columns {sorted(clash)} clash with the chain's own")
+    filled = {use.feature for step in chain.steps if isinstance(step, TaskStep) for use in step.uses}
+    clash = set(columns) & ({spec.prefix for spec in specs.values()} | filled | set(completions.columns))
+    _check(not clash, f"{chain.name}: given columns {sorted(clash)} clash with the chain's own (a task's value, a feature an upstream task fills, "
+                      "or row, completion and weight)")
     index = base[keys].astype(str).reset_index(drop=True).reset_index(names="row")
     given = given.assign(**{key: given[key].astype(str) for key in keys}).merge(index, on=keys, how="inner")
     aligned = completions[["row", "completion"]].merge(given[["row", "completion", *columns]], on=["row", "completion"], how="left", validate="one_to_one")
@@ -431,40 +450,52 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
     """Score every task of ``chain`` on its common scoring source and propagate the imputations as the chain says.
     ``bundles`` ({task: bundle}) overrides the tasks' bundles, which are otherwise read by
     :func:`~eodgdl.impute.bundle.load_bundle` (from ``<retrained>/<task>/`` when a retrain wrote one there, else the
-    data file); ``derive_functions`` ({name: fn}) overrides the derive registry and ``specs`` ({task: TaskSpec}) the
+    model file); ``derive_functions`` ({name: fn}) overrides the derive registry and ``specs`` ({task: TaskSpec}) the
     task files. For sensitivity runs, ``upstream_outputs`` ({task: frame with the source's keys and the task's output
     columns}) replaces a first-level task's scoring (e.g. a retrain scenario), and ``options`` ({task:
     {"level_subsets": {...}, "auxiliary": False}}) changes how a task scores: extra level subsets, or no auxiliary
     models (training shares instead). ``bootstrap`` ({task: [bundles]}) gives the bootstrap bundles a chain with
     ``uncertainty: bootstrap`` scores its draws with (default: :func:`~eodgdl.impute.bundle.load_bootstrap` under
-    ``retrained``); the marginals, arms and flags are the bundles', the draws the bootstrap models'. ``given`` (draws
-    only: a frame of the source's keys, ``completion`` and feature columns, or a function of the source frame returning
-    one) gives every completion values from outside the chain (:func:`_given_columns`): they become columns of the
-    completions, each step whose task reads one is scored on them, a derive step finds them among the completions, and
-    each is aggregated per row like a derived value. Returns a :class:`ChainResult`."""
+    ``retrained``), each set refitted from the task's bundle (:func:`~eodgdl.impute.bundle.check_bootstrap`); the arms
+    and flags are the bundles', the draws and the marginals (the mean of the draws' conditionals) the bootstrap models'.
+    ``given`` (draws only: a frame of the source's keys, ``completion`` and feature columns, or a function of the source
+    frame returning one) gives every completion values from outside the chain (:func:`_given_columns`): they become
+    columns of the completions, each step whose task reads one is scored on them, a derive step finds them among the
+    completions, and each is aggregated per row like a derived value. ``provenance`` records the settings, the bundles,
+    the scoring source and its data ``versions`` (and each task's feature-cache key), and the given columns. Returns a
+    :class:`ChainResult`."""
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context(tables=tables)
     specs = {task: (specs or {}).get(task) or step_spec(chain, task) for task in chain.tasks}
     sources = {spec.score_source for spec in specs.values()}
     _check(len(sources) == 1, f"{chain.name}: the tasks score different sources {sorted(sources)}")
-    keys = get_source(sources.pop()).keys
-    bundles = {task: as_v2(bundles[task], spec) if task in (bundles or {}) else load_bundle(spec, retrained=retrained) for task, spec in specs.items()}
-    frames = {task: build_frame(spec, context, role="score").frame for task, spec in specs.items()}
+    source = sources.pop()
+    keys = get_source(source).keys
+    paths = {task: None if task in (bundles or {}) else bundle_path(spec, retrained=retrained) for task, spec in specs.items()}
+    bundles = {task: as_v2(bundles[task], spec) if task in (bundles or {}) else load_bundle(spec, paths[task]) for task, spec in specs.items()}
+    built = {task: build_frame(spec, context, role="score") for task, spec in specs.items()}
+    frames = {task: frame.frame for task, frame in built.items()}
     for task in chain.tasks:
         _check(frames[task][keys].astype(str).equals(frames[chain.tasks[0]][keys].astype(str)), f"{chain.name}: {task}'s rows differ from {chain.tasks[0]}'s")
     _check_uses(chain, specs)
+    _check(not bootstrap or chain.uncertainty == "bootstrap", f"{chain.name}: bootstrap bundles given to a chain without uncertainty: bootstrap")
+    boot_paths = {}
     if chain.uncertainty == "bootstrap" and bootstrap is None:
+        boot_paths = {task: bootstrap_paths(spec, retrained) for task, spec in specs.items()}
         bootstrap = {task: load_bootstrap(spec, retrained) for task, spec in specs.items()}
     if bootstrap:
         _check(chain.propagation == "draws", f"{chain.name}: bootstrap models are drawn per imputation, so they need propagation: draws")
         missing = [task for task in chain.tasks if not bootstrap.get(task)]
         _check(not missing, f"{chain.name}: no bootstrap bundles for {missing}: run `eodgdl impute retrain <task> --bootstrap B` and point --retrained at its root")
         _check(len({len(bootstrap[task]) for task in chain.tasks}) == 1, f"{chain.name}: the tasks' bootstrap sets differ in size")
-        bootstrap = {task: [as_v2(model, specs[task]) for model in bootstrap[task]] for task in chain.tasks}
+        bootstrap = {task: check_bootstrap(bundles[task], [as_v2(model, specs[task]) for model in bootstrap[task]]) for task in chain.tasks}
+    versions = {key: value for key, value in built[chain.tasks[0]].versions.items() if key != "features"}   # the tasks share the source
     provenance = {"chain_hash": chain.hash, "mode": chain.mode, "propagation": chain.propagation, "draws": chain.draws, "seed": chain.seed,
-                  "bundles": {task: {key: bundle["metadata"].get(key) for key in ("spec_hash", "scoring_hash", "sklearn_version", "eodgdl_version")}
-                              for task, bundle in bundles.items()},
+                  "bundles": {task: bundle_identity(bundle, specs[task], paths[task], boot_paths.get(task, ())) for task, bundle in bundles.items()},
+                  "source": source, "versions": {**versions, "features": {task: frame.versions["features"] for task, frame in built.items()}},
                   **({"uncertainty": "bootstrap", "bootstrap": {task: len(models) for task, models in bootstrap.items()}} if bootstrap else {})}
+    conflicts = weight_conflicts({chain.name: provenance})
+    _check(not conflicts, f"{chain.name}: its bundles and source mix weights ({'; '.join(conflicts)}): retrain the EOD tasks on the weight the sources read")
     base = frames[chain.tasks[0]]
     n_rows = len(base)
 
@@ -486,10 +517,10 @@ def run_chain(chain, context=None, tables=None, bundles=None, retrained=None, de
                 derived.update({f"prob_{column}_{level}": aggregated[level].to_numpy() for level in aggregated.columns})
             else:
                 derived[f"{column}_media"] = aggregated
-        provenance["given"] = given_columns
+        provenance["given_columns"] = given_columns
     for index, step in enumerate(chain.steps):
         if isinstance(step, DeriveStep):
-            derived.update(_derive(step, index, chain, completions, base, keys, derive_functions))
+            derived.update(_derive(step, index, chain, completions, base, keys, derive_functions, get_source(source).weight))
             continue
 
         spec, frame, bundle = specs[step.task], frames[step.task], bundles[step.task]
@@ -545,7 +576,7 @@ def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True, bootstrap=
     """Retrain every task of ``chain`` in order (:func:`eodgdl.impute.run.retrain`), each written to ``out/<task>``
     (where ``retrained=out`` finds it), with ``bootstrap`` bootstrap bundles each when asked
     (:func:`eodgdl.impute.run.bootstrap_bundles`). Returns ``{task: (bundle path, sha256)}``."""
-    from .run import bootstrap_bundles, retrain, write_bootstrap, write_retrain
+    from .run import bootstrap_bundles, retrain, write_bootstrap, write_retrain, write_retrain_manifest
 
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context()
@@ -555,4 +586,5 @@ def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True, bootstrap=
         written[task] = write_retrain(result, Path(out) / task)
         if bootstrap:
             write_bootstrap(result.spec, bootstrap_bundles(result.spec, result.bundle, bootstrap, context=context, n_jobs=n_jobs), Path(out) / task)
+        write_retrain_manifest(result.spec, Path(out) / task, bootstrap)
     return written

@@ -14,7 +14,7 @@
   folds scored as the selection scores them), each candidate's fold log losses paired against the baseline's.
 
 A mode that needs a fitted bundle takes it from :func:`eodgdl.impute.bundle.load_bundle`: ``retrained=<dir>`` reads
-the one a retrain wrote under ``<dir>/<task>/`` when there is one, else the installed data file.
+the one a retrain wrote under ``<dir>/<task>/`` when there is one, else the installed model file (``models/``).
 """
 
 import copy
@@ -109,7 +109,7 @@ def predict_rows(spec, bundle, rows, auxiliary=True):
 def score_task(task, tables=None, bundle=None, path=None, retrained=None, context=None):
     """Load (or take) the task's bundle and score its scoring source's rows. ``tables`` are the survey tables
     (loaded, and the features cached, when omitted); ``bundle`` a fitted v2 bundle, else read
-    by :func:`~eodgdl.impute.bundle.load_bundle` (``path``, else ``<retrained>/<task>/``, else the data file)."""
+    by :func:`~eodgdl.impute.bundle.load_bundle` (``path``, else ``<retrained>/<task>/``, else the model file)."""
     spec = _spec(task)
     context = context or Context(tables=tables)
     bundle = bundle if bundle is not None else load_bundle(spec, path, retrained)
@@ -490,11 +490,12 @@ def _serializable(frame):
 def write_retrain(result, out):
     """Write a retrain to the task's directory ``out`` (``<root>/<task>``, where ``retrained=<root>`` finds it):
     ``<bundle file>`` (the v2 bundle), ``scores.parquet`` (keys, outputs and weight), ``scenarios.parquet`` (the same
-    per scenario), ``evaluation/<table>.parquet`` and ``summary.json``, after removing the tables and scenarios an
-    earlier retrain left there (read later as this one's). Returns the bundle's path and sha256."""
+    per scenario), ``evaluation/<table>.parquet`` and ``summary.json``, after removing the tables, scenarios and
+    bootstrap refits (``bootstrap/``, refitted from the bundle this one replaces) an earlier retrain left there (read later
+    as this one's). Returns the bundle's path and sha256."""
     spec, out = result.spec, Path(out)
     (out / "evaluation").mkdir(parents=True, exist_ok=True)
-    for stale in [*(out / "evaluation").glob("*.parquet"), out / "scenarios.parquet"]:
+    for stale in [*(out / "evaluation").glob("*.parquet"), out / "scenarios.parquet", *(out / "bootstrap").glob("*.joblib")]:
         stale.unlink(missing_ok=True)
     output_frame(spec, result.scored, weight=True).to_parquet(out / "scores.parquet", index=False)
     if result.scenarios:
@@ -528,7 +529,7 @@ def bootstrap_sample(frame, group, rng):
     return frame.iloc[np.concatenate([order[starts[k]:starts[k + 1]] for k in drawn])].reset_index(drop=True)
 
 
-def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m):
+def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m, versions):
     from threadpoolctl import threadpool_limits
 
     sample = bootstrap_sample(frame, group, np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(m,))))
@@ -543,7 +544,7 @@ def _bootstrap_bundle(spec, frame, weight, group, selected, levels, seed, m):
             auxiliary[arm.name] = {feature: fit_level_model(sample, feature, spec.auxiliary_predictors(feature, arm.name), spec.numeric, levels,
                                                             sample_weights=sample[weight], random_state=seed, missing_label=spec.missing_label)
                                    for feature in spec.auxiliary}
-    return make_bundle(spec, arms, auxiliary, levels, {"bootstrap": m, "bootstrap_seed": [seed, m], "selected": selected})
+    return make_bundle(spec, arms, auxiliary, levels, {"bootstrap": m, "bootstrap_seed": [seed, m], "selected": selected, "data_versions": {"training": versions}})
 
 
 def bootstrap_bundles(task, bundle, n, context=None, n_jobs=-1):
@@ -559,7 +560,24 @@ def bootstrap_bundles(task, bundle, n, context=None, n_jobs=-1):
     source = build_frame(spec, context)
     frame = select_rows(source.frame, keep=spec.selection.get("population"))
     levels, selected, seed = task_levels(spec), bundle["metadata"]["selected"], spec.selection["cv"]["seed"]
-    return Parallel(n_jobs=n_jobs)(delayed(_bootstrap_bundle)(spec, frame, source.weight, source.group, selected, levels, seed, m) for m in range(n))
+    return Parallel(n_jobs=n_jobs)(delayed(_bootstrap_bundle)(spec, frame, source.weight, source.group, selected, levels, seed, m, source.versions) for m in range(n))
+
+
+def write_retrain_manifest(spec, out, bootstrap=0):
+    """The retrain's manifest (:mod:`eodgdl.manifest`) in its directory ``out``, after the bootstrap refits: the data
+    versions it was scored and trained on (``summary.json``'s ``versions``), the weight file its training source joins, if any, the
+    selection's seed and the bootstrap refits, and every file of the directory."""
+    from eodgdl.data import resolve
+    from eodgdl.manifest import write_manifest
+
+    from .sources import weight_file
+
+    out = Path(out)
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    weight = weight_file(get_source(spec.source).config)
+    return write_manifest(out, "retrain", inputs={"weight": resolve(weight["file"])} if weight else {},
+                          parameters={"task": spec.name, "spec_hash": spec.hash, "seed": spec.selection["cv"]["seed"], "bootstrap": int(bootstrap)},
+                          versions=summary.get("versions", {}))
 
 
 def write_bootstrap(spec, bundles, out):

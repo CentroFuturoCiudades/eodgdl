@@ -10,10 +10,7 @@ wheels/
 # Virtual environments
 .venv
 
-# Notebook-generated artifacts
-/outputs/
-
-# Build output: tasha tables, the standalone dataset export
+# Every run's output, in one folder: impute retrains and draws, reweight sets, TASHA tables, figures, the dataset export
 /output/
 
 # Large public report PDF (148 MB, over GitHub's file-size limit; kept locally only).

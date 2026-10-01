@@ -24,7 +24,7 @@ import pandas as pd
 
 from . import evaluate
 from .bundle import load_bootstrap, load_bundle, make_bundle
-from .chain import DeriveStep, TaskStep, load_chain, parse_chain, run_chain
+from .chain import DeriveStep, TaskStep, load_chain, parse_chain, run_chain, step_spec
 from .features import build_frame
 from .run import component_spec, predict_rows, select_rows, task_levels, within_support
 from .sources import Context
@@ -32,7 +32,7 @@ from .spec import load_task
 
 
 def _bundles(tasks, retrained):
-    """Each task's bundle: from ``<retrained>/<task>/`` when a retrain wrote one there, else its data file."""
+    """Each task's bundle: from ``<retrained>/<task>/`` when a retrain wrote one there, else its model file."""
     return {task: load_bundle(load_task(task), retrained=retrained) for task in tasks}
 
 
@@ -51,14 +51,16 @@ def _upstream_probabilities(chain, result, step):
 
 def evaluate_chain(chain, retrained="output/impute", context=None):
     """Every diagnostic of ``chain``'s ``evaluation:`` section, with the bundles of the retrains under ``retrained``
-    (``<retrained>/<task>/``; a task without one uses its data file). Returns ``({name: DataFrame}, summary)``."""
+    (``<retrained>/<task>/``; a task without one uses its model file). Returns ``({name: DataFrame}, summary)``."""
     chain = load_chain(chain) if isinstance(chain, str) else chain
     ev = chain.raw.get("evaluation") or {}
+    if not ev:
+        raise ValueError(f"The chain {chain.name!r} has no evaluation: section (impute/chains/{chain.name}.yaml): nothing to evaluate")
     context = context or Context()
     if "distribution" in ev:
         return evaluate_distribution(chain, ev, retrained, context)
     task = ev["task"]
-    spec = load_task(task)
+    spec = step_spec(chain, task)              # its rows are the step's scoring source, as run_chain scores them
     step = next(s for s in chain.steps if isinstance(s, TaskStep) and s.task == task)
     positive = spec.evaluation.get("positive_class", spec.class_slugs[0])
     bundles = _bundles(chain.tasks, retrained)
@@ -207,7 +209,7 @@ def multiple_imputation(chain, config, retrained, context, bundles=None):
     variants = {"single fit": parse_chain({**raw, "propagation": "draws", "draws": draws})}
     if all(load_bootstrap(load_task(task), retrained) for task in chain.tasks):
         variants["bootstrap models"] = parse_chain({**raw, "propagation": "draws", "draws": draws, "uncertainty": "bootstrap"})
-    first = load_task(chain.tasks[0])
+    first = step_spec(chain, chain.tasks[0])
     source = build_frame(first, context, role="score")
     keys, weight, cluster = list(source.keys), "__weight", "__cluster"
     frame = source.frame[keys].assign(__weight=source.frame[source.weight].to_numpy(), __cluster=source.frame[source.group].to_numpy())
@@ -242,7 +244,7 @@ def evaluate_distribution(chain, ev, retrained, context):
     from .derive import amai
 
     bundles = _bundles(chain.tasks, retrained)
-    spec = load_task(chain.tasks[0])
+    spec = step_spec(chain, chain.tasks[0])
     rows_source = build_frame(spec, context, role="score")
     keys, weight = list(rows_source.keys), ev["distribution"].get("weight", rows_source.weight)
     base = rows_source.frame
