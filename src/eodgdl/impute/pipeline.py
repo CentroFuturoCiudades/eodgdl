@@ -206,6 +206,28 @@ def write_pipeline(result, out):
     return out
 
 
+def write_pipeline_manifest(result, out, retrained=None):
+    """The pipeline run's manifest (:mod:`eodgdl.manifest`) in ``out``: every task's bundle file read, linked upstream
+    to its retrain's manifest where a retrain under ``retrained`` wrote it (an installed bundle has none: its sha256 is
+    the link), the levels' data versions and the run's settings (draws, aggregate, uncertainty, each level's seed)."""
+    from eodgdl.manifest import write_manifest
+
+    from .bundle import bundle_path
+
+    inputs, upstream = {}, {}
+    for level in result.pipeline.levels:
+        for task in load_chain(level.chain).tasks:
+            path = bundle_path(load_task(task), retrained=retrained)
+            inputs[task] = path
+            if (path.parent / "manifest.json").exists():
+                upstream[task] = path.parent
+    provenance = result.provenance
+    parameters = {key: provenance[key] for key in ("pipeline", "pipeline_hash", "draws", "uncertainty", "aggregate")}
+    parameters["seeds"] = {name: entry["seed"] for name, entry in provenance["levels"].items()}
+    return write_manifest(out, "imputation", inputs=inputs, upstream=upstream, parameters=parameters,
+                          versions={name: entry["versions"] for name, entry in provenance["levels"].items()})
+
+
 def retrain_pipeline(pipeline, out, context=None, n_jobs=-1, progress=True, bootstrap=0):
     """Retrain every task of every level's chain (:func:`~eodgdl.impute.chain.retrain_chain`) into ``out/<task>``."""
     pipeline = load_pipeline(pipeline) if isinstance(pipeline, str) else pipeline

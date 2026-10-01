@@ -576,7 +576,7 @@ def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True, bootstrap=
     """Retrain every task of ``chain`` in order (:func:`eodgdl.impute.run.retrain`), each written to ``out/<task>``
     (where ``retrained=out`` finds it), with ``bootstrap`` bootstrap bundles each when asked
     (:func:`eodgdl.impute.run.bootstrap_bundles`). Returns ``{task: (bundle path, sha256)}``."""
-    from .run import bootstrap_bundles, retrain, write_bootstrap, write_retrain
+    from .run import bootstrap_bundles, retrain, write_bootstrap, write_retrain, write_retrain_manifest
 
     chain = load_chain(chain) if isinstance(chain, str) else chain
     context = context or Context()
@@ -586,4 +586,5 @@ def retrain_chain(chain, out, context=None, n_jobs=-1, progress=True, bootstrap=
         written[task] = write_retrain(result, Path(out) / task)
         if bootstrap:
             write_bootstrap(result.spec, bootstrap_bundles(result.spec, result.bundle, bootstrap, context=context, n_jobs=n_jobs), Path(out) / task)
+        write_retrain_manifest(result.spec, Path(out) / task, bootstrap)
     return written

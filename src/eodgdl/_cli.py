@@ -101,6 +101,11 @@ def main() -> None:
     rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
+    pipe_p = sub.add_parser("pipeline", help="The whole processing: verify the stages' manifests")
+    pipe_sub = pipe_p.add_subparsers(dest="pipeline_cmd", required=True)
+    pv_p = pipe_sub.add_parser("verify", help="Walk every manifest under ROOT; list every broken link")
+    pv_p.add_argument("root", nargs="?", default="output", help="Where the stages wrote (default: output/)")
+    pv_p.add_argument("--data", default=None, help="The data directory holding the weight sidecar (default: $EODGDL_DATA_DIR)")
 
     imp_p = sub.add_parser("impute", help="Imputation tasks, chains and pipelines (eodgdl.impute): score, retrain, evaluate, compare")
     imp_sub = imp_p.add_subparsers(dest="impute_cmd", required=True)
@@ -172,6 +177,11 @@ def main() -> None:
     elif args.cmd == "impute":
         raise SystemExit(_impute(args))
 
+    elif args.cmd == "pipeline":
+        from eodgdl.manifest import verify
+
+        raise SystemExit(_report(verify(args.root, args.data), "every stage's outputs, inputs and upstream links hold"))
+
 
 def _report(problems: list[str], ok_message: str) -> int:
     if problems:
@@ -238,6 +248,16 @@ def _tasha(args) -> int:
         elif path.exists():   # an imputed build's record, which these tables no longer are
             path.unlink()
             print(f"removed {path}  (the tables take the mappings' defaults)")
+        from eodgdl.data import SURVEY_FILES, resolve
+        from eodgdl.impute.sources.eod import survey_versions
+        from eodgdl.manifest import MANIFEST, write_manifest
+
+        tables = [out / f"od_{table}{args.suffix}.csv" for table in tasha.tables()] + ([path] if completed is not None else [])
+        upstream = {pipeline: Path(args.impute) / pipeline for pipeline in (completed or {})}
+        path = write_manifest(out, "tasha_build", inputs={name: resolve(name) for name in SURVEY_FILES}, upstream=upstream,
+                              parameters={"draw": None if completed is None else args.draw, "suffix": args.suffix},
+                              versions=survey_versions(), outputs=tables, name=f"od{args.suffix}_{MANIFEST}")
+        print(f"wrote {path}")
         print()
         _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")
@@ -390,7 +410,7 @@ def _reweight(args) -> int:
         if args.data:   # the imputed attributes' model file: models/ beside the data directory
             os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         files = reweight.build(load_eod(args.data), data_dir=args.data)
-        for path in reweight.write(files, args.out):
+        for path in reweight.write(files, args.out, data_dir=args.data):
             print(f"wrote {path}")
         print()
         return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
@@ -406,7 +426,7 @@ def _impute(args) -> int:
         os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
     from eodgdl.impute import run
     from eodgdl.impute.chain import is_chain, load_chain, retrain_chain, run_chain, write_chain
-    from eodgdl.impute.pipeline import is_pipeline, load_pipeline, retrain_pipeline, run_pipeline, write_pipeline
+    from eodgdl.impute.pipeline import is_pipeline, load_pipeline, retrain_pipeline, run_pipeline, write_pipeline, write_pipeline_manifest
     from eodgdl.impute.sources import Context
     from eodgdl.impute.spec import load_task
 
@@ -428,6 +448,7 @@ def _impute(args) -> int:
             out = Path(args.out or f"output/impute/{pipeline.name}" + ("/no_aggregate" if args.no_aggregate else ""))
             result = run_pipeline(pipeline, context=context, retrained=args.retrained, draws=args.draws, aggregate=not args.no_aggregate)
             write_pipeline(result, out)
+            write_pipeline_manifest(result, out, args.retrained)
             sizes = ", ".join(f"{name} {len(level.frame):,} rows" for name, level in result.levels.items())
             print(f"{pipeline.name} ({result.provenance['draws']} draws, aggregate {'on' if result.provenance['aggregate'] else 'off'}): {sizes}; wrote {out}")
         else:
@@ -466,6 +487,7 @@ def _impute(args) -> int:
         if args.bootstrap:
             paths = run.write_bootstrap(spec, run.bootstrap_bundles(spec, result.bundle, args.bootstrap, context=context, n_jobs=args.jobs), Path(args.out) / spec.name)
             print(f"wrote {len(paths)} bootstrap bundles to {paths[0].parent}")
+        run.write_retrain_manifest(spec, Path(args.out) / spec.name, args.bootstrap)
         for arm, entry in result.summary["arms"].items():
             chosen = entry["selected"]
             print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "

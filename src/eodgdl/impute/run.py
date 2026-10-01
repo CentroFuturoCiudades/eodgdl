@@ -563,6 +563,23 @@ def bootstrap_bundles(task, bundle, n, context=None, n_jobs=-1):
     return Parallel(n_jobs=n_jobs)(delayed(_bootstrap_bundle)(spec, frame, source.weight, source.group, selected, levels, seed, m, source.versions) for m in range(n))
 
 
+def write_retrain_manifest(spec, out, bootstrap=0):
+    """The retrain's manifest (:mod:`eodgdl.manifest`) in its directory ``out``, after the bootstrap refits: the data
+    versions it was scored and trained on (``summary.json``'s ``versions``), the weight file its training source joins, if any, the
+    selection's seed and the bootstrap refits, and every file of the directory."""
+    from eodgdl.data import resolve
+    from eodgdl.manifest import write_manifest
+
+    from .sources import weight_file
+
+    out = Path(out)
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    weight = weight_file(get_source(spec.source).config)
+    return write_manifest(out, "retrain", inputs={"weight": resolve(weight["file"])} if weight else {},
+                          parameters={"task": spec.name, "spec_hash": spec.hash, "seed": spec.selection["cv"]["seed"], "bootstrap": int(bootstrap)},
+                          versions=summary.get("versions", {}))
+
+
 def write_bootstrap(spec, bundles, out):
     """The bootstrap bundles under ``<out>/bootstrap/`` (``out``: the task's retrain directory, where
     :func:`eodgdl.impute.bundle.load_bootstrap` finds them with ``retrained=<root>``), numbered from 000, after removing

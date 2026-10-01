@@ -290,11 +290,20 @@ def test_coverage_says_which_municipalities_are_whole(files):
 
 
 def test_written_set_checks_clean_and_check_catches_breakage(files, tmp_path):
-    reweight.write(files, tmp_path)
+    from eodgdl.manifest import check_manifest, read_manifest
+
+    reweight.write(files, tmp_path, data_dir=DATA_DIR)
     assert reweight.check(tmp_path) == []
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
         ["ZoneSystem.csv", "ZoneLabels.csv", "ZoneAssignment.csv", "SampledAGEBs.csv",
-         "HouseholdRecords.csv", "PersonRecords.csv", "TripRecords.csv", "Constraints", "README.md"])
+         "HouseholdRecords.csv", "PersonRecords.csv", "TripRecords.csv", "Constraints", "README.md", "manifest.json"])
+    # stage 2's manifest: every file written, the survey, census tables and the pinned empleo bundle read
+    manifest = read_manifest(tmp_path)
+    assert manifest["stage"] == "reweight_inputs" and len(manifest["outputs"]) == sum(1 for p in tmp_path.rglob("*") if p.is_file()) - 1
+    assert manifest["inputs"]["od_empleo_design_model.joblib"]["sha256"] == "247d18fc175b98ebd0698648af6cb36dda671a822205889925141a815f6e97f2"
+    assert {"IMEPLAN_Base_Viviendas_Master.csv", "CONAPO_proyecciones_AMG.csv", "AMG_Zonificacion_para_encuesta.parquet"} <= set(manifest["inputs"])
+    assert "mxcensus" in manifest["environment"] and manifest["parameters"]["years"] == [2020, 2023]
+    assert check_manifest(tmp_path / "manifest.json") == []
 
     # A geography missing from a constraint file: the tool would target 0 there.
     path = tmp_path / "Constraints" / "PersonConstraintsByMunicipality_2020.csv"
