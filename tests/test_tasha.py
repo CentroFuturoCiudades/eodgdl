@@ -66,7 +66,8 @@ def test_ambiguous_column_needs_a_table():
 
 def test_gaps_are_declared():
     gaps = tasha.gaps()
-    assert set(gaps.status) <= {"assumed", "not_surveyed", "pending"}
+    assert set(gaps.status) <= {"imputed", "assumed", "not_surveyed", "pending"}
+    assert {"IncomeClass", "EmploymentStatus", "Formality", "Occupation"} <= set(gaps.column[gaps.status == "imputed"])
     assert "DwellingType" in set(gaps.column)
 
 
@@ -322,3 +323,30 @@ def test_build_round_trips_through_csv(stages, tmp_path):
     back = pd.read_csv(path, dtype=dict.fromkeys(tasha.zone_columns("households"), str))
     assert tasha.validate(back, "households") == []
     assert back.HouseholdZone.equals(od.households.HouseholdZone)
+
+
+def test_imputed_columns_read_the_completed_dataset(stages):
+    # IncomeClass is the dwelling's AMAI level; a worker is P where the draw is informal, with Formality I; a worker
+    # without a reported giro takes the drawn one. Without a completed dataset they fall to the mapping's defaults.
+    viv, hab = stages.revised.viv, stages.revised.hab
+    workers = hab.trabajo_semana_pasada.isin(["Tiempo completo", "Medio tiempo", "Tenía trabajo, pero no trabajó"])
+    levels = ["e", "d", "d_mas", "c_menos", "c", "c_mas", "ab"]
+    nse = pd.DataFrame({"nse_calibrado": [levels[i % 7] for i in range(len(viv))]}, index=viv.index)
+    people = hab.index[workers]
+    giro = pd.DataFrame({"giro": ["educacion"] * len(people), "informalidad": ["informal", "formal"] * (len(people) // 2) + ["formal"] * (len(people) % 2)},
+                        index=people)
+    od = eodgdl.tasha.build(stages.revised, completed={"nse": nse, "sector_informality": giro})
+    assert tasha.validate_all(*od) == []
+    expected = pd.Series(nse.nse_calibrado.to_numpy()).map(tasha.mapping("IncomeClass")["values"])
+    assert (od.households.IncomeClass.to_numpy() == expected.to_numpy()).all() and 7 not in set(od.households.IncomeClass)
+    p = od.people
+    assert (p.EmploymentStatus[workers.to_numpy()] == giro.informalidad.map({"informal": "P", "formal": "F"}).to_numpy()).all()
+    assert ((p.EmploymentStatus == "P") == (p.Formality == "I")).all() and (p.Formality[~workers.to_numpy()] == "O").all()
+    unreported = (workers & hab.giro_empresa.isna()).to_numpy()
+    assert (p.Occupation[unreported] == "G").all()                            # educacion -> G
+    reported = (workers & hab.giro_empresa.eq("Industria")).to_numpy()
+    assert (p.Occupation[reported] == "M").all()                              # the survey's answer wins
+
+    plain = eodgdl.tasha.build(stages.revised)
+    assert (plain.households.IncomeClass == 7).all() and not (plain.people.EmploymentStatus == "P").any()
+    assert (plain.people.Formality == "O").all() and tasha.validate_all(*plain) == []

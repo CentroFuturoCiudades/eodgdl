@@ -37,6 +37,12 @@ def main() -> None:
     build_p.add_argument(
         "--suffix", default="", help="Filename suffix, e.g. _v2 for od_trips_v2.csv"
     )
+    build_p.add_argument("--impute", default="output/impute",
+                         help="Root of the eodgdl.impute outputs whose completed datasets fill the imputed columns "
+                              "(default: output/impute; each chain's multiple_imputation/)")
+    build_p.add_argument("--draw", type=int, default=0, help="Which completed dataset (default 0)")
+    build_p.add_argument("--no-impute", action="store_true",
+                         help="Leave the imputed columns at their mapping's default (IncomeClass 7, no P, Formality O)")
 
     review_p = sub.add_parser("review", help="Review sheets: the trip chains pending a fix, to edit by hand")
     review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
@@ -205,11 +211,21 @@ def _tasha(args) -> int:
 
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
-        od = tasha.build(load_eod(args.data))
+        completed = None if args.no_impute else tasha.load_completed(args.impute, args.draw)
+        od = tasha.build(load_eod(args.data), completed=completed)
         for table, df in zip(tasha.tables(), od):
             path = out / f"od_{table}{args.suffix}.csv"
             df.to_csv(path, index=False)
             print(f"wrote {path}  ({len(df):,} rows)")
+        if completed is not None:
+            import json
+
+            # which completed dataset filled the imputed columns, and the bundles behind it
+            provenance = {"impute_root": str(args.impute), "draw": args.draw,
+                          "chains": {chain: frame.attrs["provenance"] for chain, frame in completed.items()}}
+            path = out / f"od_provenance{args.suffix}.json"
+            path.write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"wrote {path}  (draw {args.draw} of {', '.join(completed)})")
         print()
         _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")

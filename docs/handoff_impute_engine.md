@@ -25,6 +25,14 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
   draw vs arg-max, the meaning of a worker's "0" zone, License/TransitPass sources): wire giro and informality by a
   draw; an employment/student task first in the chain; income from ENIGH in the NSE chain; work and school location
   models; dwelling type fused from the census sample questionnaire or ENIGH; parking from the trips' answers.
+- **TASHA decisions** (2026-09-30, after comparing with Monterrey's `mappings/pimus2019_to_tasha.yaml`): `IncomeClass`
+  is the AMAI level (chain `nse`'s `nse_calibrado`, C- and C merged, as Monterrey); `EmploymentStatus` P is an
+  informal worker (Monterrey), from `sector_informality`, and `Formality` mirrors it; `Occupation` kept (to align with
+  the zonal employment crosswalk when it exists); AGEB zone codes kept; `PurposeOrigin` spelled correctly.
+  Implemented: mappings' `imputed: {chain, column}` key (status `imputed`, checked against the chain's levels),
+  `tasha.load_completed(root, draw)` (each chain's `multiple_imputation/completions.parquet`), `tasha build --impute
+  ROOT --draw N` writing `od_provenance.json`. Still at defaults: the 4,370 unanswered employment statuses,
+  `EmploymentZone`/`SchoolZone` "0", `DwellingType`, `License`, `TransitPass`, `FreeParking`.
 - **`v0.6.0`** (session 9, 2026-09-30): giro's destination features are the staff-weighted shares of the 20 SCIAN
   sectors plus the staff share in large establishments (DENUE 2022-11, each establishment weighted by the midpoint of its
   `per_ocu` band, 500 for the top one), replacing the five shares of establishments per giro; `denue_scian2` became

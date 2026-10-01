@@ -11,9 +11,15 @@
 #   derivation   prose, for what a lookup cannot express
 #   override     a second lookup applied on top of `values`, with its `when`
 #   note         caveats: lossy collapses, judgement calls, open questions
-#   status       ok (default) | assumed | not_surveyed | pending
+#   imputed      {chain, column[, values]}: the value comes from one completed dataset of an eodgdl.impute chain
+#                (a draw: <root>/<chain>/multiple_imputation/completions.parquet), read through its own `values`,
+#                or the entry's where it has no `source` (keys: the column's levels). Beside `source` it fills
+#                only what the survey's lookup leaves empty; in an `override` it replaces the code where `when`
+#                holds. tasha.build(tables, completed=tasha.load_completed(root, draw)) takes it.
+#   status       ok (default) | imputed | assumed | not_surveyed | pending
 #
-# `status` is what to grep for: `assumed` means no survey question, filled by
+# `status` is what to grep for: `imputed` means some or all of the column comes
+# from an imputation model; `assumed` means no survey question, filled by
 # rule; `not_surveyed` means no survey question and no rule, filled by a
 # constant; `pending` means the mapping builds but needs a decision before the
 # output is used. `model_schema.py gaps` lists them.
@@ -97,27 +103,24 @@ households:
       0 vehicles rather than failing the build; no dwelling needs it today.
 
   IncomeClass:
-    source: ingreso_mensual_hogar
+    imputed: {chain: nse, column: nse_calibrado}
     values:
-      Sin ingresos: 1
-      Hasta $1,500: 1
-      $1,501 y $3,000: 2
-      $3,001 y $7,000: 3
-      $7,001 y $10,000: 4
-      $10,001 y $15,000: 5
-      $15,001 y $25,000: 5
-      Más de $25,001: 6
-      No sabe: 7
-      No quiso responder: 7
+      e: 1
+      d: 2
+      d_mas: 3
+      c_menos: 4
+      c: 4
+      c_mas: 5
+      ab: 6
     default: 7
-    status: pending
+    status: imputed
     note: >-
-      Provisional band merge, left in place so the column builds. 10,432 of
-      17,901 dwellings (58%) answered 'No quiso responder' (9,370) or 'No sabe'
-      (1,062) and land in class 7, so more than half the households carry no
-      income information at all. Build an imputation model — predicting the band
-      from AGEB census characteristics, vehicle ownership, education and
-      household size — before using this column as a control or a segmentation.
+      DECISION (2026-09-30): the AMAI socioeconomic level, as the model's Monterrey inputs (PIMUS 2019) coded this
+      column, C- and C merged (LOSSY). Every dwelling's level is imputed: the EOD answers three of AMAI's six
+      components (internet, cars, workers) and most heads' education; the chain `nse` imputes the rest (education
+      where unknown, bathrooms and bedrooms from ENIGH), sums the points and calibrates the level within each AGEB to
+      AMAI's NSE by AGEB (nse_calibrado). One draw of the chain, so the levels' spread is kept. The reported income
+      (ingreso_mensual_hogar) is no longer read: 58% of dwellings refused or did not know it.
 
   ExpansionFactor:
     source: ponderador
@@ -182,8 +185,8 @@ people:
     source: trabajo_semana_pasada
     values:
       Tiempo completo: F
+      Medio tiempo: F
       Tenía trabajo, pero no trabajó: F
-      Medio tiempo: P
       Es estudiante: O
       No trabajo: O
       Busco trabajo: O
@@ -191,19 +194,31 @@ people:
       Es jubilado o pensionado: O
       Está incapacitado permanentemente para trabajar: O
     default: O
+    override:
+      imputed: {chain: sector_informality, column: informalidad}
+      values:
+        informal: P
+      when: the person is a worker (F)
+    status: imputed
     note: >-
-      P is part-time (1,305 people), its standard TASHA meaning. 'Tenía trabajo,
-      pero no trabajó' (105) counts as employed. 4,370 people have no answer and
-      fall to the default O.
+      DECISION (2026-09-30): P is an informal worker, the Monterrey convention (PIMUS 2019), not part-time; part-time
+      workers ('Medio tiempo', 1,305) are F or P by their formality like everyone else, and hours are lost. The EOD
+      asks no formality question: every worker's informality is imputed (chain `sector_informality`: ENOE's model
+      over the imputed giro). 'Tenía trabajo, pero no trabajó' (105) counts as employed. 4,370 people have no answer
+      and fall to the default O (pending an employment-status imputation).
 
   Formality:
-    constant: O
-    status: not_surveyed
+    imputed: {chain: sector_informality, column: informalidad}
+    values:
+      formal: F
+      informal: I
+    default: O
+    derivation: O wherever EmploymentStatus is O.
+    status: imputed
     note: >-
-      The EOD has no formality or social-security question, so the column is
-      constant for Guadalajara. Recorded as a known gap rather than silently
-      omitted. Route if needed: an ENOE-trained classifier over giro_empresa /
-      ocupacion / escolaridad / edad / municipio.
+      The same draw as EmploymentStatus's P, so I exactly where it is P. The EOD has no formality or social-security
+      question: the chain sector_informality scores ENOE's informality model on the EOD workers, given their giro
+      (reported, or imputed by the giro task).
 
   Occupation:
     source: giro_empresa
@@ -213,14 +228,26 @@ people:
       Comercio: S
       Gobierno/sector público: G
       Educación: G
+    imputed:
+      chain: sector_informality
+      column: giro
+      values:
+        servicio: P
+        industria: M
+        comercio: S
+        gobierno: G
+        educacion: G
     default: G
     derivation: >-
-      Then force O wherever EmploymentStatus is O, so that the two columns agree
-      exactly, as the schema requires.
+      The reported giro through `values`; a worker who did not report it takes the chain's drawn giro (the same draw
+      as Formality). Then force O wherever EmploymentStatus is O, so that the two columns agree exactly, as the
+      schema requires.
+    status: imputed
     note: >-
-      giro_empresa is null for 40,451 people: null and not working -> O, null
-      and working -> G. 'Educación' is placed in G alongside government rather
-      than in P with services — revisit if teaching should count as a service.
+      9,484 of the 26,913 workers did not report their giro; the giro task imputes it (eodgdl.impute, tasks/giro.yaml).
+      'Educación' is placed in G alongside government; the EOD's giro has no transport answer (PIMUS's 'transporte y
+      comunicaciones' went to G). Kept as is (2026-09-30): what matters for the model is that Occupation uses the same
+      crosswalk as the zonal employment by category it is matched to, which is not built yet; revisit both together.
 
   FreeParking:
     constant: O

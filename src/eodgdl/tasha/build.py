@@ -6,6 +6,11 @@ as ``derivation`` prose — the R/C demotion, the passenger override, the
 work/school zone lookups, the daycare trips by age, H only at the household's
 zone — is implemented below, and the prose is its spec.
 
+The columns a mapping marks ``imputed`` (IncomeClass, EmploymentStatus's P, Formality, a worker's unreported
+Occupation) read one completed dataset of the eodgdl.impute chains: ``load_completed(root, draw)`` (each chain's
+``multiple_imputation/completions.parquet``, draw ``draw``), passed as ``build(tables, completed=...)``. Without it
+those columns take their mapping's default (IncomeClass 7, Formality O, no P, the reported giro only).
+
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
 recoded, mistyped start hours repaired, the 38 home-to-home rows that
@@ -17,19 +22,21 @@ untimed rows rather than guess at them.
 
     from eodgdl import load_eod, tasha
 
-    od = tasha.build(load_eod("data"))
+    od = tasha.build(load_eod("data"), completed=tasha.load_completed("output/impute", draw=0))
     tasha.validate_all(*od)
     od.households.to_csv("output/od_households.csv", index=False)
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 
 from eodgdl.chains import DAYCARE, ESCORT_FROM_AGE, days_past_midnight, non_trips
-from eodgdl.tasha._schema import build_map, mapping
+from eodgdl.tasha._schema import build_map, imputed_lookups, load_mappings, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
 NO_ZONE = "0"  # sentinel for EmploymentZone / SchoolZone
@@ -43,6 +50,45 @@ class ODTables(NamedTuple):
     households: pd.DataFrame
     people: pd.DataFrame
     trips: pd.DataFrame
+
+
+def load_completed(root="output/impute", draw=0) -> dict[str, pd.DataFrame]:
+    """One completed dataset of every eodgdl.impute chain a mapping reads: ``{chain: frame}``, the rows of draw
+    ``draw`` of ``<root>/<chain>/multiple_imputation/completions.parquet`` (every value drawn, jointly within the
+    chain), indexed by the chain's keys. ``frame.attrs`` holds the draw and the chain's provenance."""
+    chains = sorted({chain for entries in load_mappings().values() if isinstance(entries, dict)
+                     for entry in entries.values() if isinstance(entry, dict)
+                     for _, chain, _, _ in imputed_lookups(entry)})
+    completed = {}
+    for chain in chains:
+        folder = Path(root) / chain / "multiple_imputation"
+        provenance = json.loads((folder / "provenance.json").read_text(encoding="utf-8"))
+        if not 0 <= draw < provenance["draws"]:
+            raise ValueError(f"{folder}: draw {draw} outside its {provenance['draws']} completed datasets")
+        frame = pd.read_parquet(folder / "completions.parquet")
+        frame = frame[frame["completion"] == draw].drop(columns=["completion", "weight"])
+        frame = frame.set_index([key for key in ("folio_vivienda", "folio_habitante") if key in frame.columns])
+        frame.attrs = {"root": str(root), "draw": draw, "provenance": provenance}
+        completed[chain] = frame
+    return completed
+
+
+def _imputed(completed, chain: str, column: str, index: pd.Index) -> pd.Series:
+    """The completed ``column`` of ``chain`` for the rows of ``index`` (NA where the chain has no value, or with no
+    ``completed``)."""
+    if completed is None:
+        return pd.Series(pd.NA, index=index, dtype="object")
+    frame = completed[chain]
+    keys = index.to_frame(index=False)[list(frame.index.names)]
+    return pd.Series(frame[column].reindex(pd.MultiIndex.from_frame(keys) if len(frame.index.names) > 1 else keys.iloc[:, 0]).to_numpy(),
+                     index=index, dtype="object")
+
+
+def _imputed_codes(column: str, index: pd.Index, completed, which="imputed") -> pd.Series:
+    """The codes the mapping's imputed lookup (``which``: the entry's own, or its override's) gives the rows of
+    ``index``; NA where the completed dataset has no value."""
+    [(_, chain, name, values)] = [lookup for lookup in imputed_lookups(mapping(column)) if lookup[0] == which]
+    return _imputed(completed, chain, name, index).map(values)
 
 
 def _household_ids(viv: pd.DataFrame) -> pd.Series:
@@ -68,8 +114,8 @@ def _purposes(trips: pd.DataFrame, viv: pd.DataFrame) -> tuple[pd.Series, pd.Ser
     return destination, origin
 
 
-def build_households(viv: pd.DataFrame, hab: pd.DataFrame) -> pd.DataFrame:
-    """od_households.csv, one row per dwelling."""
+def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd.DataFrame:
+    """od_households.csv, one row per dwelling (``completed``: :func:`load_completed`)."""
     veh, veh_default = build_map("Vehicles"), mapping("Vehicles")["default"]
     # Both lookups carry a default, so an answer the survey adds later widens the
     # column instead of raising an opaque cast error mid-build; `tasha check`
@@ -86,18 +132,25 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame) -> pd.DataFrame:
         "DwellingType": mapping("DwellingType")["constant"],
         "Vehicles": (viv.n_autos_camionetas.map(veh).fillna(veh_default).astype(int)
                      + viv.n_motos.map(veh).fillna(veh_default).astype(int)),
-        "IncomeClass": (viv.ingreso_mensual_hogar.map(build_map("IncomeClass"))
+        # the AMAI level of the chain nse's completed dataset
+        "IncomeClass": (_imputed_codes("IncomeClass", viv.index, completed)
                            .fillna(mapping("IncomeClass")["default"]).astype(int)),
         "ExpansionFactor": viv.ponderador.astype(float),
     }).sort_values("HouseholdId").reset_index(drop=True)
 
 
-def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> pd.DataFrame:
-    """od_people.csv, one row per person in ``hab``."""
+def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, completed=None) -> pd.DataFrame:
+    """od_people.csv, one row per person in ``hab`` (``completed``: :func:`load_completed`)."""
     employment = (hab.trabajo_semana_pasada.map(build_map("EmploymentStatus"))
                      .fillna(mapping("EmploymentStatus")["default"]))
-    # Occupation is O for exactly the non-workers, as the schema requires.
-    occupation = (hab.giro_empresa.map(build_map("Occupation"))
+    # a worker's code from the drawn informality (P: informal), where the completed dataset has one
+    informal = _imputed_codes("EmploymentStatus", hab.index, completed, "override imputed")
+    employment = employment.mask((employment == "F") & informal.notna(), informal)
+    formality = (_imputed_codes("Formality", hab.index, completed)
+                    .fillna(mapping("Formality")["default"]).mask(employment == "O", "O"))
+    # The reported giro, else the drawn one; O for exactly the non-workers, as the schema requires.
+    occupation = (hab.giro_empresa.map(build_map("Occupation")).astype("object")
+                     .fillna(_imputed_codes("Occupation", hab.index, completed))
                      .fillna(mapping("Occupation")["default"])
                      .mask(employment == "O", "O"))
 
@@ -124,7 +177,7 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame) -> p
         "License": np.where(hab.edad >= 18, "Y", "N"),
         "TransitPass": mapping("TransitPass")["constant"],
         "EmploymentStatus": employment.to_numpy(),
-        "Formality": mapping("Formality")["constant"],
+        "Formality": formality.to_numpy(),
         "Occupation": occupation.to_numpy(),
         "FreeParking": mapping("FreeParking")["constant"],
         "StudentStatus": np.where(student, "S", "O"),
@@ -198,11 +251,12 @@ def build_trips(
     })
 
 
-def build(tables) -> ODTables:
-    """Build all three tables from an :class:`~eodgdl.EODTables` as ``load_eod`` returns it."""
+def build(tables, completed=None) -> ODTables:
+    """Build all three tables from an :class:`~eodgdl.EODTables` as ``load_eod`` returns it, with the imputed
+    columns from ``completed`` (:func:`load_completed`; without it they take their mapping's default)."""
     viv, hab, trips, legs = tables
     return ODTables(
-        build_households(viv, hab),
-        build_people(hab, trips, viv),
+        build_households(viv, hab, completed),
+        build_people(hab, trips, viv, completed),
         build_trips(trips, legs, viv, hab),
     )
