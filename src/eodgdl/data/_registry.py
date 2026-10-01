@@ -20,7 +20,7 @@ from eodgdl.data._paths import get_pooch_cache_dir
 # its own under ``models/``). Override $EODGDL_BASE_URL (data) and $EODGDL_MODELS_URL
 # (models) to point at a fork/mirror or a different ref (keep the trailing "/").
 GH = "CentroFuturoCiudades/eodgdl"
-REF = "v0.9.0"
+REF = "v0.10.0"
 _ROOT_URL = f"https://raw.githubusercontent.com/{GH}/{REF}/"
 _BASE_URL = os.environ.get("EODGDL_BASE_URL", _ROOT_URL + "data/")
 _MODELS_URL = os.environ.get("EODGDL_MODELS_URL", _ROOT_URL + "models/")
