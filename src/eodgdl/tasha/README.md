@@ -52,7 +52,12 @@ jointly, so a dwelling's AMAI level counts its members drawn as workers): `tasha
 mapping names the pipeline and the column (`imputed: {pipeline: tasha, column: ...}`); in Python,
 `tasha.build(tables, completed=tasha.load_completed(root, draw))`. A different draw is
 another equally valid completed survey; `--no-impute` leaves those columns at their
-mapping's defaults.
+mapping's defaults (and removes an earlier `od_provenance.json`). `load_completed` refuses a
+run with the aggregates switched off (`--no-aggregate`, the parity check, which writes to
+`ROOT/tasha/no_aggregate/` unless told otherwise) and one drawn on other survey data than
+the files read now (a survey file, a chain rule or a hand decision changed since: rerun
+`eodgdl impute score tasha`), and the build fails where a row that reads a drawn value has
+none.
 
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
@@ -129,7 +134,7 @@ takes:
 | `constant`   | the whole column is this one value                          |
 | `derivation` | prose, for what a lookup cannot express                     |
 | `override`   | a second lookup applied on top of `values`, with its `when` |
-| `imputed`    | `{chain, column[, values]}`: codes from one completed dataset of an eodgdl.impute chain |
+| `imputed`    | `{pipeline, column[, values]}`: codes from one completed dataset of an eodgdl.impute pipeline (`tasha`) |
 | `note`       | caveats: lossy collapses, judgement calls, open questions   |
 | `status`     | `ok` (default) / `imputed` / `assumed` / `not_surveyed` / `pending` |
 

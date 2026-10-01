@@ -490,11 +490,12 @@ def _serializable(frame):
 def write_retrain(result, out):
     """Write a retrain to the task's directory ``out`` (``<root>/<task>``, where ``retrained=<root>`` finds it):
     ``<bundle file>`` (the v2 bundle), ``scores.parquet`` (keys, outputs and weight), ``scenarios.parquet`` (the same
-    per scenario), ``evaluation/<table>.parquet`` and ``summary.json``, after removing the tables and scenarios an
-    earlier retrain left there (read later as this one's). Returns the bundle's path and sha256."""
+    per scenario), ``evaluation/<table>.parquet`` and ``summary.json``, after removing the tables, scenarios and
+    bootstrap refits (``bootstrap/``, refitted from the bundle this one replaces) an earlier retrain left there (read later
+    as this one's). Returns the bundle's path and sha256."""
     spec, out = result.spec, Path(out)
     (out / "evaluation").mkdir(parents=True, exist_ok=True)
-    for stale in [*(out / "evaluation").glob("*.parquet"), out / "scenarios.parquet"]:
+    for stale in [*(out / "evaluation").glob("*.parquet"), out / "scenarios.parquet", *(out / "bootstrap").glob("*.joblib")]:
         stale.unlink(missing_ok=True)
     output_frame(spec, result.scored, weight=True).to_parquet(out / "scores.parquet", index=False)
     if result.scenarios:

@@ -7,6 +7,37 @@ informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e
 
 ## Where things are
 
+- **Review of the chain pipeline** (session 11, 2026-10-01, one commit): a review of `chain.py`, `pipeline.py`,
+  `aggregate.py`, `derive/`, the chain and pipeline YAMLs and their readers found 15 issues, all fixed with tests.
+  - **One seed for both levels.** `labour` took the default 42, `nse`'s, so person row r and dwelling row r read the
+    same uniform in every completion (across the 50 draws, Spearman 0.71 for the 478 pairs both imputed, 0.00 shifted
+    a row). `labour.yaml` draws with 43 and `parse_pipeline` refuses two levels on one seed. `output/impute/tasha/`
+    rerun: shares within Monte Carlo noise (unanswered drawn working 33.5%, informal 35.7% of workers, NSE shares within
+    0.02 pp); per draw ~940 dwellings' worker counts and ~720 calibrated levels differ from the old run (701 at draw 0).
+    The aggregate's effect is as before (1,327 dwellings gain workers per draw, 671 move up one uncalibrated level,
+    calibrated 553 up / 483 down). Parity again: with the aggregate off the dwellings level equals
+    `output/impute/nse/multiple_imputation/` exactly and the persons level the delivered run's.
+  - **Guards.** `--no-aggregate` writes to `<root>/tasha/no_aggregate/` unless told otherwise (it wrote over what the
+    TASHA build reads), and `tasha.load_completed` refuses such a run. A chain's provenance records its scoring
+    `source` and data `versions` (each task's feature-cache key under `features`); `load_completed` refuses a run whose
+    survey files, chain rules or hand decisions changed since (`sources.changed_versions`, the eodgdl version aside),
+    and the build fails where a row that reads a drawn value has none (it took the mapping's default). A chain
+    refuses bootstrap refits of another bundle (`bundle.check_bootstrap`: spec hash and selected configurations),
+    `write_retrain` clears an earlier `bootstrap/`, and bootstrap bundles handed to a chain without `uncertainty:
+    bootstrap` are refused. A given column may not shadow a `uses` feature, a derive output may not overwrite a
+    completion column, an aggregate's undeclared column may not be a feature the level reads; draws must be 1 or more
+    (`--draws 0` ran the YAML's).
+  - **Fixes.** The pipeline's provenance keeps the aggregates' configuration under `given` (`run_chain`'s column list
+    is `given_columns`); `parity.py` ignores a bundle's eodgdl version at any depth (it failed on tasha's
+    provenance); `aggregate.harmonized` applies the definitions as the source does (`harmonize.needed_variables`, the
+    YAML's order); `amai_puntos` reads a task's prefix; numeric derive levels are labels; `evaluate <chain>` without an
+    evaluation section says so and the diagnostics read the steps' scoring source; tasha's README documents
+    `imputed: {pipeline, column}` and `_check_imputed` reports a malformed one; the retrain hint names `models/`;
+    `tasha build --no-impute` removes an earlier `od_provenance.json`.
+  - **Left as found** (minor): a pipeline run takes 150–210 s and ~3 GB (the 300 bootstrap bundles are loaded up
+    front); a given column that only a derive step reads cannot be declared; `PipelineSpec.column_level` does not know
+    `amai_puntos` or `trabajadores_14_n`; `score <chain>` defaults to the installed bundles and `evaluate` to the
+    retrains, both writing to `output/impute/<chain>/`.
 - **Cleanup** (session 10, 2026-10-01): the fitted bundles moved from `data/` (input data only now) to `models/`
   (`eodgdl.data.resolve`: `$EODGDL_MODELS_DIR`, else `models/` beside `$EODGDL_DATA_DIR`, else the mirror's
   `.../<REF>/models/`; `$EODGDL_MODELS_URL`), released as `v0.9.0`; `outputs/` merged into `output/` (`output/reference/`

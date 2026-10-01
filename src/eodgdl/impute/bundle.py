@@ -9,7 +9,8 @@ contract or scoring definition differs from the running code and task spec; :fun
 (the giro notebook's, ``model_with_education`` ... keys, was converted on load until 2026-09-29).
 
 :func:`load_bundle` finds a task's bundle the same way for every mode: an explicit file, else the one a retrain wrote
-under ``<retrained>/<task>/``, else the installed model file (the repo's ``models/``)."""
+under ``<retrained>/<task>/``, else the installed model file (the repo's ``models/``). A chain draws with a retrain's
+bootstrap refits only where they come from the bundle it loads (:func:`check_bootstrap`)."""
 
 import hashlib
 from pathlib import Path
@@ -123,6 +124,19 @@ def load_bootstrap(spec, retrained):
         return []
     directory = Path(retrained) / spec.name / "bootstrap"
     return [as_v2(joblib.load(path), spec) for path in sorted(directory.glob(f"{Path(spec.bundle_name).stem}_*.joblib"))]
+
+
+def check_bootstrap(bundle, models):
+    """``models`` (a task's bootstrap bundles) unless one was refitted from another bundle than ``bundle``: its task
+    spec or its selected configurations (``metadata["selected"]``, which :func:`eodgdl.impute.run.bootstrap_bundles`
+    copies) differ, e.g. a set an earlier retrain left beside a newer bundle. Raises :class:`BundleMismatch`."""
+    metadata = bundle["metadata"]
+    for key, what in (("spec_hash", "task spec"), ("selected", "selected configurations")):
+        stale = [m for m, model in enumerate(models) if model["metadata"].get(key) != metadata.get(key)]
+        if stale:
+            raise BundleMismatch(f"The bootstrap bundles {stale[:5]} of task {bundle['task']!r} were refitted from another bundle (other {what}): "
+                                 f"rerun `eodgdl impute retrain {bundle['task']} --bootstrap B`")
+    return models
 
 
 def bundle_arms(bundle, auxiliary=True):

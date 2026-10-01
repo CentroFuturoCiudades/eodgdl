@@ -129,7 +129,8 @@ def main() -> None:
     imp_sub.choices["score"].add_argument("--bootstrap", action="store_true",
                                           help="For a chain: draw each imputation's models from the tasks' bootstrap bundles under --retrained (uncertainty: bootstrap; needs draws)")
     imp_sub.choices["score"].add_argument("--no-aggregate", action="store_true",
-                                          help="For a pipeline: leave the drawn values out of its aggregates (each level then reproduces its chain alone: the parity check)")
+                                          help="For a pipeline: leave the drawn values out of its aggregates (each level then reproduces its chain alone: the parity "
+                                               "check); written to <out> (default: output/impute/<pipeline>/no_aggregate/, apart from what tasha build reads)")
     imp_sub.choices["evaluate"].add_argument("--out", default=None, help="Directory (default: <retrained>/<chain>/); tables go to <out>/evaluation/")
     imp_cmp = imp_sub.choices["compare"]
     imp_cmp.add_argument("--spec", required=True, help="YAML mapping each candidate name to a spec fragment merged into the task's")
@@ -211,8 +212,12 @@ def _tasha(args) -> int:
         return 0
 
     if args.tasha_cmd == "build":
+        import os
+
         from eodgdl import load_eod
 
+        if args.data:   # the survey load_completed checks the completed datasets against: the one built from
+            os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
         completed = None if args.no_impute else tasha.load_completed(args.impute, args.draw)
@@ -221,15 +226,18 @@ def _tasha(args) -> int:
             path = out / f"od_{table}{args.suffix}.csv"
             df.to_csv(path, index=False)
             print(f"wrote {path}  ({len(df):,} rows)")
+        path = out / f"od_provenance{args.suffix}.json"
         if completed is not None:
             import json
 
             # which completed dataset filled the imputed columns, and the bundles behind it
             provenance = {"impute_root": str(args.impute), "draw": args.draw,
                           "pipelines": {pipeline: next(iter(levels.values())).attrs["provenance"] for pipeline, levels in completed.items()}}
-            path = out / f"od_provenance{args.suffix}.json"
             path.write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"wrote {path}  (draw {args.draw} of {', '.join(completed)})")
+        elif path.exists():   # an imputed build's record, which these tables no longer are
+            path.unlink()
+            print(f"removed {path}  (the tables take the mappings' defaults)")
         print()
         _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")
@@ -411,7 +419,8 @@ def _impute(args) -> int:
     if is_pipeline(args.task) and args.impute_cmd in ("score", "retrain"):
         pipeline = load_pipeline(args.task)
         if args.impute_cmd == "score":
-            out = Path(args.out or f"output/impute/{pipeline.name}")
+            # with the aggregates off, not a completed dataset to build from: apart from what tasha build reads
+            out = Path(args.out or f"output/impute/{pipeline.name}" + ("/no_aggregate" if args.no_aggregate else ""))
             result = run_pipeline(pipeline, context=context, retrained=args.retrained, draws=args.draws, aggregate=not args.no_aggregate)
             write_pipeline(result, out)
             sizes = ", ".join(f"{name} {len(level.frame):,} rows" for name, level in result.levels.items())
@@ -424,10 +433,10 @@ def _impute(args) -> int:
         chain = load_chain(args.task)
         if args.impute_cmd == "score":
             default = f"output/impute/{chain.name}"
-            if args.draws or args.bootstrap:
+            if args.draws is not None or args.bootstrap:
                 from eodgdl.impute.chain import parse_chain
 
-                changed = {**({"propagation": "draws", "draws": args.draws} if args.draws else {}), **({"uncertainty": "bootstrap"} if args.bootstrap else {})}
+                changed = {**({"propagation": "draws", "draws": args.draws} if args.draws is not None else {}), **({"uncertainty": "bootstrap"} if args.bootstrap else {})}
                 chain, default = parse_chain({**chain.raw, **changed}), f"{default}/multiple_imputation"
             out = Path(args.out or default)
             result = run_chain(chain, context=context, retrained=args.retrained)
@@ -456,7 +465,7 @@ def _impute(args) -> int:
             chosen = entry["selected"]
             print(f"{arm}: {chosen['model']} {chosen['best_params']} CV log loss {chosen['weighted_log_loss']:.4f}, "
                   f"held-out {entry['test_metrics']['weighted_log_loss']:.4f}")
-        print(f"wrote {path} (sha256 {digest}); to install it, copy it under data/ and update src/eodgdl/data/registry.txt")
+        print(f"wrote {path} (sha256 {digest}); to install it, copy it under models/ and update src/eodgdl/data/registry.txt")
         return 0
     import yaml
 

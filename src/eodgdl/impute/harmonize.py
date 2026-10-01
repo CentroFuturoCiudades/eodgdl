@@ -184,3 +184,31 @@ def apply_variables(frame, variables, common=None, missing_label=None):
         else:
             out[name] = _map_variable(frame[definition["column"]], definition, missing_label, name, common)
     return out
+
+
+def _reads_output(definition):
+    """The name a definition reads as an earlier output when :func:`apply_variables` has computed one by then: a
+    ``bins``'s ``from``, a ``number``'s single column; None where it reads the source's columns only."""
+    if definition.get("unobserved") or "rules" in definition:
+        return None
+    if "bins" in definition:
+        return definition["from"]
+    if "number" in definition:
+        source = definition.get("columns", definition.get("column"))
+        return source if isinstance(source, str) else None
+    return None
+
+
+def needed_variables(variables, name):
+    """The definitions of ``variables`` that :func:`apply_variables` reads to compute ``name``, in their order: ``name``
+    and, recursively, the earlier outputs it reads (a variable defined after the one reading its name is not one: the
+    source's column is read then), so that applying them alone gives ``name`` as applying them all does."""
+    order = list(variables)
+    needed, pending = set(), [name]
+    while pending:
+        current = pending.pop()
+        needed.add(current)
+        read = _reads_output(variables[current])
+        if read in variables and order.index(read) < order.index(current) and read not in needed:
+            pending.append(read)
+    return {key: variables[key] for key in order if key in needed}

@@ -43,6 +43,14 @@ def test_check_catches_a_lookup_key_the_survey_cannot_answer(monkeypatch):
     assert any("has no answer 'Estudier'" in p for p in tasha.check_mappings())
 
 
+def test_check_reports_an_imputed_lookup_without_its_pipeline(monkeypatch):
+    # the entry format before the pipeline tasha (a chain's name) is a problem the checker names, not a crash
+    broken = copy.deepcopy(_schema.load_mappings())
+    broken["households"]["IncomeClass"]["imputed"] = {"chain": "nse", "column": "nse_calibrado"}
+    monkeypatch.setattr(_schema, "load_mappings", lambda: broken)
+    assert any("IncomeClass: imputed names ['chain', 'column']: it needs a pipeline and a column" in p for p in tasha.check_mappings())
+
+
 def test_schema_bundled():
     # Both YAML files ship in the package and load without network access.
     assert set(tasha.tables()) == {"households", "people", "trips"}
@@ -356,17 +364,28 @@ def test_imputed_columns_read_the_completed_dataset(stages):
     assert (p.loc[hab.index[reported & hab.giro_empresa.isna()], "Occupation"] == "G").all()     # educacion -> G
     assert (p.loc[hab.index[reported & hab.giro_empresa.eq("Industria")], "Occupation"] == "M").all()   # the answer wins
 
+    # every row that reads a drawn value must have one: completed datasets of other rows (a stale or partial run) fail
+    worker = hab.index[reported][0]
+    for dwellings, persons, column in ((nse.iloc[1:], labour, "nse_calibrado"), (nse, labour.drop(index=hab.index[unanswered][0]), "situacion_laboral"),
+                                       (nse, labour.drop(index=worker), "informalidad")):
+        with pytest.raises(ValueError, match=rf"tasha.{column}: no completed value for 1 rows that read one"):
+            eodgdl.tasha.build(stages.revised, completed={"tasha": {"dwellings": dwellings, "persons": persons}})
+
     plain = eodgdl.tasha.build(stages.revised)
     assert (plain.households.IncomeClass == 7).all() and not (plain.people.EmploymentStatus == "P").any()
     assert (plain.people.Formality == "O").all() and tasha.validate_all(*plain) == []
     assert (plain.people.EmploymentStatus[unanswered.to_numpy()] == "O").all()
 
 
-def test_load_completed_reads_one_draw_of_every_level(tmp_path):
+def test_load_completed_reads_one_draw_of_every_level(tmp_path, monkeypatch):
     # <root>/tasha/<level>/completions.parquet, the draw asked for, indexed by the level's keys; a draw outside the
-    # pipeline's fails
+    # pipeline's fails, and so does a run with its aggregates off or drawn on other data than the source reads now
     import json
 
+    from eodgdl.impute import sources
+
+    monkeypatch.setitem(sources._SOURCES, "test.level", sources.Source("test.level", None, {"keys": ["folio_vivienda"], "weight": "w", "group": "g"},
+                                                                       lambda context, config: {"data": "v1", "eodgdl": "9.9"}, lambda column: [], __file__))
     folder = tmp_path / "tasha"
     persons = pd.DataFrame({"folio_vivienda": [1, 1, 2, 1, 1, 2], "folio_habitante": [1, 2, 1, 1, 2, 1], "completion": [0, 0, 0, 1, 1, 1],
                             "weight": 0.5, "situacion_laboral": ["trabaja", "hogar", "trabaja", "trabaja", "trabaja", "estudiante"]})
@@ -374,7 +393,9 @@ def test_load_completed_reads_one_draw_of_every_level(tmp_path):
     for level, frame in (("persons", persons), ("dwellings", dwellings)):
         (folder / level).mkdir(parents=True)
         frame.to_parquet(folder / level / "completions.parquet", index=False)
-    (folder / "provenance.json").write_text(json.dumps({"pipeline": "tasha", "draws": 2, "levels": {"persons": {}, "dwellings": {}}}))
+    level = {"source": "test.level", "versions": {"data": "v1", "eodgdl": "0.1", "features": {}}}      # the eodgdl version aside
+    provenance = {"pipeline": "tasha", "draws": 2, "aggregate": True, "levels": {"persons": level, "dwellings": level}}
+    (folder / "provenance.json").write_text(json.dumps(provenance))
     completed = tasha.load_completed(tmp_path, draw=1)
     assert set(completed) == {"tasha"} and set(completed["tasha"]) == {"persons", "dwellings"}
     assert completed["tasha"]["persons"]["situacion_laboral"].to_dict() == {(1, 1): "trabaja", (1, 2): "trabaja", (2, 1): "estudiante"}
@@ -382,3 +403,9 @@ def test_load_completed_reads_one_draw_of_every_level(tmp_path):
     assert completed["tasha"]["dwellings"].attrs["draw"] == 1
     with pytest.raises(ValueError, match="outside its 2 completed datasets"):
         tasha.load_completed(tmp_path, draw=2)
+    for changed, message in (({"aggregate": False}, r"aggregates switched off \(--no-aggregate"),
+                             ({"levels": {"persons": level, "dwellings": {**level, "versions": {"data": "v0"}}}}, r"other data than the survey's now \(dwellings: data changed\)"),
+                             ({"levels": {"persons": {}, "dwellings": level}}, r"\(persons: no data versions recorded\)")):
+        (folder / "provenance.json").write_text(json.dumps({**provenance, **changed}))
+        with pytest.raises(ValueError, match=message):
+            tasha.load_completed(tmp_path, draw=0)

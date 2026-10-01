@@ -66,6 +66,15 @@ def get_source(name):
     return _SOURCES[name]
 
 
+def changed_versions(name, recorded, context=None):
+    """The data versions of source ``name`` that now differ from ``recorded`` (what a run recorded: a chain's
+    ``provenance["versions"]``), the eodgdl version aside (it moves with every release, the data only when they do): an
+    empty list when the run read the data the source reads now."""
+    source = get_source(name)
+    current = source.versions(context or Context(), source.config)
+    return sorted(key for key in current if key != "eodgdl" and recorded.get(key) != current[key])
+
+
 def module_config(module_file):
     """The YAML beside a source module (``<module>.yaml``), parsed."""
     from ..spec import read_yaml

@@ -135,14 +135,20 @@ place of the source's. No cached frame holds a per-draw value.
 | 3. derive | | AMAI points (with the completed count), level, AGEB calibration |
 
 Only the aggregate crosses levels, so the runner runs one chain per level: persons, the aggregate, dwellings. Each level
-keeps its chain's seed, and so its random stream: with the aggregate's drawn values switched off (`eodgdl impute score
-tasha --no-aggregate`) each level reproduces its chain's multiple imputations exactly, which is how the pipeline was
-proved (`scripts/impute/parity.py --ignore-columns`). With them on, per draw about 1,330 dwellings gain workers and about
-670 move up one uncalibrated level (3.5% of the dwelling weight); the calibrated shares stay AMAI's
-(`reports/imputation_empleo.qmd` #sec-nse). Output: `<root>/tasha/<level>/` as a chain run writes it (`scores.parquet`,
-`completions.parquet`: one row per row and draw with the given columns, `provenance.json`) and `<root>/tasha/
-provenance.json`. `labour` and `nse` stay chains: `nse` and `sector_informality` are the diagnostic chains their reports
-evaluate; `labour` is no longer scored alone.
+keeps its chain's seed, and no two levels may share one (`parse_pipeline`; until 2026-10-01 `labour` took the default
+42, `nse`'s, so person row r and dwelling row r drew with the same uniform in every completion: `labour` draws with 43
+since), so each draws from a stream of its own: with the aggregate's drawn values switched off (`eodgdl impute score
+tasha --no-aggregate`, written apart, to `<root>/tasha/no_aggregate/`) each level reproduces its chain's multiple
+imputations exactly, which is how the pipeline was proved (`scripts/impute/parity.py --ignore-columns`). With them on,
+per draw about 1,330 dwellings gain workers and about 670 move up one uncalibrated level (3.5% of the dwelling weight);
+the calibrated shares stay AMAI's (`reports/imputation_empleo.qmd` #sec-nse). Output: `<root>/tasha/<level>/` as a chain
+run writes it (`scores.parquet`, `completions.parquet`: one row per row and draw with the given columns,
+`provenance.json`) and `<root>/tasha/provenance.json` (each level's: its chain's settings, bundles, scoring source and
+data `versions`, `given_columns`, and `given`, the pipeline's aggregates). `tasha.load_completed` refuses a run with the
+aggregates off and one whose survey files, chain rules or hand decisions changed since (the recorded `versions` against
+the source's now, the eodgdl version aside), and the build fails where a row that reads a drawn value has none. `labour`
+and `nse` stay chains: `nse` and `sector_informality` are the diagnostic chains their reports evaluate; `labour` is no
+longer scored alone.
 
 ## Uncertainty
 
@@ -187,7 +193,7 @@ render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imput
 | The head's education reads the household's (another member's answer) in an arm of its own; no census or AMAI feature | `tasks/educacion_jefe.yaml` arms; `imputation_nse.qmd` #sec-education |
 | giro reads nothing about where the worker lives (census, AMAI, household education measured, not taken) | `tasks/giro.yaml` arms |
 | The persons without an employment answer are imputed (task `empleo`, three arms: occupation, education, neither); the chain `labour` draws their situation, then giro and informality on every worker or unanswered person, read only where the person works (giro and informality were trained on workers) | `tasks/empleo.yaml`; `chains/labour.yaml` |
-| The TASHA build reads one pipeline, persons then dwellings: a dwelling's worker count (AMAI points, ENIGH features) includes the members drawn as workers; one chain per level so each keeps its seed (parity with the chains alone) | `pipelines/tasha.yaml`; `imputation_empleo.qmd` #sec-nse |
+| The TASHA build reads one pipeline, persons then dwellings: a dwelling's worker count (AMAI points, ENIGH features) includes the members drawn as workers; one chain per level so each keeps its seed (parity with the chains alone), no two levels on one seed | `pipelines/tasha.yaml`; `imputation_empleo.qmd` #sec-nse |
 | ENIGH training population: cities of 100,000+ | `imputation_nse.qmd`, the populations table |
 | NSE by 50 draws, calibration ties at random per draw | `imputation_nse.qmd` #sec-level, #sec-calibration |
 
@@ -196,7 +202,8 @@ render time. `reports/imputation_giro.qmd`, `imputation_informality.qmd`, `imput
 ```bash
 uv run eodgdl impute retrain <task|chain> --data data [--bootstrap 50]   # -> output/impute/<task>/
 uv run eodgdl impute score <task|chain> --data data [--retrained output/impute] [--draws M --bootstrap]
-uv run eodgdl impute score tasha --data data --retrained output/impute [--draws M] [--no-aggregate]   # -> output/impute/tasha/
+uv run eodgdl impute score tasha --data data --retrained output/impute [--draws M]   # -> output/impute/tasha/
+uv run eodgdl impute score tasha --data data --retrained output/impute --no-aggregate   # parity -> output/impute/tasha/no_aggregate/
 uv run eodgdl impute evaluate <chain> --data data                        # -> output/impute/<chain>/evaluation/
 uv run eodgdl impute compare <task> --spec candidates.yaml --seeds 42 7 11
 scripts/impute/rerun.sh ROOT [TASK ...]                                  # every output into ROOT

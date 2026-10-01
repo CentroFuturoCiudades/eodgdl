@@ -9,9 +9,10 @@ zone — is implemented below, and the prose is its spec.
 The columns a mapping marks ``imputed`` (IncomeClass; EmploymentStatus and StudentStatus where unanswered,
 EmploymentStatus's P, Formality, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute
 pipeline ``tasha`` (persons and dwellings drawn jointly: a dwelling's NSE counts its drawn workers):
-``load_completed(root, draw)`` (each level's ``<root>/tasha/<level>/completions.parquet``, draw ``draw``), passed as
-``build(tables, completed=...)``. Without it those columns take their mapping's default (IncomeClass 7, Formality O,
-no P, the reported giro only).
+``load_completed(root, draw)`` (each level's ``<root>/tasha/<level>/completions.parquet``, draw ``draw``; it refuses a
+run with the aggregates switched off and one drawn on other data than the survey's now), passed as
+``build(tables, completed=...)``, where every row that reads a drawn value must have one. Without it those columns
+take their mapping's default (IncomeClass 7, Formality O, no P, the reported giro only).
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
@@ -57,7 +58,11 @@ class ODTables(NamedTuple):
 def load_completed(root="output/impute", draw=0) -> dict[str, dict[str, pd.DataFrame]]:
     """One completed dataset of every eodgdl.impute pipeline a mapping reads: ``{pipeline: {level: frame}}``, the rows
     of draw ``draw`` of each level's ``<root>/<pipeline>/<level>/completions.parquet`` (every value drawn, jointly
-    across the levels), indexed by the level's keys. ``frame.attrs`` holds the draw and the pipeline's provenance."""
+    across the levels), indexed by the level's keys. ``frame.attrs`` holds the draw and the pipeline's provenance.
+
+    Refuses a run with its aggregates switched off (``--no-aggregate``: the parity check, whose levels do not hold
+    together) and one drawn on other data than the pipeline's sources read now (:func:`_stale_levels`: a survey file,
+    a chain rule or a hand decision changed since the run)."""
     pipelines = sorted({pipeline for entries in load_mappings().values() if isinstance(entries, dict)
                         for entry in entries.values() if isinstance(entry, dict)
                         for _, pipeline, _, _ in imputed_lookups(entry)})
@@ -67,6 +72,13 @@ def load_completed(root="output/impute", draw=0) -> dict[str, dict[str, pd.DataF
         provenance = json.loads((folder / "provenance.json").read_text(encoding="utf-8"))
         if not 0 <= draw < provenance["draws"]:
             raise ValueError(f"{folder}: draw {draw} outside its {provenance['draws']} completed datasets")
+        rerun = f"rerun `eodgdl impute score {pipeline} --retrained <the root of its bundles> --out {folder}`"
+        if not provenance.get("aggregate", True):
+            raise ValueError(f"{folder}: run with its aggregates switched off (--no-aggregate: the parity check), so its levels' draws do not hold "
+                             f"together: {rerun}")
+        stale = _stale_levels(provenance)
+        if stale:
+            raise ValueError(f"{folder}: drawn on other data than the survey's now ({'; '.join(stale)}): {rerun}")
         completed[pipeline] = {}
         for level in provenance["levels"]:
             frame = pd.read_parquet(folder / level / "completions.parquet")
@@ -77,22 +89,47 @@ def load_completed(root="output/impute", draw=0) -> dict[str, dict[str, pd.DataF
     return completed
 
 
-def _imputed(completed, pipeline: str, column: str, index: pd.Index) -> pd.Series:
+def _stale_levels(provenance: dict) -> list[str]:
+    """The levels of a pipeline run (its provenance) whose scoring source recorded other data versions than it reads
+    now, or none (eodgdl.impute.sources.changed_versions; the eodgdl version aside)."""
+    from eodgdl.impute.sources import changed_versions
+
+    stale = []
+    for level, entry in provenance["levels"].items():
+        if "versions" not in entry or "source" not in entry:
+            stale.append(f"{level}: no data versions recorded")
+        elif changed := changed_versions(entry["source"], entry["versions"]):
+            stale.append(f"{level}: {', '.join(changed)} changed")
+    return stale
+
+
+def _imputed(completed, pipeline: str, column: str, index: pd.Index, needed=None) -> pd.Series:
     """The completed ``column`` of ``pipeline`` (from the level whose completions hold it) for the rows of ``index``
-    (NA where the pipeline has no value, or with no ``completed``)."""
+    (NA where the pipeline has no value, or with no ``completed``). ``needed`` (a boolean mask over ``index``): the
+    rows the build reads it for, each of which must have one (a completed dataset of other rows, from a stale or
+    partial run, fails here instead of leaving them to the mapping's default)."""
     if completed is None:
         return pd.Series(pd.NA, index=index, dtype="object")
-    [frame] = [frame for frame in completed[pipeline].values() if column in frame.columns]
+    frames = [frame for frame in completed[pipeline].values() if column in frame.columns]
+    if len(frames) != 1:
+        raise ValueError(f"{pipeline}: {len(frames)} levels hold the column {column!r}, not one")
+    [frame] = frames
     keys = index.to_frame(index=False)[list(frame.index.names)]
-    return pd.Series(frame[column].reindex(pd.MultiIndex.from_frame(keys) if len(frame.index.names) > 1 else keys.iloc[:, 0]).to_numpy(),
-                     index=index, dtype="object")
+    values = pd.Series(frame[column].reindex(pd.MultiIndex.from_frame(keys) if len(frame.index.names) > 1 else keys.iloc[:, 0]).to_numpy(),
+                       index=index, dtype="object")
+    if needed is not None:
+        missing = np.asarray(needed, dtype=bool) & values.isna().to_numpy()
+        if missing.any():
+            raise ValueError(f"{pipeline}.{column}: no completed value for {int(missing.sum()):,} rows that read one (e.g. {list(index[missing][:3])}): "
+                             "the completed datasets hold other rows than this survey's; rerun the pipeline")
+    return values
 
 
-def _imputed_codes(column: str, index: pd.Index, completed, which="imputed") -> pd.Series:
+def _imputed_codes(column: str, index: pd.Index, completed, which="imputed", needed=None) -> pd.Series:
     """The codes the mapping's imputed lookup (``which``: the entry's own, or its override's) gives the rows of
-    ``index``; NA where the completed dataset has no value."""
+    ``index``; NA where the completed dataset has no value (``needed``: the rows that must have one, :func:`_imputed`)."""
     [(_, pipeline, name, values)] = [lookup for lookup in imputed_lookups(mapping(column)) if lookup[0] == which]
-    return _imputed(completed, pipeline, name, index).map(values)
+    return _imputed(completed, pipeline, name, index, needed).map(values)
 
 
 def _household_ids(viv: pd.DataFrame) -> pd.Series:
@@ -137,7 +174,7 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd
         "Vehicles": (viv.n_autos_camionetas.map(veh).fillna(veh_default).astype(int)
                      + viv.n_motos.map(veh).fillna(veh_default).astype(int)),
         # the AMAI level of the pipeline's completed dataset (its dwellings: the chain nse given the drawn workers)
-        "IncomeClass": (_imputed_codes("IncomeClass", viv.index, completed)
+        "IncomeClass": (_imputed_codes("IncomeClass", viv.index, completed, needed=np.ones(len(viv), dtype=bool))
                            .fillna(mapping("IncomeClass")["default"]).astype(int)),
         "ExpansionFactor": viv.ponderador.astype(float),
     }).sort_values("HouseholdId").reset_index(drop=True)
@@ -145,18 +182,19 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd
 
 def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, completed=None) -> pd.DataFrame:
     """od_people.csv, one row per person in ``hab`` (``completed``: :func:`load_completed`)."""
-    # the answer, else the drawn situation (a person who did not answer), else the default
-    employment = (hab.trabajo_semana_pasada.map(build_map("EmploymentStatus")).astype("object")
-                     .fillna(_imputed_codes("EmploymentStatus", hab.index, completed))
+    # the answer, else the drawn situation (a person who did not answer), else the default; with a completed dataset
+    # every row that reads a drawn value must have one (_imputed's needed)
+    answered = hab.trabajo_semana_pasada.map(build_map("EmploymentStatus")).astype("object")
+    employment = (answered.fillna(_imputed_codes("EmploymentStatus", hab.index, completed, needed=answered.isna()))
                      .fillna(mapping("EmploymentStatus")["default"]))
     # a worker's code from the drawn informality (P: informal), where the completed dataset has one
-    informal = _imputed_codes("EmploymentStatus", hab.index, completed, "override imputed")
+    informal = _imputed_codes("EmploymentStatus", hab.index, completed, "override imputed", needed=employment.eq("F"))
     employment = employment.mask((employment == "F") & informal.notna(), informal)
-    formality = (_imputed_codes("Formality", hab.index, completed)
+    formality = (_imputed_codes("Formality", hab.index, completed, needed=employment.ne("O"))
                     .fillna(mapping("Formality")["default"]).mask(employment == "O", "O"))
     # The reported giro, else the drawn one; O for exactly the non-workers, as the schema requires.
-    occupation = (hab.giro_empresa.map(build_map("Occupation")).astype("object")
-                     .fillna(_imputed_codes("Occupation", hab.index, completed))
+    reported = hab.giro_empresa.map(build_map("Occupation")).astype("object")
+    occupation = (reported.fillna(_imputed_codes("Occupation", hab.index, completed, needed=reported.isna() & employment.ne("O")))
                      .fillna(mapping("Occupation")["default"])
                      .mask(employment == "O", "O"))
 
@@ -170,7 +208,8 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, comp
                          | ((trips.motivo_viaje == DAYCARE) & (age < ESCORT_FROM_AGE)))
                              .groupby(level=PERSON).any()
                              .reindex(hab.index).fillna(False))
-    drawn_student = (hab.trabajo_semana_pasada.isna() & _imputed_codes("StudentStatus", hab.index, completed).eq("S")).fillna(False)
+    unanswered = hab.trabajo_semana_pasada.isna()
+    drawn_student = (unanswered & _imputed_codes("StudentStatus", hab.index, completed, needed=unanswered).eq("S")).fillna(False)
     student = ((hab.ocupacion == "Estudiante")
                | (hab.trabajo_semana_pasada == "Es estudiante")
                | made_school_trip

@@ -29,9 +29,11 @@ def amai_points(completions, base, config):
     is too and the chain stops, naming the dwellings (no EOD dwelling lacks one). An answer the completions carry (a
     pipeline's given column: the workers aged 14+ with the drawn ones) is read from the completion, else from the
     source."""
+    from ..spec import load_task
+
     total = np.zeros(len(completions))
     for task in config["tasks"]:
-        total += _task_points(completions[task], task)
+        total += _task_points(completions[load_task(task).prefix], task)     # a task's value: the column of its prefix
     rows = base.iloc[completions["row"].to_numpy()]
     for column, points in config["observed"].items():
         answer = pd.Series(completions[column].to_numpy() if column in completions else rows[column].to_numpy()).astype("string")

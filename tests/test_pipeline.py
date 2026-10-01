@@ -55,6 +55,26 @@ def test_the_tasha_pipeline():
         parse_pipeline({**raw, "levels": {"dwellings": raw["levels"]["dwellings"], "persons": raw["levels"]["persons"]}})
     with pytest.raises(ValueError, match="appear in two levels"):
         parse_pipeline({**raw, "levels": {"persons": {"chain": "labour"}, "workers": {"chain": "sector_informality"}}})
+    with pytest.raises(ValueError, match="draws 0 is not a number of imputations"):
+        parse_pipeline({**raw, "draws": 0})
+    # each level draws from a stream of its own (until 2026-10-01 labour took the default seed, nse's 42)
+    assert len({tasha.chain(level).seed for level in tasha.levels}) == len(tasha.levels)
+
+
+def test_the_aggregate_harmonizes_as_the_source(monkeypatch):
+    # a per-draw value is binned as the source's own harmonization bins it: with the definitions it reads, in the YAML's
+    # order (a variable defined after the one reading its name is the source's column there, not the variable)
+    from eodgdl.impute import aggregate, harmonize
+
+    own = harmonize.load_harmonization("eod_viviendas")["variables"]
+    assert list(harmonize.needed_variables(own, "trabajadores_14")) == ["trabajadores", "trabajadores_14"]
+    late = {"trabajadores_14": {"from": "trabajadores_14_n", "bins": "count_0_4"}, "trabajadores_14_n": {"column": "trabajadores_14_n", "number": {"cap": 2}}}
+    original = harmonize.load_harmonization
+    monkeypatch.setattr(harmonize, "load_harmonization", lambda name: {"variables": late} if name == "late" else original(name))
+    frame = pd.DataFrame({"trabajadores_14_n": pd.array([0, 1, 3, 5], dtype="Int64")})
+    source = harmonize.apply_variables(frame, late)["trabajadores_14"].tolist()
+    assert aggregate.harmonized(frame, "late", "trabajadores_14").tolist() == source == ["0", "1", "3", "4 o más"]     # the raw count
+    assert aggregate.harmonized(frame, "eod_viviendas", "trabajadores_14").tolist() == ["0", "1", "3", "4 o más"]
 
 
 @register_aggregate("test_u1")
@@ -85,6 +105,10 @@ def test_draw_d_of_a_level_reads_draw_d_of_the_level_it_aggregates(synthetic_pip
     assert (second[["k", "completion"]].to_numpy() == first[["k", "completion"]].to_numpy()).all()
     assert (second["u1"] == first["t1"].map(U1)).all()                          # completion d sees the upstream's draw d
     n = len(result.levels["a"].frame)
+    # each level's provenance: its chain's (settings, data versions, the given columns) and the pipeline's aggregates
+    levels = result.provenance["levels"]
+    assert levels["b"]["given"] == {"u1": {"aggregate": "test_u1", "from": "a"}} and levels["b"]["given_columns"] == ["u1"]
+    assert levels["a"]["given"] == {} and levels["a"]["seed"] == 3 and levels["b"]["seed"] == 4 and levels["a"]["versions"]["data"] == "chain"
     out = write_pipeline(result, tmp_path / "test")
     for level in ("a", "b"):
         assert len(pd.read_parquet(out / level / "completions.parquet")) == n * 5
@@ -116,3 +140,26 @@ def test_bootstrap_draws_take_the_bundle_of_their_index(synthetic_pipeline):
     unknown = frame["t2_fue_imputado"].to_numpy()
     np.testing.assert_allclose(frame[T2.probability_columns].to_numpy()[unknown], expected[unknown], rtol=1e-12)
     assert result.provenance["levels"]["a"]["bootstrap"] == {"t1": 2} and result.provenance["levels"]["b"]["bootstrap"] == {"t2": 2}
+    with pytest.raises(ValueError, match="without uncertainty: bootstrap"):             # not a single fit that is not one
+        run_pipeline(spec, context=context, bundles=bundles, specs=SPECS, uncertainty=None, bootstrap=boot)
+
+
+@register_aggregate("test_u1_and_x1")
+def _u1_and_a_feature(upstream, base, config, counted=True):
+    """u1 as test_u1, and x1, a feature t2 reads, beside it."""
+    return _u1_of_the_upstream_draw(upstream, base, config, counted).assign(x1="a0")
+
+
+def test_levels_draw_apart_and_take_only_declared_features(synthetic_pipeline, monkeypatch):
+    # two levels on one seed would read the same uniforms row by row; a column an aggregate gives beside the declared
+    # ones may not be a feature the level's tasks read (it would replace the source's value unannounced)
+    spec, (context, bundles) = synthetic_pipeline
+    chains = {"first": {"chain": "first", "propagation": "draws", "seed": 3, "steps": ["t1"]},
+              "second": {"chain": "second", "propagation": "draws", "seed": 3, "steps": ["t2"]}}
+    with monkeypatch.context() as patched:
+        patched.setattr(pipeline_module, "load_chain", lambda name: parse_chain(chains[name], load=SPECS.__getitem__))
+        with pytest.raises(ValueError, match="draw with the same seed 3"):
+            parse_pipeline(spec.raw)
+    extra = parse_pipeline({**spec.raw, "levels": {**spec.raw["levels"], "b": {"chain": "second", "given": {"u1": {"aggregate": "test_u1_and_x1", "from": "a"}}}}})
+    with pytest.raises(ValueError, match=r"also give \['x1'\].*declare it under given"):
+        run_pipeline(extra, context=context, bundles=bundles, specs=SPECS)

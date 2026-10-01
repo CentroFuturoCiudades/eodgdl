@@ -12,7 +12,7 @@ bundle, ``scores.parquet``, ``scenarios.parquet``, ``evaluation/*.parquet``, ``s
   differs and by how much. The held-out tables (a retrain's evaluation of its held-out rows, which moves whenever that
   evaluation does) are reported apart from the rest.
 - Every JSON as a dict, key by key, numbers within the tolerance, without what records the run rather than its result:
-  the timings, the versions, the bundles' sha256 and the eodgdl version a chain records for its bundles. A retrain
+  the timings, the versions, the bundles' sha256 and the eodgdl version a chain or a pipeline records for its bundles. A retrain
   summary's held-out entries apart, as the tables.
 - With ``--models``: each task's two bundles, unless their bytes are equal, model by model (the arms, the auxiliary
   models, the label's components) by ``predict_proba`` on the task's frames (its training source's and, when another,
@@ -116,7 +116,8 @@ def flatten(value, path=()):
 
 
 def ignored(path):
-    return bool(RUN_KEYS & set(path)) or path[-2:] == ("bundle", "sha256") or (len(path) == 3 and path[0] == "bundles" and path[2] == "eodgdl_version")
+    # a bundle's eodgdl version: a chain's bundles.<task>.eodgdl_version, a pipeline's levels.<level>.bundles.<task>.eodgdl_version
+    return bool(RUN_KEYS & set(path)) or path[-2:] == ("bundle", "sha256") or (len(path) >= 3 and path[-3] == "bundles" and path[-1] == "eodgdl_version")
 
 
 def compare_json(a, b, tolerance):

@@ -385,7 +385,8 @@ def test_bootstrap_bundles_refit_the_selected_configurations(labelled_source, tm
 
     spec = parse_task(SYNTHETIC_TASK)
     context = sources.Context(cache_dir=tmp_path / "cache")
-    fitted = run.retrain(spec, context=context, n_jobs=1, progress=False).bundle
+    result = run.retrain(spec, context=context, n_jobs=1, progress=False)
+    fitted = result.bundle
     boot = run.bootstrap_bundles(spec, fitted, 3, context=context, n_jobs=1)
     task_levels = run.task_levels(spec)
     frame = run.build_frame(spec, context).frame
@@ -399,6 +400,13 @@ def test_bootstrap_bundles_refit_the_selected_configurations(labelled_source, tm
     read = bundles.load_bootstrap(spec, tmp_path / "root")
     np.testing.assert_array_equal(run.score_frame(spec, frame, read[2])[spec.probability_columns].to_numpy(), scores[3])
     assert bundles.load_bootstrap(spec, tmp_path / "elsewhere") == [] and bundles.load_bootstrap(spec, None) == []
+    # a chain draws only with refits of the bundle it loads; a retrain clears the set an earlier one left beside it
+    assert bundles.check_bootstrap(fitted, read) is read
+    other = {**read[1], "metadata": {**read[1]["metadata"], "selected": {}}}
+    with pytest.raises(bundles.BundleMismatch, match=r"bootstrap bundles \[1\] .*\(other selected configurations\)"):
+        bundles.check_bootstrap(fitted, [read[0], other])
+    run.write_retrain(result, tmp_path / "root" / spec.name)
+    assert bundles.load_bootstrap(spec, tmp_path / "root") == []
 
 
 def test_check_bundle_refuses_what_cannot_score(labelled_source, tmp_path):
@@ -810,8 +818,8 @@ def test_amai_points_levels_and_calibration(monkeypatch):
 
     monkeypatch.setattr(amai, "_task_points", lambda values, task: values.astype(float).to_numpy())       # values are points already
     base = pd.DataFrame({"internet": ["Sí", "No", "Sí", "No", "Sí", "Sí"], "ageb": ["A", "A", "A", "A", "B", "C"], "w": 1.0})
-    completions = pd.DataFrame({"row": [0, 1, 2, 3, 4, 5], "completion": 0, "weight": 1.0, "educacion": [59.0, 11.0, 27.0, 27.0, 85.0, 0.0]})
-    points = amai.amai_points(completions, base, {"tasks": ["educacion"], "observed": {"internet": {"Sí": 32, "No": 0}}})["amai_puntos"]
+    completions = pd.DataFrame({"row": [0, 1, 2, 3, 4, 5], "completion": 0, "weight": 1.0, "educacion_jefe": [59.0, 11.0, 27.0, 27.0, 85.0, 0.0]})
+    points = amai.amai_points(completions, base, {"tasks": ["educacion_jefe"], "observed": {"internet": {"Sí": 32, "No": 0}}})["amai_puntos"]
     assert points.tolist() == [91.0, 11.0, 59.0, 27.0, 117.0, 32.0]
     completions["amai_puntos"] = points.to_numpy()
     levels = amai.nse_level(completions, base, {"from": "amai_puntos", "edges": [-np.inf, 48, 95, 116, np.inf], "labels": ["e", "d", "d_mas", "c_menos"]})["nse"]
