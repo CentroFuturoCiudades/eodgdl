@@ -28,6 +28,35 @@ uv run snakemake -c8         # everything, into output/: cleaned tables, zones, 
 uv run snakemake -c8 zones   # one target and what it needs: eod, zones, reweight, impute, tasha, reports
 ```
 
+The rules in the order they run, with the stage numbers of `docs/pipeline.md` and where each writes under `output/`.
+An arrow is "runs after"; one implied by a longer path is left out (every stage also reads `eod/`, and `verify` reads
+every stage). `tmg_weight` (dashed) runs only under `weight: tmg`, after TMG's weight comes back; the reports are
+opt-in (`snakemake reports`). Every edge as Snakemake sees it: `uv run snakemake -c1 --rulegraph mermaid-js all reports`.
+
+```mermaid
+flowchart LR
+    eod_tables["eod_tables<br/>0 · eod/"]
+    zone_system["zone_system<br/>zones/"]
+    reweight_inputs["reweight_inputs<br/>1–2 · reweight/"]
+    tmg_weight["tmg_weight<br/>3 · checks/"]
+    retrain["retrain ×7<br/>4 · impute/TASK/"]
+    diagnostic_chain["diagnostic_chain ×2<br/>impute/CHAIN/"]
+    pipeline_tasha["pipeline_tasha<br/>5 · impute/tasha/"]
+    tasha_build["tasha_build<br/>6 · tasha/"]
+    verify["verify<br/>checks/"]
+    report["report ×12, opt-in<br/>reports/"]
+
+    eod_tables --> zone_system & reweight_inputs & retrain
+    reweight_inputs -.-> tmg_weight -.-> retrain
+    retrain --> diagnostic_chain & pipeline_tasha
+    pipeline_tasha --> tasha_build
+    zone_system & reweight_inputs & diagnostic_chain & tasha_build --> verify
+    verify --> report
+
+    classDef dashed stroke-dasharray: 5 5
+    class tmg_weight,report dashed
+```
+
 Its outputs read back in a line, faster than recomputing them and exactly what the later stages used:
 
 ```python
