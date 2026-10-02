@@ -1,4 +1,5 @@
-"""Lazy loaders for bundled package config: the IMEPLAN column rename map, the hand decisions and the leg minutes.
+"""Lazy loaders for bundled package config: the IMEPLAN column rename map, the hand decisions, the leg minutes and
+the TAZ ids.
 
 This is *code config*, not data: ``rename_imeplan`` and ``load_eod`` need it to run, so it
 lives inside the package, beside the code that reads it, not under ``data/``.
@@ -56,3 +57,30 @@ def leg_minutes() -> "pd.DataFrame":
     for key in ("household", "person", "trip", "before", "after"):
         table[key] = table[key].astype(int)
     return table
+
+
+@functools.cache
+def taz_ids() -> "pd.DataFrame":
+    """The integer TAZ of every AGEB of the zone system and every access point: ``eodgdl/taz_ids.csv``.
+
+    One row per code (``AGEB, TAZ, note, source``), every column text, as committed; a table we keep, ids never
+    renumbered (the reweight README's "TAZ ids"). A code still waiting for its TAZ has an empty ``TAZ`` and says why
+    in ``note``. :func:`eodgdl.reweight.zoning.check_taz_ids` holds it to the zone
+    system; the frame is shared, so do not modify it.
+    """
+    import pandas as pd
+
+    with (resources.files("eodgdl") / "taz_ids.csv").open("rb") as fh:
+        return pd.read_csv(fh, dtype=str, keep_default_na=False)
+
+
+def taz_of(codes) -> "pd.Series":
+    """The integer TAZ of each code (an AGEB or access point, as text), indexed like ``codes``; raises naming every
+    code :func:`taz_ids` lacks or leaves pending (empty)."""
+    table = taz_ids()
+    mapping = table[table.TAZ != ""].set_index("AGEB").TAZ.astype("int64")
+    out = codes.map(mapping)
+    if out.isna().any():
+        missing = sorted(set(codes[out.isna()]))
+        raise ValueError(f"codes with no TAZ in taz_ids.csv ({len(missing)}): {missing[:20]}")
+    return out.astype("int64")

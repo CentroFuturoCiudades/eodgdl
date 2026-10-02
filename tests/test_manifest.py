@@ -52,7 +52,7 @@ def test_a_manifest_records_outputs_inputs_and_upstream(tmp_path, monkeypatch):
 
 def _reweight_set(folder, households=(1, 2, 3)):
     folder.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"HouseholdID": list(households), "HouseholdTAZ": 1001}).to_csv(folder / "HouseholdRecords.csv", index=False)
+    pd.DataFrame({"HouseholdID": list(households), "HouseholdMTAZMun": 1001}).to_csv(folder / "HouseholdRecords.csv", index=False)
     return write_manifest(folder, "reweight_inputs", parameters={"years": [2020, 2023]})
 
 
@@ -74,7 +74,7 @@ def test_the_tmg_weight_enters_with_its_sidecar(tmp_path, monkeypatch):
     assert weight.check_weight(data, root) == [] and verify(root, data) == []
 
     # reweight inputs rebuilt with other content: the weight was fitted on something else
-    (root / "reweight" / "HouseholdRecords.csv").write_text("HouseholdID,HouseholdTAZ\n1,1001\n2,1001\n3,2001\n")
+    (root / "reweight" / "HouseholdRecords.csv").write_text("HouseholdID,HouseholdMTAZMun\n1,1001\n2,1001\n3,2001\n")
     write_manifest(root / "reweight", "reweight_inputs", parameters={"years": [2020, 2023]})
     assert any("the weight is stale" in p for p in weight.check_weight(data, root))
     # the weight file edited after the import

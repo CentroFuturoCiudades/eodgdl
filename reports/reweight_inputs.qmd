@@ -102,7 +102,7 @@ for p in sorted(written, key=lambda p: (p.parent != out_dir, str(p))):
     if p.suffix == ".csv":
         df = pd.read_csv(p)
         file_rows.append({"file": rel, "rows": fmt(len(df)), "columns": len(df.columns),
-                          "read by the tool": "no" if rel in ("ZoneLabels.csv", "ZoneAssignment.csv", "SampledAGEBs.csv") or rel.startswith(("Constraints/diagnostic", "Constraints/coverage", "Constraints/constraints"))
+                          "read by the tool": "no" if rel in ("ZoneLabels.csv", "ZoneAssignment.csv", "ZoneSystemAGEBs.csv") or rel.startswith(("Constraints/diagnostic", "Constraints/coverage", "Constraints/constraints"))
                           else "yes"})
     else:
         file_rows.append({"file": rel, "rows": "", "columns": "", "read by the tool": "no"})
@@ -137,8 +137,8 @@ The tool's source fixes the shape of its inputs. Four of its rules decided the d
   `ExpansionFactor` column for comparison, but the tool ignores them unless a constraint
   names them.
 - **A constraint is one target column in a CSV**, indexed by a geography, with a list of
-  *matching attributes* whose product the tool sums over records, and a map from the TAZ
-  to that geography. Nothing else links a target to the records, so a target and its
+  *matching attributes* whose product the tool sums over records, and a map from the base
+  category (the MTAZMun cell, @sec-zones) to that geography. Nothing else links a target to the records, so a target and its
   attributes must count the same thing on the same universe.
 - **A target greater than zero with no matching record aborts the run.** The build
   checks this for every target before writing (@sec-checks).
@@ -148,7 +148,7 @@ constraint files carry a year suffix whenever any of their targets is scaled to 
 
 ```{python}
 #| label: tbl-files
-#| tbl-cap: "The written set. 'Read by the tool' marks the files the XTMF2 model system loads; the others are documentation of the set: what each TAZ is, where each constraint sits, how far the survey's own weights are from each target, how much of each municipality the survey covers."
+#| tbl-cap: "The written set. 'Read by the tool' marks the files the XTMF2 model system loads; the others are documentation of the set: what each MTAZMun cell is, the TAZ and MTAZ of every AGEB, where each constraint sits, how far the survey's own weights are from each target, how much of each municipality the survey covers."
 show(file_tbl)
 ```
 
@@ -163,7 +163,7 @@ flowchart LR
     A --> Z["zone × municipality<br/>ZoneSystem.csv"]
   end
   subgraph census [Census 2020]
-    C["mxcensus.load_census(14)<br/>AGEB + locality frames"] --> U["census universe<br/>2,308 AGEBs + localities"]
+    C["mxcensus.load_census(14)<br/>AGEB + locality frames"] --> U["census universe<br/>2,307 AGEBs + localities"]
     X["centralidad polygons<br/>+ the survey's zone codes<br/>(dwellings, trip ends)"] --> Z2["zoning.assign_units<br/>one zone per AGEB / locality"] --> U
     U --> S["row corrections<br/>persons · dwellings"]
     S --> T20["sum by geography<br/>2020 targets"]
@@ -189,65 +189,66 @@ definition means editing the YAML.
 #| include: false
 
 zs, zl = files.zone_system, files.zone_labels
-n_zones, n_cells = zs.Zone.nunique(), len(zs)
-cells_per_zone = zl.groupby("centralidad").size()
+n_zones, n_cells = zs.MTAZ.nunique(), len(zs)
+cells_per_zone = zl.groupby("MTAZ_code").size()
 straddling = cells_per_zone[cells_per_zone > 1]
 n_levels = len(reweight.records.zone_levels())
 assert (n_zones, n_cells, n_levels) == (64, 90, 71)
 assert len(straddling) == 22 and cells_per_zone.max() == 3
-assert (zs.TAZ == zs.Zone * 1000 + zs.Municipality).all() and (zs.Region == 1).all()
+assert (zs.MTAZMun == zs.MTAZ * 1000 + zs.Municipality).all() and (zs.Region == 1).all()
 assert set(zs.Municipality) == set(MUN_NAME)
 
-dw_zone = zl.groupby("centralidad").sampled_dwellings.sum()
+dw_zone = zl.groupby("MTAZ_code").sampled_dwellings.sum()
 small_cells = zl[zl.sampled_dwellings < 30]
 assert len(small_cells) == 7
-persons_zone = (files.persons.HouseholdID.map(files.households.set_index("HouseholdID").HouseholdTAZ) // 1000).value_counts()
+persons_zone = (files.persons.HouseholdID.map(files.households.set_index("HouseholdID").HouseholdMTAZMun) // 1000).value_counts()
 
-strad_tbl = (zl[zl.centralidad.isin(straddling.index)]
+strad_tbl = (zl[zl.MTAZ_code.isin(straddling.index)]
              .assign(cell=lambda d: d.municipio + " (" + d.sampled_dwellings.map(str) + ")")
-             .groupby("centralidad", sort=False)
-             .agg(TAZ=("TAZ", lambda s: ", ".join(map(str, s))), municipalities=("cell", "; ".join))
-             .reset_index().rename(columns={"centralidad": "zone"}))
-strad_tbl.insert(1, "zone id", strad_tbl.zone.map(reweight.records.zone_index()))
-small_tbl = small_cells.rename(columns={"centralidad": "zone", "sampled_dwellings": "sampled dwellings"})[
-    ["TAZ", "zone", "municipio", "sampled dwellings"]]
+             .groupby("MTAZ_code", sort=False)
+             .agg(MTAZMun=("MTAZMun", lambda s: ", ".join(map(str, s))), municipalities=("cell", "; ".join))
+             .reset_index())
+strad_tbl.insert(1, "MTAZ", strad_tbl.MTAZ_code.map(reweight.records.zone_index()))
+small_tbl = small_cells.rename(columns={"sampled_dwellings": "sampled dwellings"})[
+    ["MTAZMun", "MTAZ_code", "municipio", "sampled dwellings"]]
 ```
 
-The survey is stratified by *centralidad*, IMEPLAN's zoning: `{python} n_levels` codes in
+The survey is stratified by *centralidad*, IMEPLAN's zoning, the working group's **MTAZ**
+(macro TAZ; its **TAZ** is the AGEB, @sec-universe): `{python} n_levels` codes in
 the schema, `{python} n_zones` with sampled dwellings. Municipalities are the other
 geography the targets need (the cyclist count is municipal). The two are **crossed, not
 nested**: `{python} len(straddling)` of the `{python} n_zones` zones straddle two or three
 municipalities (@tbl-straddling), so neither geography is an aggregate of the other, and
-the tool's single TAZ→geography map per constraint cannot be built from either alone.
+the tool's single base-category→geography map per constraint cannot be built from either alone.
 
-The TAZ is therefore the **zone × municipality cell**, and every id is an integer:
+The tool's base category is therefore the **MTAZ × municipality cell**, `MTAZMun`, and every id is an integer:
 
 | id | definition | values |
 |---|---|---|
-| `Zone` | 1-based position of the centralidad code in the survey schema's ordered categorical (`01` → 1, `Aeropuerto` → 71) | `{python} n_zones` observed |
+| `MTAZ` | 1-based position of the centralidad code (`MTAZ_code`) in the survey schema's ordered categorical (`01` → 1, `Aeropuerto` → 71) | `{python} n_zones` observed |
 | `Municipality` | INEGI's `CVE_MUN` (Guadalajara 39, Zapopan 120, …) | 9 |
-| `TAZ` | `Zone × 1000 + Municipality` | `{python} n_cells` cells |
+| `MTAZMun` | `MTAZ × 1000 + Municipality` | `{python} n_cells` cells |
 | `Region` | 1 everywhere (the study area) | 1 |
 
-`ZoneSystem.csv` lists the `{python} n_cells` TAZs in column 0 and maps each to its zone,
+`ZoneSystem.csv` lists the `{python} n_cells` cells in column 0 and maps each to its MTAZ,
 municipality and region in columns 1–3; `ZoneLabels.csv` says what each is. A household's
-TAZ comes from its dwelling's `centralidad` and `municipio`; @fig-zone-map
-(@sec-universe) draws the zones on the census units they are built from.
+cell comes from its dwelling's `centralidad` and `municipio`; @fig-zone-map
+(@sec-universe) draws the MTAZ on the census units they are built from.
 
-No constraint targets the TAZ itself: `{python} len(small_cells)` cells hold fewer than 30
+No constraint targets the cell itself: `{python} len(small_cells)` cells hold fewer than 30
 sampled dwellings (@tbl-small-cells). Zone targets see between `{python} fmt(dw_zone.min())`
 and `{python} fmt(dw_zone.max())` dwellings and at least `{python} fmt(persons_zone.min())`
 persons per zone.
 
 ```{python}
 #| label: tbl-straddling
-#| tbl-cap: "The 22 zones that straddle municipalities: their TAZ cells and the sampled dwellings in each."
+#| tbl-cap: "The 22 MTAZ that straddle municipalities: their MTAZMun cells and the sampled dwellings in each."
 show(strad_tbl)
 ```
 
 ```{python}
 #| label: tbl-small-cells
-#| tbl-cap: "Cells with fewer than 30 sampled dwellings. They are why no target is set at the TAZ level."
+#| tbl-cap: "Cells with fewer than 30 sampled dwellings. They are why no target is set at the MTAZMun level."
 show(small_tbl)
 ```
 
@@ -318,7 +319,7 @@ Each record table is one row per survey unit with integer keys and numeric attri
 built from `load_eod()`'s cleaned tables:
 
 - **`HouseholdRecords.csv`**: `{python} fmt(len(hh))` rows, one per dwelling.
-  `HouseholdID` is `folio_vivienda`, `HouseholdTAZ` the cell of @sec-zones.
+  `HouseholdID` is `folio_vivienda`, `HouseholdMTAZMun` the cell of @sec-zones.
 - **`PersonRecords.csv`**: `{python} fmt(len(pp))` rows, every interviewed person (the
   survey interviews ages 6 and over). `PersonID = folio_vivienda × 10 + folio_habitante`,
   which is unique because no dwelling has more than nine interviewed persons.
@@ -364,11 +365,11 @@ A few of these are decisions rather than lookups:
 
 cw = reweight.crosswalk(viv, trips)
 universe = reweight.census_universe(viv, trips)
-assign = files.zone_assignment.set_index("CVEGEO")
+assign = reweight.assign_units(viv, trips)
 assert reweight.check_assignment(assign, viv, trips) == []
 n_ageb, n_loc = int(cw.AGEB.notna().sum()), int(cw.AGEB.isna().sum())
-assert (len(cw), n_ageb, n_loc, len(universe)) == (2_308, 2_039, 269, 2_308)
-assert universe.Zone.nunique() == n_zones
+assert (len(cw), n_ageb, n_loc, len(universe)) == (2_307, 2_037, 270, 2_307)
+assert universe.MTAZ.nunique() == n_zones
 agreement = reweight.trip_end_agreement(assign, viv, trips)
 ends = 2 * int((~non_trips(trips)).sum())      # every end of every trip the build keeps
 assert agreement.to_dict() == {"in zone": ends - 3_076, "access point": 3_076}
@@ -377,9 +378,9 @@ rule_counts = assign.groupby(["unit", "rule"], observed=True).agg(units=("POBTOT
 assert rule_counts.units.to_dict() == {
     ("ageb", "survey"): 993, ("ageb", "survey over polygon"): 26,
     ("ageb", "trip ends"): 615, ("ageb", "trip ends over polygon"): 15,
-    ("ageb", "polygon"): 357, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 13,
-    ("locality", "survey"): 212, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
-    ("locality", "outside"): 514, ("rural ageb", "trip ends"): 2,
+    ("ageb", "polygon"): 356, ("ageb", "majority"): 20, ("ageb", "nearest polygon"): 12,
+    ("locality", "survey"): 213, ("locality", "trip ends"): 48, ("locality", "polygon"): 9,
+    ("locality", "outside"): 515, ("rural ageb", "trip ends"): 2,
 }
 RULE_TEXT = {
     "survey": "sampled (for a locality: its rural AGEB); the zone the survey coded for the dwellings",
@@ -400,8 +401,10 @@ against = assign[assign.rule == "survey over polygon"]
 against_outside = against[against.polygon_zone.isna()]
 n_straddle_sampled = int((assign.straddles & assign.survey_zone.notna()).sum())
 sampled_rural = viv.ageb.astype(str).str.len() == 9
-prison = assign.loc["1407001161467"]
-assert prison.rule == "nearest polygon" and prison.zone == "45" and prison.POBTOT > 11_000
+prison, parques = assign.loc["140700116"], assign.loc["140700134"]
+assert prison.unit == "locality" and prison.rural_ageb == "140701467" and prison.rule == "outside" and prison.POBTOT > 11_000
+assert parques.rural_ageb == "140701467" and parques.zone == "13" and parques.polygon_zone == "60"
+assert not assign.index.isin(["1407001161467", "1407001341467"]).any()
 assert assign[assign.unit == "ageb"].zone.notna().all()
 assert assign.loc[(assign.survey_zone == "49F") & (assign.MUN == 51)].sampled_dwellings.sum() == 221
 
@@ -465,10 +468,13 @@ the other `{python} len(against_outside)` lie outside every polygon, among them 
 La Aurora (Juanacatlán), whose `{python} int(assign.loc[(assign.survey_zone == "49F") & (assign.MUN == 51)].sampled_dwellings.sum())`
 dwellings the survey coded `49F`, a zone whose polygon lies in Zapotlanejo. A rural AGEB
 counts only its localities inside its own zone's polygon, so where the polygons split one
-(20 of them), the survey's code wins: all its in-frame localities count in its survey zone, which is what brings `63F`, `40`, `17` and `57`, whose design weights sit 30–190 % above the polygons' census counts, within 15 % of them. One placement is worth knowing: El Salto's AGEB `1467` in locality `0116` (Puente
-Grande's prisons, `{python} fmt(prison.POBTOT)` residents) lies mostly outside every polygon
-and joins `45` by the nearest-polygon rule; its residents are collective quarters, which the
-person correction removes (@sec-row-corrections).
+(20 of them), the survey's code wins: all its in-frame localities count in its survey zone, which is what brings `63F`, `40`, `17` and `57`, whose design weights sit 30–190 % above the polygons' census counts, within 15 % of them. One placement is worth knowing: the census tables
+list two El Salto localities by block under AGEB `1467`, as if urban AGEBs (`1407001161467`, `1407001341467`), but
+INEGI's map draws no such urban AGEB: both are rural localities (`AMBITO` Rural) of rural AGEB `140701467`, which the
+survey codes `13`, and they are placed as such (as in the working group's zones, @sec-zones). Parques del Triunfo
+(`{python} fmt(parques.POBTOT)` residents), inside `60`'s polygon, counts in `13`; Agua Blanca, Puente Grande's prisons
+(`{python} fmt(prison.POBTOT)` residents, nearly all in collective quarters), lies outside every polygon and is not in
+the universe. Until 2026-10-02 they were two urban AGEBs, in `45` (nearest polygon) and `60`.
 
 ```{python}
 #| label: tbl-rules
@@ -481,6 +487,12 @@ rural land, loses the urban AGEBs assigned elsewhere or left out, and gains the 
 to it, so every boundary follows AGEB edges. The workflow's rule `zone_system` writes them as a
 GeoPackage (`output/zones/zones.gpkg`) beside this map (`zone_system_map.pdf`, and
 `zone_system_map_rural_agebs.pdf` with the rural AGEBs drawn whole). @fig-zone-map shows the assignment against the original polygons.
+
+Every AGEB the assignment places, urban or rural, and every access point is a **TAZ**, the working group's
+traffic-analysis zone, numbered by the table eodgdl keeps (`src/eodgdl/taz_ids.csv`, `zoning.check_taz_ids`), the
+working group's mapping adopted on 2026-10-02. `ZoneSystemAGEBs.csv` lists the
+`{python} fmt(len(files.zone_system_agebs))` AGEBs with their TAZ, MTAZ, cell and census targets; the TASHA tables
+carry the TAZ in every zone column.
 
 ```{python}
 #| label: fig-zone-map
@@ -748,9 +760,9 @@ for r20, r23 in zip(idx20.itertuples(), idx23.itertuples()):
     })
 tgt_tbl = pd.DataFrame(tgt_rows)
 
-hh20 = c[f"HouseholdConstraintsByZone_{BASE}.csv"].set_index("Zone")
-pp20 = c[f"PersonConstraintsByZone_{BASE}.csv"].set_index("Zone")
-assert round(hh20.Dwellings.sum()) == 1_462_391 and round(pp20.Persons.sum()) == 4_680_094
+hh20 = c[f"HouseholdConstraintsByMTAZ_{BASE}.csv"].set_index("MTAZ")
+pp20 = c[f"PersonConstraintsByMTAZ_{BASE}.csv"].set_index("MTAZ")
+assert round(hh20.Dwellings.sum()) == 1_462_360 and round(pp20.Persons.sum()) == 4_679_979
 assert (pp20[ages].sum(axis=1) - pp20.Persons).abs().max() < 0.5
 sex_gap = float(pp20.Persons.sum() - (pp20.Male + pp20.Female).sum())
 sex_gap_max = float((pp20.Persons - pp20.Male - pp20.Female).abs().max())
@@ -796,27 +808,27 @@ six_plus = ["P_6A11", "P_12A14", "P_15A17", "P_18YMAS"]
 u = universe.astype({c_: float for c_ in six_plus + ["POBTOT", "POBCOL", "OCUPVIVPAR", "TVIVPARHAB", "VIVPARH_CV", "VIVPAR_HAB"]})
 raw6 = u[six_plus].sum(axis=1)
 by_zone = pd.DataFrame({
-    "raw": raw6.groupby(u.Zone).sum(),
-    "corrected": reweight.row_targets(universe, "persons", "Persons").groupby(u.Zone).sum(),
-    "occupants": u.OCUPVIVPAR.groupby(u.Zone).sum(),
-    "pobtot": u.POBTOT.groupby(u.Zone).sum(),
-    "pobcol": u.POBCOL.fillna(0).groupby(u.Zone).sum(),
+    "raw": raw6.groupby(u.MTAZ).sum(),
+    "corrected": reweight.row_targets(universe, "persons", "Persons").groupby(u.MTAZ).sum(),
+    "occupants": u.OCUPVIVPAR.groupby(u.MTAZ).sum(),
+    "pobtot": u.POBTOT.groupby(u.MTAZ).sum(),
+    "pobcol": u.POBCOL.fillna(0).groupby(u.MTAZ).sum(),
 })
 assert (by_zone.corrected - pp20.Persons.reindex(by_zone.index)).abs().max() < 0.5
 # the survey's own ratio, persons interviewed over occupants listed, per zone
-hh_zone = hh.set_index("HouseholdID").HouseholdTAZ // 1000
+hh_zone = hh.set_index("HouseholdID").HouseholdMTAZMun // 1000
 svy = pd.DataFrame({"persons": pp.groupby(pp.HouseholdID.map(hh_zone)).size(),
-                    "occupants": hh.groupby(hh.HouseholdTAZ // 1000).Occupants.sum()})
+                    "occupants": hh.groupby(hh.HouseholdMTAZMun // 1000).Occupants.sum()})
 svy_ratio = svy.persons / svy.occupants
 r_raw, r_cor = by_zone.raw / by_zone.occupants, by_zone.corrected / by_zone.occupants
 assert r_cor.between(0.8, 1.0).all() and r_raw.min() < 0.8
 zone_code = {i: z for z, i in reweight.records.zone_index().items()}
-aged = u[["P_0A2", "P_3A5", *six_plus]].sum(axis=1).groupby(u.Zone).sum()
+aged = u[["P_0A2", "P_3A5", *six_plus]].sum(axis=1).groupby(u.MTAZ).sum()
 noage = 1 - aged / by_zone.pobtot
 col_share = by_zone.pobcol / by_zone.pobtot
 z_col, z_noage = col_share.idxmax(), noage.idxmax()
 noage_all = 1 - aged.sum() / by_zone.pobtot.sum()
-assert 0.3 < col_share.max() < 0.35 and noage.max() > 0.15
+assert col_share.max() < 0.02 and noage.max() > 0.15     # Puente Grande's prisons are outside the universe
 
 vph = ["VPH_AUTOM", "VPH_MOTO", "VPH_BICI", "VPH_INTER"]
 vph_names = dict(zip(vph, ["HasCar", "HasMoto", "HasBike", "HasInternet"]))
@@ -830,7 +842,7 @@ for v in vph:
                      "if divided by VIVPAR_HAB": fmt((x * old.fillna(1)).sum())})
     assert abs(new.sum() - hh20[vph_names[v]].sum()) < 0.5
 vph_tbl = pd.DataFrame(vph_rows)
-old_internet = (universe.VPH_INTER.astype(float) * old.fillna(1)).groupby(u.Zone).sum()
+old_internet = (universe.VPH_INTER.astype(float) * old.fillna(1)).groupby(u.MTAZ).sum()
 old_lift = sum((universe[v].astype(float) * old.fillna(1)).sum() for v in vph) / sum(universe[v].astype(float).sum() for v in vph) - 1
 old_over = int((old_internet > hh20.Dwellings.reindex(old_internet.index) + 0.5).sum())
 assert (hh20[list(vph_names.values())].max(axis=1) <= hh20.Dwellings + 1e-6).all()
@@ -846,8 +858,8 @@ both are uneven across zones, so both are corrected per census row before summin
 
 - **Collective quarters.** `POBCOL` counts residents of prisons, barracks, care homes and
   dormitories, whom the survey never samples. They are `{python} fmt(by_zone.pobcol.sum())`
-  people in the universe, but `{python} pct(col_share.max(), 0)` of zone
-  `{python} zone_code[z_col]`'s residents: Puente Grande's prisons.
+  people in the universe, at most `{python} pct(col_share.max(), 1)` of a zone's residents (zone
+  `{python} zone_code[z_col]`); Puente Grande's prisons lie outside the universe (@sec-universe).
 - **Residents without an age.** INEGI counts the occupants of dwellings without occupant
   information in `POBTOT` and usually imputes their characteristics, but not everywhere:
   `{python} pct(noage_all)` of the universe's residents have no age, and so no band, sex or
@@ -914,7 +926,7 @@ show(vph_tbl)
 cyc = reweight.constraints("persons")["Cyclist"]
 cyc_whole = sum(cyc["constant"].values())
 mun20 = c[f"PersonConstraintsByMunicipality_{BASE}.csv"].set_index("Municipality")
-assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_870
+assert cyc_whole == 101_907 and round(mun20.Cyclist.sum()) == 100_591
 cyc_tbl = pd.DataFrame({
     "municipality": [MUN_NAME[m] for m in mun20.index],
     "whole municipality": [fmt(cyc["constant"][m]) for m in mun20.index],
@@ -970,8 +982,8 @@ gr.loc[len(gr)] = ["all nine"] + [f"{area[b]:.3f}" for b in bands_shown] + [f"{m
 internet = rates["endutih_internet"]
 assert abs(internet - 1.193) < 0.002
 
-hh23 = c[f"HouseholdConstraintsByZone_{TARGET}.csv"].set_index("Zone")
-pp23 = c[f"PersonConstraintsByZone_{TARGET}.csv"].set_index("Zone")
+hh23 = c[f"HouseholdConstraintsByMTAZ_{TARGET}.csv"].set_index("MTAZ")
+pp23 = c[f"PersonConstraintsByMTAZ_{TARGET}.csv"].set_index("MTAZ")
 dw_growth = hh23.Dwellings.sum() / hh20.Dwellings.sum()
 moto_growth = hh23.HasMoto.sum() / hh20.HasMoto.sum()
 inet_growth = hh23.HasInternet.sum() / hh20.HasInternet.sum()
@@ -1073,7 +1085,7 @@ reports a problem. All three report none for the set described here.
   it (@sec-universe).
 - **`check(out_dir)`** reads the written files back the way the tool's loaders do, and
   imports nothing else from the package: every key an integer, ids unique, every person and
-  trip joined to its household, every household TAZ in `ZoneSystem.csv`, no empty cell, the
+  trip joined to its household, every household's MTAZMun in `ZoneSystem.csv`, no empty cell, the
   sex and age dummies partitioning `Persons`, every map geography present in every
   constraint file (a missing row would silently be a target of 0), no negative target, and
   **every positive target with at least one matching record in its geography**, the

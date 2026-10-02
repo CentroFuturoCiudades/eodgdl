@@ -10,10 +10,12 @@ from eodgdl.chains import PERSON, days_past_midnight, has_code, mark_issues, non
 from eodgdl import tasha
 from eodgdl.eod import EODTables
 from eodgdl.tasha import _schema
+from eodgdl._resources import taz_ids
+from eodgdl.taz import ACCESS_POINTS
 
 
-AGEB = "1409700251418"       # a real 13-character AGEB CVEGEO
-RURAL_AGEB = "141240029"     # a real 9-character rural AGEB key (INEGI's rural AGEB, not a locality)
+ZONE = 412                   # a TAZ (eodgdl/taz_ids.csv): every zone column holds one
+OTHER_ZONE = 1873
 
 
 def test_mappings_agree_with_schema():
@@ -83,13 +85,13 @@ def test_validate_catches_bad_tables():
     trips = pd.DataFrame({
         "HouseholdId": [0], "PersonNumber": [1], "TripNumber": [2],
         "StartTime": [800], "Mode": ["9"], "PurposeOrigin": ["R"],
-        "ZoneOrigin": ["14097"], "PurposeDestination": ["H"],
-        "ZoneDestination": [AGEB], "Junk": [1],
+        "ZoneOrigin": [-3], "PurposeDestination": ["H"],
+        "ZoneDestination": [ZONE], "Junk": [1],
     })
     problems = " | ".join(tasha.validate(trips, "trips"))
     assert "Mode" in problems                 # 9 is not a legal mode
     assert "Junk" in problems                 # column not in the schema
-    assert "ZoneOrigin" in problems           # 14097 is not a 9- or 13-char id
+    assert "ZoneOrigin" in problems           # -3 is no TAZ
     assert "PurposeOrigin is R or C" in problems
     assert "first TripNumber is not 1" in problems
 
@@ -98,7 +100,7 @@ def test_start_times_run_past_midnight_but_not_past_a_second_one():
     trips = pd.DataFrame({
         "HouseholdId": [0] * 4, "PersonNumber": [1] * 4, "TripNumber": [1, 2, 3, 4],
         "StartTime": [2100, 3000, 4759, 2475], "Mode": ["W"] * 4, "PurposeOrigin": ["H", "W", "H", "W"],
-        "ZoneOrigin": [AGEB] * 4, "PurposeDestination": ["W", "H", "W", "H"], "ZoneDestination": [AGEB] * 4,
+        "ZoneOrigin": [ZONE] * 4, "PurposeDestination": ["W", "H", "W", "H"], "ZoneDestination": [ZONE] * 4,
     })
     problems = tasha.validate(trips, "trips")                 # 30:00 and 47:59 are hours of a diary past midnight...
     assert problems == ["trips: 1 StartTime values whose last two digits are not minutes 00-59"]   # ...24:75 is no time
@@ -111,19 +113,19 @@ def test_validate_rejects_home_to_home_trips():
     trips = pd.DataFrame({
         "HouseholdId": [0, 0], "PersonNumber": [1, 1], "TripNumber": [1, 2],
         "StartTime": [800, 900], "Mode": ["W", "W"], "PurposeOrigin": ["H", "H"],
-        "ZoneOrigin": [AGEB, AGEB], "PurposeDestination": ["H", "M"],
-        "ZoneDestination": [AGEB, AGEB],
+        "ZoneOrigin": [ZONE, ZONE], "PurposeDestination": ["H", "M"],
+        "ZoneDestination": [ZONE, ZONE],
     })
     assert any("from H to H" in p for p in tasha.validate(trips, "trips"))
 
 
 def test_chain_report_counts_what_validate_cannot_demand():
-    other = "1409700251419"
+    other = OTHER_ZONE
     trips = pd.DataFrame({
         "HouseholdId": [0, 0, 0], "PersonNumber": [1, 1, 1], "TripNumber": [1, 2, 3],
         "StartTime": [800, 730, 730], "Mode": ["W", "W", "W"],
-        "PurposeOrigin": ["H", "W", "M"], "ZoneOrigin": [AGEB, other, AGEB],
-        "PurposeDestination": ["W", "M", "E"], "ZoneDestination": [other, AGEB, other],
+        "PurposeOrigin": ["H", "W", "M"], "ZoneOrigin": [ZONE, other, ZONE],
+        "PurposeDestination": ["W", "M", "E"], "ZoneDestination": [other, ZONE, other],
     })
     assert tasha.validate(trips, "trips") == []          # conforms...
     report = " | ".join(tasha.chain_report(trips))       # ...but is not clean
@@ -131,7 +133,7 @@ def test_chain_report_counts_what_validate_cannot_demand():
     assert "1 trips start at the same minute" in report
     assert "do not start in the zone" not in report      # zones do chain
     assert "1 people whose last trip does not end at home" in report
-    trips.loc[1, "ZoneOrigin"] = AGEB                     # now trip 2 starts elsewhere
+    trips.loc[1, "ZoneOrigin"] = ZONE                     # now trip 2 starts elsewhere
     assert any("do not start in the zone" in p for p in tasha.chain_report(trips))
 
 
@@ -139,31 +141,33 @@ def test_validate_accepts_a_clean_table():
     trips = pd.DataFrame({
         "HouseholdId": [0], "PersonNumber": [1], "TripNumber": [1],
         "StartTime": [800], "Mode": ["W"], "PurposeOrigin": ["H"],
-        "ZoneOrigin": [RURAL_AGEB], "PurposeDestination": ["W"],
-        "ZoneDestination": [AGEB],
+        "ZoneOrigin": [OTHER_ZONE], "PurposeDestination": ["W"],
+        "ZoneDestination": [ZONE],
     })
     assert tasha.validate(trips, "trips") == []
 
 
-def test_zone_ids_parsed_as_numbers_are_caught():
-    # The ids are mostly all-digit, so a naive read_csv can produce int64.
+def test_zone_ids_must_be_taz_integers():
+    # A zone column holds the integer TAZ; an AGEB code left as text, or 0 outside a sentinel column, is caught.
     trips = pd.DataFrame({
         "HouseholdId": [0], "PersonNumber": [1], "TripNumber": [1],
         "StartTime": [800], "Mode": ["W"], "PurposeOrigin": ["H"],
-        "ZoneOrigin": [int(AGEB)], "PurposeDestination": ["W"],
-        "ZoneDestination": [AGEB],
+        "ZoneOrigin": ["1409700251418"], "PurposeDestination": ["W"],
+        "ZoneDestination": [0],
     })
-    assert any("not strings" in p for p in tasha.validate(trips, "trips"))
+    problems = " | ".join(tasha.validate(trips, "trips"))
+    assert "ZoneOrigin: expected integers" in problems
+    assert "ZoneDestination: zone ids that are not positive TAZ integers, e.g. [0]" in problems
     assert tasha.zone_columns("trips") == ["ZoneOrigin", "ZoneDestination"]
 
 
 HOUSEHOLD = {
-    "HouseholdZone": AGEB, "NumberOfPersons": 2, "DwellingType": 1,
+    "HouseholdZone": ZONE, "NumberOfPersons": 2, "DwellingType": 1,
     "Vehicles": 0, "IncomeClass": 7, "ExpansionFactor": 1.0,
 }
 TRIP = {
-    "StartTime": 800, "Mode": "W", "PurposeOrigin": "H", "ZoneOrigin": AGEB,
-    "PurposeDestination": "W", "ZoneDestination": AGEB,
+    "StartTime": 800, "Mode": "W", "PurposeOrigin": "H", "ZoneOrigin": ZONE,
+    "PurposeDestination": "W", "ZoneDestination": ZONE,
 }
 
 
@@ -189,7 +193,7 @@ def test_number_of_persons_may_exceed_but_not_undercount_the_person_rows():
         {"HouseholdId": 0, "PersonNumber": n, "Age": 30, "Sex": "M", "License": "Y",
          "TransitPass": "N", "EmploymentStatus": "O", "Formality": "O",
          "Occupation": "O", "FreeParking": "O", "StudentStatus": "O",
-         "EmploymentZone": "0", "SchoolZone": "0", "ExpansionFactor": 1.0}
+         "EmploymentZone": 0, "SchoolZone": 0, "ExpansionFactor": 1.0}
         for n in (1, 2, 3)
     ])
     # 3 person rows against a reported size of 2 is a real contradiction...
@@ -226,8 +230,14 @@ def test_build_conforms(stages):
     assert len(od.people) == 58_061
     assert len(od.trips) == len(trips) - int(non_trips(trips).sum())
 
-    # Zone ids come through as the survey's own codes, not a renumbering.
-    assert od.households.HouseholdZone.str.len().isin([9, 13]).all()
+    # Every zone column is the TAZ of the survey's code (eodgdl/taz_ids.csv); 0 only for no work or school zone.
+    taz = taz_ids().set_index("AGEB").TAZ.astype(int)
+    assert (od.households.HouseholdZone.to_numpy() == stages.revised.viv.ageb.astype(str).map(taz).to_numpy()).all()
+    kept = trips[~non_trips(trips)].sort_index()
+    assert (od.trips.ZoneOrigin.to_numpy() == kept.origen.astype(str).map(taz).to_numpy()).all()
+    assert (od.trips.ZoneDestination.to_numpy() == kept.destino.astype(str).map(taz).to_numpy()).all()
+    assert od.trips.ZoneDestination.isin(taz[list(ACCESS_POINTS)]).any()
+    assert set(od.people.EmploymentZone) - {0} <= set(taz) and (od.people.EmploymentZone == 0).any()
     # Renumbered over load_eod's gaps, and never from H to H.
     assert (od.trips.groupby(["HouseholdId", "PersonNumber"]).TripNumber.min() == 1).all()
     assert not ((od.trips.PurposeOrigin == "H") & (od.trips.PurposeDestination == "H")).any()
@@ -328,7 +338,7 @@ def test_build_round_trips_through_csv(stages, tmp_path):
     path = tmp_path / "od_households.csv"
     od.households.to_csv(path, index=False)
 
-    back = pd.read_csv(path, dtype=dict.fromkeys(tasha.zone_columns("households"), str))
+    back = pd.read_csv(path)
     assert tasha.validate(back, "households") == []
     assert back.HouseholdZone.equals(od.households.HouseholdZone)
 

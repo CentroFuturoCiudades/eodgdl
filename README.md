@@ -63,9 +63,9 @@ Its outputs read back in a line, faster than recomputing them and exactly what t
 from eodgdl import artifacts
 
 tables = artifacts.eod()              # the cleaned survey, as load_eod() returns it
-zones = artifacts.zones()             # the zones redrawn along AGEB edges (GeoDataFrame)
-units = artifacts.zone_assignment()   # every urban AGEB and rural locality's zone
-od = artifacts.tasha_tables()         # the TASHA tables, zone ids as text
+zones = artifacts.zones()             # the MTAZ redrawn along AGEB edges (GeoDataFrame, by MTAZ_code)
+units = artifacts.zone_assignment()   # every urban AGEB and rural locality's MTAZ and TAZ
+od = artifacts.tasha_tables()         # the TASHA tables, every zone column the integer TAZ
 ```
 
 ## Loading the survey
@@ -97,7 +97,7 @@ taz = load_taz(drop_ap=True)                       # the centralidad polygons th
 # every census unit (urban AGEB, rural locality) in at most one zone: the polygons plus the
 # survey's own coding; needs the `reweight` extra (census data through mxcensus)
 tables = load_eod()
-units, zones = reweight.zone_system(tables.viv, tables.trips)   # CVEGEO -> zone, rule, population; the zones redrawn along AGEB edges
+units, zones = reweight.zone_system(tables.viv, tables.trips)   # CVEGEO -> TAZ, MTAZ, rule, population; the MTAZ redrawn along AGEB edges
 ```
 
 The workflow writes both (`uv run snakemake -c8 zones` -> `output/zones/zones.gpkg`, `assignment.parquet`, with the
@@ -137,10 +137,11 @@ eodgdl tasha gaps                               # open items
 eodgdl tasha validate output/tasha/             # produced CSVs vs. contract
 ```
 
-Zone columns carry the survey's own zone id as a string — a 13-character urban AGEB CVEGEO, a
-9-character rural AGEB key (INEGI's rural AGEB, not a locality) or one of the 7 access points
-(`99999000x`) — and the zone system places every one of them (`eodgdl.reweight.zoning`); read
-them back with `dtype=str`.
+Zone columns carry the **TAZ**, an integer: the working group's id of the survey's zone code — a 13-character
+urban AGEB CVEGEO, a 9-character rural AGEB key (INEGI's rural AGEB, not a locality) or one of the 7 access points
+(`99999000x`) — from `src/eodgdl/taz_ids.csv` (the working group's mapping, adopted 2026-10-02),
+whose `AGEB` column joins it back to the code. The zone system places every AGEB (`eodgdl.reweight.zoning`); the
+centralidad it belongs to is its **MTAZ** (macro TAZ).
 
 Some columns come from the imputation models (see Imputation models below), one completed
 dataset at a time, of the pipeline `tasha` (persons and dwellings drawn jointly):

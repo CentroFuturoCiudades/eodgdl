@@ -11,8 +11,8 @@ import geopandas as gpd
 
 from eodgdl.data import ZONIFICACION_PARQUET
 
-# Zona-EOD access-point ids (airport / external gateways), dropped when drop_ap=True
-_TAZ_ACCESS_POINTS = [
+# Zona-EOD access-point ids (airport / external gateways), dropped when drop_ap=True; trip ends carry them as codes
+ACCESS_POINTS = [
     "999990005",
     "999990004",
     "999990006",
@@ -54,6 +54,6 @@ def load_taz(fpath: Path | None = None, drop_ap: bool = False) -> gpd.GeoDataFra
     """
     taz = gpd.read_parquet(_resolve(fpath, ZONIFICACION_PARQUET)).set_index("ID_ZONAEOD")
     if drop_ap:
-        access_points = _TAZ_ACCESS_POINTS
+        access_points = ACCESS_POINTS
         taz = taz.query("~ID_ZONAEOD.isin(@access_points)")
     return taz

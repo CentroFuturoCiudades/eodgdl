@@ -28,33 +28,33 @@ def zone_index():
 
 
 def zone_ids(viv):
-    """TAZ, Zone, Municipality, Region per dwelling (int), per the `zones` section of the spec."""
+    """MTAZMun, MTAZ, Municipality, Region per dwelling (int), per the `zones` section of the spec."""
     zone = viv.centralidad.astype(str).map(zone_index())
     mun = viv.municipio.astype(str).map({name: code for code, name in load_zm_muns().items()})
     if zone.isna().any() or mun.isna().any():
         raise ValueError("a dwelling's centralidad or municipio is outside the known levels")
     return pd.DataFrame(
-        {"TAZ": zone * 1000 + mun, "Zone": zone, "Municipality": mun, "Region": 1},
+        {"MTAZMun": zone * 1000 + mun, "MTAZ": zone, "Municipality": mun, "Region": 1},
         index=viv.index,
     ).astype(int)
 
 
 def build_zones(viv):
-    """(ZoneSystem, ZoneLabels): the TAZ list with its maps, and what each TAZ is."""
+    """(ZoneSystem, ZoneLabels): the MTAZMun cells with their maps, and what each cell is."""
     ids = zone_ids(viv)
-    zone_system = ids.drop_duplicates("TAZ").sort_values("TAZ").reset_index(drop=True)
+    zone_system = ids.drop_duplicates("MTAZMun").sort_values("MTAZMun").reset_index(drop=True)
     labels = (
         ids.join(viv[["centralidad", "municipio"]])
-        .groupby("TAZ")
+        .groupby("MTAZMun")
         .agg(
-            centralidad=("centralidad", "first"),
+            MTAZ_code=("centralidad", "first"),
             municipio=("municipio", "first"),
             CVE_MUN=("Municipality", "first"),
-            sampled_dwellings=("Zone", "size"),
+            sampled_dwellings=("MTAZ", "size"),
         )
         .reset_index()
     )
-    labels["centralidad"] = labels.centralidad.astype(str)
+    labels["MTAZ_code"] = labels.MTAZ_code.astype(str)
     labels["municipio"] = labels.municipio.astype(str)
     return zone_system, labels
 
@@ -126,7 +126,7 @@ def _imputed(df, name, entry, values, scores):
 
 def build_households(viv):
     ids = zone_ids(viv)
-    out = pd.DataFrame({"HouseholdID": viv.index.to_numpy(), "HouseholdTAZ": ids.TAZ.to_numpy()})
+    out = pd.DataFrame({"HouseholdID": viv.index.to_numpy(), "HouseholdMTAZMun": ids.MTAZMun.to_numpy()})
     for name, entry in attributes("households").items():
         out[name] = _attribute(viv, name, entry).to_numpy()
     return out
@@ -185,10 +185,10 @@ def build_trips(trips, legs):
 
 
 def record_geography(records, table, zone_system, geography):
-    """The geography id of every record of `table`, through its household's TAZ."""
-    taz = records.households.set_index("HouseholdID").HouseholdTAZ
+    """The geography id of every record of `table`, through its household's MTAZMun cell."""
+    cell = records.households.set_index("HouseholdID").HouseholdMTAZMun
     column = GEOGRAPHY_COLUMN[geography]
-    to_geo = zone_system.set_index("TAZ")[column]
+    to_geo = zone_system.set_index("MTAZMun")[column]
     frame = getattr(records, table)
-    hh = frame.HouseholdTAZ if table == "households" else frame.HouseholdID.map(taz)
+    hh = frame.HouseholdMTAZMun if table == "households" else frame.HouseholdID.map(cell)
     return hh.map(to_geo)

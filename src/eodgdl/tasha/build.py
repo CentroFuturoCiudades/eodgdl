@@ -4,7 +4,9 @@ Every coded column is built from ``mappings.yaml`` rather than from a lookup
 retyped here, so changing a mapping changes the output. What the mappings record
 as ``derivation`` prose — the R/C demotion, the passenger override, the
 work/school zone lookups, the daycare trips by age, H only at the household's
-zone — is implemented below, and the prose is its spec.
+zone — is implemented below, and the prose is its spec. Every zone column carries the TAZ, the integer of the
+AGEB or access point in ``eodgdl/taz_ids.csv`` (``eodgdl._resources.taz_of``, which raises on a code without one);
+the rules compare the survey's codes before that.
 
 The columns a mapping marks ``imputed`` (IncomeClass; EmploymentStatus and StudentStatus where unanswered,
 EmploymentStatus's P, Formality, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute
@@ -38,11 +40,12 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
+from eodgdl._resources import taz_of
 from eodgdl.chains import DAYCARE, ESCORT_FROM_AGE, days_past_midnight, non_trips
 from eodgdl.tasha._schema import build_map, imputed_lookups, load_mappings, mapping
 
 PERSON = ["folio_vivienda", "folio_habitante"]
-NO_ZONE = "0"  # sentinel for EmploymentZone / SchoolZone
+NO_ZONE = 0  # sentinel for EmploymentZone / SchoolZone (TAZ ids start at 1)
 # DAYCARE, ESCORT_FROM_AGE: a Guardería trip from this age on is an escort (PurposeDestination, StudentStatus);
 # load_eod's chain rules already recode it so (motivo:guarderia), and the build reads the age the same way
 
@@ -173,7 +176,7 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd
 
     return pd.DataFrame({
         "HouseholdId": _household_ids(viv),
-        "HouseholdZone": viv.ageb.astype(str),
+        "HouseholdZone": taz_of(viv.ageb.astype(str)),
         # Reported size, raised to the observed member count when that is larger.
         "NumberOfPersons": np.maximum(reported, observed),
         "DwellingType": mapping("DwellingType")["constant"],
@@ -206,8 +209,8 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, comp
 
     def first_destination(motives: list[str]) -> pd.Series:
         matching = trips[trips.motivo_viaje.isin(motives)]
-        return (matching.groupby(level=PERSON).destino.first()
-                        .reindex(hab.index).fillna(NO_ZONE).astype(str))
+        first = matching.groupby(level=PERSON).destino.first().astype(str)
+        return taz_of(first).reindex(hab.index).fillna(NO_ZONE).astype(int)
 
     age = hab.edad.reindex(trips.index.droplevel("folio_viaje")).to_numpy()
     made_school_trip = (((trips.motivo_viaje == "Estudiar")
@@ -296,9 +299,9 @@ def build_trips(
                       + 2400 * days_past_midnight(trips)).astype(int).to_numpy(),
         "Mode": mode.to_numpy(),
         "PurposeOrigin": origin.to_numpy(),
-        "ZoneOrigin": trips.origen.astype(str).to_numpy(),
+        "ZoneOrigin": taz_of(trips.origen.astype(str)).to_numpy(),
         "PurposeDestination": destination.to_numpy(),
-        "ZoneDestination": trips.destino.astype(str).to_numpy(),
+        "ZoneDestination": taz_of(trips.destino.astype(str)).to_numpy(),
         "ExpansionFactor": trips.ponderador.astype(float).to_numpy(),
         "Duration": duration.astype(int).to_numpy(),
     })

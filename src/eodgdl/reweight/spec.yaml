@@ -30,7 +30,7 @@
 #
 # Constraint entries (one per target column; the file it lands in is
 # `<Table>ConstraintsBy<Geography>[_<year>].csv`, one row per geography):
-#   geography    zone | municipality | region — the ZoneSystem.csv column the TAZ maps to
+#   geography    mtaz | municipality | region — the ZoneSystem.csv column the MTAZMun cell maps to
 #   attributes   record attributes the tool multiplies (MatchingAttributes); default [name]
 #   census       expression over the census columns, evaluated AFTER summing them by
 #                geography (so ratios are ratios of totals)
@@ -71,13 +71,16 @@ meta:
 # ===========================================================================
 zones:
 # ===========================================================================
-  # The survey is stratified by centralidad (64 observed zones) but 22 of them straddle
-  # two or three municipalities, so neither is an aggregate of the other. The TAZ is the
-  # zone x municipality cell; ZoneSystem.csv maps it to each.
-  taz: zone_index * 1000 + cve_mun
-  zone: 1-based position of the centralidad code in the survey's ordered categorical (71 levels)
+  # The survey is stratified by centralidad, the MTAZ (macro TAZ; 64 observed of 71), but 22 of
+  # them straddle two or three municipalities, so neither is an aggregate of the other. The
+  # tool's base category is the MTAZ x municipality cell, MTAZMun; ZoneSystem.csv maps it to each.
+  # The TAZ is the AGEB (and the access point): its integer in eodgdl/taz_ids.csv, kept by hand
+  # and never renumbered (README, "TAZ ids"); no constraint reads it.
+  mtazmun: mtaz * 1000 + cve_mun
+  mtaz: 1-based position of the centralidad code (MTAZ_code) in the survey's ordered categorical (71 levels)
   municipality: INEGI CVE_MUN (eodgdl.load_zm_muns)
-  region: 1 for every TAZ (the whole study area)
+  region: 1 for every MTAZMun (the whole study area)
+  taz: eodgdl/taz_ids.csv
   # The census side of a zone is the urban AGEBs and rural localities that
   # eodgdl.reweight.zoning.assign_units places in it: a sampled AGEB takes the zone the
   # survey coded there, an unsampled one goes whole to the polygon holding most of its
@@ -355,11 +358,11 @@ constraints:
   households:
 
     Dwellings:
-      geography: zone
+      geography: mtaz
       census: TVIVPARHAB
       conapo: total
       note: >-
-        Total private inhabited dwellings (1,462,391 in the universe). TVIVHAB adds the
+        Total private inhabited dwellings (1,462,360 in the universe). TVIVHAB adds the
         collective ones. Two subsets matter below: VIVPARH_CV, the dwellings whose
         characteristics were captured -- the base of the VPH_* counts, which INEGI
         defines as including the dwellings without occupant information and excluding
@@ -368,7 +371,7 @@ constraints:
         (1,358,454). VPH_* never exceed VIVPARH_CV in any census row, and exceed
         VIVPAR_HAB in 223.
     Occupants:
-      geography: zone
+      geography: mtaz
       census: OCUPVIVPAR
       conapo: total
       note: >-
@@ -379,7 +382,7 @@ constraints:
         TVIVPARHAB / VIVPAR_HAB, as an earlier version did, added 421k occupants
         (+8 %) and up to +112 % in a zone, contradicting the dwelling and person targets.
     HasCar:
-      geography: zone
+      geography: mtaz
       census: VPH_AUTOM
       row_scale: dwellings
       conapo: total
@@ -392,7 +395,7 @@ constraints:
         VPH_* targets 8.9 % over the census as published (8-9 % each) and putting
         HasInternet above Dwellings in five zones.
     HasMoto:
-      geography: zone
+      geography: mtaz
       census: VPH_MOTO
       row_scale: dwellings
       vmrc: MOTO_PARTICULAR
@@ -401,12 +404,12 @@ constraints:
         +33 % to +64 % by municipality: the survey's motorcycle share sat 1.4x above the
         2020 census rate in the median zone, a gap the fleet growth accounts for.
     HasBike:
-      geography: zone
+      geography: mtaz
       census: VPH_BICI
       row_scale: dwellings
       conapo: total
     HasInternet:
-      geography: zone
+      geography: mtaz
       census: VPH_INTER
       row_scale: dwellings
       conapo: total
@@ -421,7 +424,7 @@ constraints:
   persons:
 
     Persons:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_6A11 + P_12A14 + P_15A17 + P_18YMAS
       sum_of: [Age6_11, Age12_14, Age15_17, Age18_24, Age25_59, Age60p]
@@ -431,7 +434,7 @@ constraints:
         zone person target it is scaled row by row (row_scale: persons,
         targets.person_scale) to the residents of private dwellings, with the residents
         whose age INEGI did not record spread over the stated bands: the census counts
-        residents of collective quarters (POBCOL, a third of zone 45: Puente Grande's prisons), whom a
+        residents of collective quarters (POBCOL, at most 1.4 % of a zone's; Puente Grande's prisons lie outside the universe), whom a
         household survey never samples, and in a few AGEBs leaves the occupants of
         dwellings without occupant information without an age (17.5 % of 63F's residents,
         0.9 % of the universe); a row with residents but no stated age at all takes its
@@ -440,134 +443,134 @@ constraints:
         (466 over the study area); the sex x age crosses fall short of their bands the
         same way.
     Male:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_6A11_M + P_12A14_M + P_15A17_M + P_18YMAS_M
       sum_of: [Male_Age6_11, Male_Age12_14, Male_Age15_17, Male_Age18_24, Male_Age25_59, Male_Age60p]
       sex: M
     Female:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_6A11_F + P_12A14_F + P_15A17_F + P_18YMAS_F
       sum_of: [Female_Age6_11, Female_Age12_14, Female_Age15_17, Female_Age18_24, Female_Age25_59, Female_Age60p]
       sex: F
 
     Age6_11:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_6A11
       grow_with: [Male_Age6_11, Female_Age6_11]
       conapo: age6_11
     Age12_14:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_12A14
       grow_with: [Male_Age12_14, Female_Age12_14]
       conapo: age12_14
     Age15_17:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_15A17
       grow_with: [Male_Age15_17, Female_Age15_17]
       conapo: age15_17
     Age18_24:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_18A24
       grow_with: [Male_Age18_24, Female_Age18_24]
       conapo: age18_24
     Age25_59:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_18YMAS - P_18A24 - P_60YMAS
       grow_with: [Male_Age25_59, Female_Age25_59]
       conapo: age25_59
     Age60p:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_60YMAS
       grow_with: [Male_Age60p, Female_Age60p]
       conapo: age60p
 
     Male_Age6_11:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Male, Age6_11]
       census: P_6A11_M
       conapo: age6_11
       sex: M
     Male_Age12_14:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Male, Age12_14]
       census: P_12A14_M
       conapo: age12_14
       sex: M
     Male_Age15_17:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Male, Age15_17]
       census: P_15A17_M
       conapo: age15_17
       sex: M
     Male_Age18_24:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Male, Age18_24]
       census: P_18A24_M
       conapo: age18_24
       sex: M
     Male_Age25_59:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Male, Age25_59]
       census: P_18YMAS_M - P_18A24_M - P_60YMAS_M
       conapo: age25_59
       sex: M
     Male_Age60p:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Male, Age60p]
       census: P_60YMAS_M
       conapo: age60p
       sex: M
     Female_Age6_11:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Female, Age6_11]
       census: P_6A11_F
       conapo: age6_11
       sex: F
     Female_Age12_14:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Female, Age12_14]
       census: P_12A14_F
       conapo: age12_14
       sex: F
     Female_Age15_17:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Female, Age15_17]
       census: P_15A17_F
       conapo: age15_17
       sex: F
     Female_Age18_24:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Female, Age18_24]
       census: P_18A24_F
       conapo: age18_24
       sex: F
     Female_Age25_59:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Female, Age25_59]
       census: P_18YMAS_F - P_18A24_F - P_60YMAS_F
       conapo: age25_59
       sex: F
     Female_Age60p:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       attributes: [Female, Age60p]
       census: P_60YMAS_F
@@ -575,7 +578,7 @@ constraints:
       sex: F
 
     Employed:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: POCUPADA
       conapo: age10p
@@ -585,7 +588,7 @@ constraints:
         NotEmployed are rescaled together to the grown 12+ bands, which they partition in
         the census: the employment rate of 2020 is kept.
     NotEmployed:
-      geography: zone
+      geography: mtaz
       row_scale: persons
       census: P_12A14 + P_15A17 + P_18YMAS - POCUPADA
       conapo: age10p

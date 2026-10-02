@@ -63,6 +63,8 @@ def code(*parts):
 SURVEY = [f"{DATA}/{name}" for name in SURVEY_FILES]
 LOADER = [os.path.relpath(path) for path in loader_files()]
 ZONING = code("reweight/zoning.py", "taz.py", "data.py")
+# The TAZ of every AGEB and access point, a table code() does not list: an input of the rules that write it.
+TAZ_IDS = "src/eodgdl/taz_ids.csv"
 IMPUTE = code("impute", "giro", "config.py") + ZONING
 EOD = expand(f"{OUT}/eod/{{table}}.parquet", table=["viv", "hab", "trips", "legs"])
 
@@ -145,6 +147,7 @@ rule zone_system:
         trips=f"{OUT}/eod/trips.parquet",
         zones=f"{DATA}/AMG_Zonificacion_para_encuesta.parquet",
         code=ZONING,
+        taz_ids=TAZ_IDS,
         map_chunk="reports/reweight_inputs.qmd",
     output:
         zones=f"{OUT}/zones/zones.gpkg",
@@ -164,6 +167,7 @@ rule reweight_inputs:
         expand(f"{DATA}/{{name}}", name=["AMG_Zonificacion_para_encuesta.parquet", "CONAPO_proyecciones_AMG.csv", "VMRC_AMG.csv", "ENDUTIH_internet_AMG.csv"]),
         "models/od_empleo_design_model.joblib",
         code("reweight"),
+        TAZ_IDS,
         IMPUTE,
     output:
         directory(f"{OUT}/reweight"),
@@ -252,6 +256,7 @@ rule tasha_build:
         f"{OUT}/impute/tasha",
         EOD,
         code("tasha"),
+        TAZ_IDS,
     output:
         expand(f"{OUT}/tasha/od_{{table}}.csv", table=["households", "people", "trips"]),
         f"{OUT}/tasha/od_provenance.json",

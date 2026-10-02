@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 KEYS = {
-    "households": ("HouseholdRecords.csv", ["HouseholdID", "HouseholdTAZ"]),
+    "households": ("HouseholdRecords.csv", ["HouseholdID", "HouseholdMTAZMun"]),
     "persons": ("PersonRecords.csv", ["PersonID", "HouseholdID"]),
     "trips": ("TripRecords.csv", ["HouseholdID", "PersonID"]),
 }
@@ -51,14 +51,14 @@ def check(out_dir):
     if zones is None or any(r is None for r in records.values()) or index is None:
         return problems
 
-    # --- zone system: ints, unique TAZ, every map column present
-    for col in ["TAZ", "Zone", "Municipality", "Region"]:
+    # --- zone system: ints, unique MTAZMun, every map column present
+    for col in ["MTAZMun", "MTAZ", "Municipality", "Region"]:
         if col not in zones.columns:
             problems.append(f"ZoneSystem.csv: no column {col}")
         elif not pd.api.types.is_integer_dtype(zones[col]):
             problems.append(f"ZoneSystem.csv: {col} is not integer")
-    if "TAZ" in zones.columns and zones.TAZ.duplicated().any():
-        problems.append("ZoneSystem.csv: duplicated TAZ")
+    if "MTAZMun" in zones.columns and zones.MTAZMun.duplicated().any():
+        problems.append("ZoneSystem.csv: duplicated MTAZMun")
     if problems:
         return problems
 
@@ -82,8 +82,8 @@ def check(out_dir):
         problems.append("HouseholdRecords.csv: duplicated HouseholdID")
     if pp.PersonID.duplicated().any():
         problems.append("PersonRecords.csv: duplicated PersonID")
-    if not hh.HouseholdTAZ.isin(zones.TAZ).all():
-        problems.append("HouseholdRecords.csv: a HouseholdTAZ is not in ZoneSystem.csv")
+    if not hh.HouseholdMTAZMun.isin(zones.MTAZMun).all():
+        problems.append("HouseholdRecords.csv: a HouseholdMTAZMun is not in ZoneSystem.csv")
     if not pp.HouseholdID.isin(hh.HouseholdID).all():
         problems.append("PersonRecords.csv: a HouseholdID has no household record")
     if not tt.HouseholdID.isin(hh.HouseholdID).all():
@@ -107,10 +107,10 @@ def check(out_dir):
                 problems.append(f"{KEYS[table][0]}: {'+'.join(parts)} {op} {total} fails on {int(bad.sum())} rows")
 
     # --- constraints: every target column present, every map geography covered, feasible
-    taz_of = {
-        "households": hh.HouseholdTAZ,
-        "persons": pp.HouseholdID.map(hh.set_index("HouseholdID").HouseholdTAZ),
-        "trips": tt.HouseholdID.map(hh.set_index("HouseholdID").HouseholdTAZ),
+    cell_of = {
+        "households": hh.HouseholdMTAZMun,
+        "persons": pp.HouseholdID.map(hh.set_index("HouseholdID").HouseholdMTAZMun),
+        "trips": tt.HouseholdID.map(hh.set_index("HouseholdID").HouseholdMTAZMun),
     }
     files: dict[str, pd.DataFrame] = {}
     for row in index.itertuples(index=False):
@@ -145,7 +145,7 @@ def check(out_dir):
             problems.append(f"{row.file}: {row.target_column} matches {absent}, not in {KEYS[row.table][0]}")
             continue
         value = df[attrs].prod(axis=1)
-        geo_of = taz_of[row.table].map(zones.set_index("TAZ")[row.map_column])
+        geo_of = cell_of[row.table].map(zones.set_index("MTAZMun")[row.map_column])
         present = set(geo_of[value > 0])
         infeasible = sorted(g for g, t in target.items() if t > 0 and g not in present)
         if infeasible:
