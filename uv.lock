@@ -532,6 +532,7 @@ reweight = [
 ]
 workflow = [
     { name = "joblib" },
+    { name = "matplotlib" },
     { name = "mxcensus" },
     { name = "openpyxl" },
     { name = "pyyaml" },
@@ -551,6 +552,7 @@ requires-dist = [
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "mapclassify", marker = "extra == 'notebook'", specifier = ">=2.10" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'workflow'", specifier = ">=3.10" },
     { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
     { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
     { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },

@@ -137,16 +137,20 @@ rule eod_tables:
         "scripts/eod_tables.py"
 
 
-# The zone system: every census unit in at most one zone, and the zones redrawn along AGEB edges.
+# The zone system: every census unit in at most one zone, and the zones redrawn along AGEB edges; mapped by the
+# report's fig-zone-map chunk, plain and with the rural AGEBs drawn whole.
 rule zone_system:
     input:
         viv=f"{OUT}/eod/viv.parquet",
         trips=f"{OUT}/eod/trips.parquet",
         zones=f"{DATA}/AMG_Zonificacion_para_encuesta.parquet",
         code=ZONING,
+        map_chunk="reports/reweight_inputs.qmd",
     output:
         zones=f"{OUT}/zones/zones.gpkg",
         assignment=f"{OUT}/zones/assignment.parquet",
+        map=f"{OUT}/zones/zone_system_map.pdf",
+        map_rural=f"{OUT}/zones/zone_system_map_rural_agebs.pdf",
         manifest=f"{OUT}/zones/manifest.json",
     script:
         "scripts/zone_system.py"

@@ -50,6 +50,7 @@ dev = ["pytest>=8.0"]
 # Extra for the workflow (workflow/Snakefile): Snakemake, and every extra a rule needs.
 workflow = [
     "eodgdl[giro,reweight]",
+    "matplotlib>=3.10",   # the zone_system rule's maps
     "snakemake>=9",
 ]
 

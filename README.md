@@ -71,14 +71,15 @@ tables = load_eod()
 units, zones = reweight.zone_system(tables.viv, tables.trips)   # CVEGEO -> zone, rule, population; the zones redrawn along AGEB edges
 ```
 
-The workflow writes both (`uv run snakemake -c8 zones` -> `output/zones/zones.gpkg`, `assignment.parquet`), and
+The workflow writes both (`uv run snakemake -c8 zones` -> `output/zones/zones.gpkg`, `assignment.parquet`, with the
+map `zone_system_map.pdf` and `zone_system_map_rural_agebs.pdf`), and
 `artifacts.zones()` / `artifacts.zone_assignment()` read them back.
 
 Every loader reads the clone's `data/` by default and accepts a path override. An
 urban AGEB is never split: a sampled one takes the zone the survey coded there, an
 unsampled one takes the zone the survey coded for its trip ends, or else goes whole to the
 polygon holding most of its population. `reports/reweight_inputs.qmd`
-maps the result; `scripts/zone_system_map.py` draws the map.
+maps the result, and the rule `zone_system` draws that map into `output/zones/`.
 
 ## Travel-demand model schema
 
