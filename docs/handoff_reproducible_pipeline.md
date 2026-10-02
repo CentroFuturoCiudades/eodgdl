@@ -237,7 +237,8 @@ each (`scripts/impute/parity.py`, the manifests):
    and the pipeline's draws stay in their YAMLs (narrowed from the plan: they define models and feed the spec hashes).
    The guards (`weight_conflicts`, `check_weight`) stay until step 4: the config makes a mixed run unlikely, not
    impossible (an old root under a new weight).
-3. **The Snakefile — done (uncommitted).** Proved on a scratch root (`--config output=ROOT`, 16 jobs, 49 min on 18
+3. **The Snakefile — done (0431b5c); `output/` rebuilt by it the same day** (16 jobs, `verify` holds, its 326 tables
+   identical to the scratch root's). Proved first on a scratch root (`--config output=ROOT`, 16 jobs, 49 min on 18
    cores): all 326 parquet tables of `output/impute` identical, the 21 models identical (`parity.py --models`), the
    reweight set's outputs digest, the TASHA tables and the zone assignment (2,824 units) identical; only provenance
    metadata differs (fields added since, manifests the old roots lacked). The first run lost its last step: a `run:`
@@ -257,9 +258,14 @@ each (`scripts/impute/parity.py`, the manifests):
    nothing. Two corrections to the plan: **mtime stays a rerun trigger** (Snakemake's `input` trigger sees only the list
    of inputs, so content changes propagate by timestamps alone; `snakemake --touch` after a no-op edit), and the CLI
    stays as the rules' interface (step 4 trims it instead of deleting it).
-4. **Delete what became redundant**: the CLI commands no rule and no review round uses, `pipeline verify` once the rule
-   `verify` covers it, the staleness guards the DAG makes redundant (the weight guards stay: a root can still be read
-   under another weight); `manifest.py` possibly reduced to one final manifest.
+4. **Delete what became redundant — assessed, little to delete (2026-10-01, for the user to decide).** The CLI (501
+   lines) is now the rules' interface (`tasha build`, `reweight build`, `impute score|retrain|evaluate`, `pipeline
+   verify`), the hand work (the four review commands, `reweight import-weight`, `impute compare`) and four inspection
+   commands documented in the handover READMEs (`tasha check|gaps|validate`, `reweight check`, ~30 lines). The guards
+   (`weight_conflicts`, `check_bootstrap`, `load_completed`'s versions) cost little and still protect a command run by
+   hand on another root; the manifests are the content-linked provenance Snakemake lacks (the parity checks read them).
+   Candidates if wanted: the four inspection commands, `impute score <task>`'s default `giro_scores.parquet` (read by
+   nothing; an orphan from before the workflow sits in `output/impute/`).
 ## Do not
 
 - Change a target or attribute in Python: `spec.yaml` holds every definition (`reweight/README.md`).
