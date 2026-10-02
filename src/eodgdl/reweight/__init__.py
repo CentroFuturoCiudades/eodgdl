@@ -56,6 +56,7 @@ from eodgdl.reweight.zoning import (
     unit_shapes,
     zone_polygons,
     zone_shapes,
+    zone_system,
 )
 
 __all__ = [
@@ -63,6 +64,6 @@ __all__ = [
     "ReweightFiles", "build", "write", "diagnostic", "years",
     "check",
     "build_zones", "zone_ids", "build_households", "build_people", "build_trips",
-    "assign_units", "check_assignment", "survey_codes", "trip_end_agreement", "unit_shapes", "zone_polygons", "zone_shapes",
+    "assign_units", "check_assignment", "survey_codes", "trip_end_agreement", "unit_shapes", "zone_polygons", "zone_shapes", "zone_system",
     "crosswalk", "census_universe", "coverage", "row_targets", "sampled_agebs", "load_conapo", "Conapo", "load_vmrc", "Vmrc", "load_rates", "build_constraints", "person_scale", "dwelling_scale",
 ]

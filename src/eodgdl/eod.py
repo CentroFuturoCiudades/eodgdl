@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import NamedTuple
@@ -69,6 +71,29 @@ class EODTables(NamedTuple):
         pd.DataFrame
     )  # trips, indexed by (folio_vivienda, folio_habitante, folio_viaje)
     legs: pd.DataFrame  # trip legs, indexed by (..., folio_viaje, folio_traslado)
+
+
+# What load_eod() reads besides the survey files: its code and bundled configuration (the chain rules, the hand
+# decisions and leg minutes, the schemas, the rename map). The workflow's eod rule lists them as its code.
+LOADER_FILES = ("eod.py", "chains.py", "review.py", "schemas.py", "_resources.py", "imeplan_rename_map.json")
+
+
+def loader_files() -> list[Path]:
+    """The files of :data:`LOADER_FILES` and ``revisions/*.csv.gz``, as paths."""
+    package = Path(__file__).parent
+    return [package / name for name in LOADER_FILES] + sorted((package / "revisions").glob("*.csv.gz"))
+
+
+def tables_digest(tables: EODTables) -> str:
+    """One sha256 over what ``tables`` hold: each table's index names, columns and dtypes (a categorical's levels and
+    their order included) and every value with its index. Two loads that give the same tables give the same digest,
+    whatever code produced them."""
+    digest = hashlib.sha256()
+    for name, frame in zip(tables._fields, tables):
+        schema = [name, [str(level) for level in frame.index.names], [(str(column), repr(dtype)) for column, dtype in frame.dtypes.items()]]
+        digest.update(json.dumps(schema, ensure_ascii=False).encode())
+        digest.update(pd.util.hash_pandas_object(frame, index=True).to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 class EODStages(NamedTuple):

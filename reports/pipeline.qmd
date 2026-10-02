@@ -41,7 +41,7 @@ def _find_root() -> Path:
 ROOT = _find_root()
 os.environ.setdefault("EODGDL_DATA_DIR", str(ROOT / "data"))
 DATA = Path(os.environ["EODGDL_DATA_DIR"])
-RUN = Path(os.environ.get("EODGDL_PIPELINE_ROOT", ROOT / "output"))     # where the stages wrote (scripts/pipeline/run.sh ROOT)
+RUN = Path(os.environ.get("EODGDL_PIPELINE_ROOT", ROOT / "output"))     # where the stages wrote (workflow/Snakefile, --config output=ROOT)
 REWEIGHT = RUN / "reweight"
 assert (REWEIGHT / "manifest.json").exists(), f"No reweight inputs with a manifest at {REWEIGHT}: run `uv run eodgdl reweight build --data data`."
 
@@ -151,8 +151,8 @@ activity.rename(columns={"survey_at_design_weight": "survey"}).round(3).style.fo
 #| label: stage3
 sidecar = read_sidecar(DATA)
 WEIGHT = sidecar is not None
-text = ("The TMG weight has not come back yet: stages 4–6 below wait for it. `scripts/pipeline/run.sh` stops at stage 3 "
-        "and names what to hand over and what must come back.") if not WEIGHT else (
+text = ("The TMG weight has not come back yet: stages 4–6 below wait for it. Under `weight: tmg` the workflow refuses to start "
+        "without it; under `weight: design` its imputations run on the survey's own weight.") if not WEIGHT else (
         f"`{WEIGHT_CSV}` (sha256 `{sidecar['weight_sha256'][:12]}`…) was fitted on the reweight inputs with outputs digest "
         f"`{sidecar['reweight_inputs']['outputs_digest'][:12]}`… (commit `{(sidecar['reweight_inputs']['commit'] or '')[:9]}`), constraint set "
         f"{sidecar['reweight_inputs']['constraint_year']}; the tool's commit: {sidecar['tool']['commit'] or 'not recorded'}; configuration "

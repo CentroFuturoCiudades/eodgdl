@@ -113,6 +113,30 @@ reads its files in place. Another project uses it as an editable path dependency
 git clone https://github.com/CentroFuturoCiudades/eodgdl && cd eodgdl && uv sync
 ```
 
+## The processing
+
+The whole processing, from the shipped survey to the TASHA tables, is a Snakemake workflow, one rule per stage
+(`workflow/Snakefile`; the stages, what each records and the external reweighting step: `docs/pipeline.md`). What a run
+chooses (the weight, the bootstrap refits, the draws) is `config/config.yaml`.
+
+```bash
+uv sync --extra workflow
+uv run snakemake -n          # what would run, and why
+uv run snakemake -c8         # everything, into output/: cleaned tables, zones, reweight inputs, models, completed data, TASHA tables
+uv run snakemake -c8 zones   # one target and what it needs: eod, zones, reweight, impute, tasha, reports
+```
+
+Its outputs read back in a line, faster than recomputing them and exactly what the later stages used:
+
+```python
+from eodgdl import artifacts
+
+tables = artifacts.eod()              # the cleaned survey, as load_eod() returns it
+zones = artifacts.zones()             # the zones redrawn along AGEB edges (GeoDataFrame)
+units = artifacts.zone_assignment()   # every urban AGEB and rural locality's zone
+od = artifacts.tasha_tables()         # the TASHA tables, zone ids as text
+```
+
 ## Data
 
 The survey and the other input data live in this repo's `data/` directory, the fitted

@@ -237,16 +237,29 @@ each (`scripts/impute/parity.py`, the manifests):
    and the pipeline's draws stay in their YAMLs (narrowed from the plan: they define models and feed the spec hashes).
    The guards (`weight_conflicts`, `check_weight`) stay until step 4: the config makes a mixed run unlikely, not
    impossible (an old root under a new weight).
-3. **The Snakefile** (`workflow/`, rules at stage level: load → EOD parquet, zones, reweight inputs, retrain per task,
-   the pipeline `tasha`, the TASHA build per draw, reports) replacing `scripts/pipeline/run.sh` and
-   `scripts/impute/rerun.sh`; the TMG weight is a rule input under `data/`, so the graph stops there by itself. Declare
-   the library modules each rule imports as its inputs (Snakemake does not see imported code), and leave mtime out of
-   the rerun triggers (a checkout must not retrain). Chain internals and draws stay in the engine, not in rules. A thin
-   `eodgdl.artifacts` reads the materialized outputs (cleaned tables, zones) for quick access.
-4. **Delete what became redundant**: most of the CLI (the review round's commands stay: interactive hand work, its
-   decisions table an input), `pipeline verify`, the staleness guards; `manifest.py` reduced to one final manifest
-   (commit plus the results' sha256), since Snakemake's provenance is weaker than the manifests'.
-
+3. **The Snakefile — done (uncommitted).** Proved on a scratch root (`--config output=ROOT`, 16 jobs, 49 min on 18
+   cores): all 326 parquet tables of `output/impute` identical, the 21 models identical (`parity.py --models`), the
+   reweight set's outputs digest, the TASHA tables and the zone assignment (2,824 units) identical; only provenance
+   metadata differs (fields added since, manifests the old roots lacked). The first run lost its last step: a `run:`
+   block (verify) runs in a child Snakemake that re-plans the DAG, and that child reran eod_tables and zone_system
+   (not reproduced; the Snakefile had been edited mid-run): no rule has a `run:` block now. `workflow/Snakefile`, one rule per stage: `eod_tables` (the cleaned
+   tables as parquet, exact), `zone_system` (`reweight.zone_system`: `output/zones/zones.gpkg`, `assignment.parquet`),
+   `reweight_inputs`, `tmg_weight` (under `weight: tmg` only: `check_weight`, gating every imputation), `retrain` (one
+   job per task), `diagnostic_chain` (sector_informality, nse: score, multiple imputations, evaluate), `pipeline_tasha`,
+   `tasha_build`, `verify`; targets `eod zones reweight impute tasha`, `all` (= verify), `reports` (opt-in, 12 renders
+   into `<root>/reports/`). The rules call the CLI (it holds each stage's writing logic: manifests, provenance), and the
+   two scripts `workflow/scripts/{eod_tables,zone_system}.py` the stages without a command; `--config output=ROOT`
+   writes another root. `scripts/pipeline/run.sh` and `scripts/impute/rerun.sh` removed; `giro_scores.parquet` (read by
+   nothing) no longer written. `eodgdl.artifacts` reads `eod()` (warning when the loader now gives other tables),
+   `zones()`, `zone_assignment()`, `tasha_tables()`. The survey's data version is now a content key, `eod_tables`
+   (`eod.tables_digest` of `load_eod()`'s tables, cached under `.cache/eod/` per loader code, survey files and pandas
+   stack), replacing `eod_loader` (the loader's source bytes): an edit that leaves the tables as they were stales
+   nothing. Two corrections to the plan: **mtime stays a rerun trigger** (Snakemake's `input` trigger sees only the list
+   of inputs, so content changes propagate by timestamps alone; `snakemake --touch` after a no-op edit), and the CLI
+   stays as the rules' interface (step 4 trims it instead of deleting it).
+4. **Delete what became redundant**: the CLI commands no rule and no review round uses, `pipeline verify` once the rule
+   `verify` covers it, the staleness guards the DAG makes redundant (the weight guards stay: a root can still be read
+   under another weight); `manifest.py` possibly reduced to one final manifest.
 ## Do not
 
 - Change a target or attribute in Python: `spec.yaml` holds every definition (`reweight/README.md`).

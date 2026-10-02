@@ -13,6 +13,9 @@ wheels/
 # eodgdl's cache (eodgdl.data.cache_dir: the impute feature frames)
 /.cache/
 
+# Snakemake's own state (workflow/Snakefile: job metadata, locks, logs)
+/.snakemake/
+
 # Every run's output, in one folder: impute retrains and draws, reweight sets, TASHA tables, figures, the dataset export
 /output/
 

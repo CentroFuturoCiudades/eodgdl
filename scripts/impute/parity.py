@@ -3,7 +3,7 @@ reviews (``docs/handoff_impute_engine.md`` §0).
 
     uv run python scripts/impute/parity.py ROOT_A ROOT_B [--models] [--tolerance 1e-12] [--data data] [--strict] [--ignore-columns PATTERN ...]
 
-A root has the layout of ``output/impute/`` (``scripts/impute/rerun.sh ROOT`` writes one): ``<task>/`` retrains (the
+A root has the layout of ``output/impute/`` (``snakemake impute --config output=ROOT`` writes one under ``ROOT/impute/``): ``<task>/`` retrains (the
 bundle, ``scores.parquet``, ``scenarios.parquet``, ``evaluation/*.parquet``, ``summary.json``), ``<chain>/`` runs
 (``scores.parquet``, ``completions.parquet``, ``provenance.json``, ``evaluation/``) and ``giro_scores.parquet``.
 

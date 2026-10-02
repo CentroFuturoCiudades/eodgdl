@@ -392,3 +392,14 @@ def zone_shapes(assignment):
         own = moved[(zone_of == zone).to_numpy()].dropna()
         out[zone] = gpd.GeoSeries([keep, *own.to_list()], crs=polys.crs).union_all()
     return gpd.GeoDataFrame({"zone": list(out)}, geometry=list(out.values()), crs=polys.crs).set_index("zone")
+
+
+def zone_system(viv, trips, state=STATE):
+    """The zone system as the workflow writes it (``output/zones/``): the census units' assignment
+    (:func:`assign_units`) and the zones redrawn along AGEB edges (:func:`zone_shapes`), each with the number of urban
+    AGEBs and rural localities placed in it and their population (``POBTOT``)."""
+    assignment = assign_units(viv, trips, state)
+    placed = assignment[assignment.zone.notna()]
+    census = placed.groupby("zone").agg(agebs=("unit", lambda u: int((u == "ageb").sum())),
+                                        localities=("unit", lambda u: int((u == "locality").sum())), POBTOT=("POBTOT", "sum"))
+    return assignment, zone_shapes(assignment).join(census)

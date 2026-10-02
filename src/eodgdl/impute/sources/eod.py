@@ -16,26 +16,40 @@ def load_config():
     return module_config(__file__)
 
 
-def survey_versions():
-    """What ``load_eod()``'s tables depend on: the eodgdl version, the loader's code and bundled config (chain rules,
-    hand decisions, schemas, rename map) and the three survey files' sha256."""
-    from importlib import resources
+def survey_versions(context=None):
+    """What ``load_eod()``'s tables are: the eodgdl version, the three survey files' sha256 and ``eod_tables``, the
+    digest of the tables themselves (:func:`eodgdl.eod.tables_digest`), so an edit of the loader that leaves them as they
+    were (a docstring, an import) moves no version. The digest is computed once per loader code
+    (:func:`eodgdl.eod.loader_files`), survey files and pandas stack and kept under the cache directory (``<cache>/eod/``);
+    a ``context`` that loaded the survey itself lends its tables."""
+    import json
+    import os
+    from importlib.metadata import version
 
     import eodgdl
-    from eodgdl.data import SURVEY_FILES, resolve
+    from eodgdl.data import SURVEY_FILES, cache_dir, resolve
+    from eodgdl.eod import loader_files, tables_digest
 
-    package = Path(str(resources.files("eodgdl")))
-    loader = [package / name for name in ("eod.py", "chains.py", "review.py", "schemas.py", "_resources.py", "imeplan_rename_map.json")]
-    loader += sorted((package / "revisions").glob("*.csv.gz"))
-    return {
-        "eodgdl": eodgdl.__version__,
-        "eod_loader": files_digest(loader),
-        "survey": files_digest([resolve(name) for name in SURVEY_FILES]),
-    }
+    from ..spec import stable_hash
+
+    survey = files_digest([resolve(name) for name in SURVEY_FILES])
+    key = stable_hash({"loader": files_digest(loader_files()), "survey": survey,
+                       "stack": {name: version(name) for name in ("pandas", "numpy", "pandera", "pyarrow")}})
+    path = cache_dir() / "eod" / f"tables-{key[:24]}.json"
+    if path.exists():
+        digest = json.loads(path.read_text(encoding="utf-8"))["eod_tables"]
+    else:
+        tables = context.eod() if context is not None and not context._given_tables else eodgdl.load_eod()
+        digest = tables_digest(tables)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_name(f"{path.name}.{os.getpid()}")       # parallel runs: each writes its own, then renames
+        partial.write_text(json.dumps({"eod_tables": digest}), encoding="utf-8")
+        partial.replace(path)
+    return {"eodgdl": eodgdl.__version__, "eod_tables": digest, "survey": survey}
 
 
 def _survey_versions(context, config):
-    return survey_versions()
+    return survey_versions(context)
 
 
 @functools.cache

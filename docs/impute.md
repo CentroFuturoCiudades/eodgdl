@@ -206,7 +206,7 @@ uv run eodgdl impute score tasha --data data --retrained output/impute [--draws 
 uv run eodgdl impute score tasha --data data --retrained output/impute --no-aggregate   # parity -> output/impute/tasha/no_aggregate/
 uv run eodgdl impute evaluate <chain> --data data                        # -> output/impute/<chain>/evaluation/
 uv run eodgdl impute compare <task> --spec candidates.yaml --seeds 42 7 11
-scripts/impute/rerun.sh ROOT [TASK ...]                                  # every output into ROOT
+uv run snakemake -c8 impute --config output=ROOT                      # every output into ROOT/impute (workflow/Snakefile)
 uv run python scripts/impute/parity.py ROOT_A ROOT_B [--models]          # what moved between two roots
 ```
 

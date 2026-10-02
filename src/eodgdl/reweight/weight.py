@@ -8,9 +8,9 @@ file, the reweight inputs it was fitted on (stage 2's manifest: its ``outputs_di
 constraint set (year), and whatever else is known about the run (the tool's commit, the exported ``.xmsys``
 configuration's and the constraint report's sha256 when they are handed back; None otherwise).
 
-A source reads the weight with ``weight: {file: EOD_peso_hogar_TMG.csv, column: peso}``
-(:func:`eodgdl.impute.sources.with_weight`). :func:`check_weight` (run by ``eodgdl pipeline verify`` and the driver
-before stage 4) fails where the weight file is not the one the sidecar records, or the reweight inputs written now
+The EOD sources read the weight under ``weight: tmg`` in ``config/config.yaml`` (their ``run_weights``,
+:func:`eodgdl.impute.sources.with_weight`). :func:`check_weight` (run by ``eodgdl pipeline verify`` and the workflow's
+rule ``tmg_weight`` before stage 4) fails where the weight file is not the one the sidecar records, or the reweight inputs written now
 are not the ones the weight was fitted on.
 """
 from __future__ import annotations
@@ -82,7 +82,7 @@ def read_sidecar(data_dir=None):
 def check_weight(data_dir=None, root="output") -> list[str]:
     """What does not hold of the TMG weight in ``data_dir`` (none where it has not come back yet): the weight file is
     the one its sidecar records, and the reweight inputs under ``<root>/reweight`` (their manifest) are the ones it was
-    fitted on. A fresh stage 2 written there is what the driver compares (``scripts/pipeline/run.sh``)."""
+    fitted on. The workflow's rule ``tmg_weight`` runs it on the stage 2 it just wrote, before any imputation."""
     from eodgdl.manifest import read_manifest, sha256
 
     folder = _data_dir(data_dir)
