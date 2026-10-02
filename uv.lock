@@ -531,9 +531,11 @@ reweight = [
     { name = "scikit-learn" },
 ]
 workflow = [
+    { name = "ipykernel" },
     { name = "joblib" },
     { name = "matplotlib" },
     { name = "mxcensus" },
+    { name = "nbclient" },
     { name = "openpyxl" },
     { name = "pyyaml" },
     { name = "scikit-learn" },
@@ -547,6 +549,7 @@ requires-dist = [
     { name = "folium", marker = "extra == 'notebook'", specifier = ">=0.20" },
     { name = "geopandas", specifier = ">=1.1.2" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.29" },
+    { name = "ipykernel", marker = "extra == 'workflow'", specifier = ">=7.3" },
     { name = "joblib", marker = "extra == 'giro'", specifier = ">=1.5" },
     { name = "joblib", marker = "extra == 'reweight'", specifier = ">=1.5" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
@@ -556,6 +559,7 @@ requires-dist = [
     { name = "mxcensus", marker = "extra == 'giro'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
     { name = "mxcensus", marker = "extra == 'notebook'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
     { name = "mxcensus", marker = "extra == 'reweight'", git = "https://github.com/CentroFuturoCiudades/mxcensus.git?rev=v0.4.0" },
+    { name = "nbclient", marker = "extra == 'workflow'", specifier = ">=0.11" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "openpyxl", marker = "extra == 'giro'", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=3.0.0" },

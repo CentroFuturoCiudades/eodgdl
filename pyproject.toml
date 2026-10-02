@@ -50,7 +50,9 @@ dev = ["pytest>=8.0"]
 # Extra for the workflow (workflow/Snakefile): Snakemake, and every extra a rule needs.
 workflow = [
     "eodgdl[giro,reweight]",
-    "matplotlib>=3.10",   # the zone_system rule's maps
+    "matplotlib>=3.10",   # the zone_system rule's maps and the reports' figures
+    "ipykernel>=7.3",     # the reports: Quarto runs them through a Jupyter kernel (Quarto itself is installed apart)
+    "nbclient>=0.11",
     "snakemake>=9",
 ]
 
