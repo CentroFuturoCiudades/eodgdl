@@ -48,8 +48,10 @@ edit of the chain rules reruns everything, an edit of a task YAML the retrains a
 `tasha/mappings.yaml` the TASHA build alone. `uv run snakemake -n` says what would run, and why, before anything does.
 
 Timestamps are what carry a change downstream (Snakemake's `input` trigger only sees the list of inputs change), so they
-stay among the triggers: an edit that changes no result (a comment, a docstring) still reruns what reads it, unless
-`uv run snakemake -c1 --touch` marks the outputs current. The recorded versions do not have that problem: the survey's is
+stay among the triggers, and for a rule that runs a script its code trigger is the script's timestamp too: an edit that
+changes no result (a comment, a docstring), or a branch switch or merge that rewrites files with the same content, still
+reruns what reads them, unless `uv run snakemake -c1 --touch` marks the outputs current (check first with `git diff`
+that no code changed since the outputs were built). The recorded versions do not have that problem: the survey's is
 a digest of the tables `load_eod()` returns (`eod.tables_digest`, computed once per loader code and kept under `.cache/`),
 so an edit that leaves the tables as they were moves no version and stales no completed dataset.
 
