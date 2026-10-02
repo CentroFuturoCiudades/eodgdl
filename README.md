@@ -1,7 +1,45 @@
 # eodgdl
 
-Loader, validation schemas, and traffic-analysis-zone (TAZ) tools for the **IMEPLAN
-Guadalajara EOD 2023** household origin-destination survey.
+The research pipeline of the **IMEPLAN Guadalajara EOD 2023** household origin-destination survey: the survey loaded,
+validated and cleaned, its zone system, the imputation of what it did not ask or the respondents did not answer, the
+inputs for its reweighting, and the tables a TASHA/GTAModel-style travel-demand model consumes. Two parts: the library
+`eodgdl` (`src/eodgdl/`, every computation) and the Snakemake workflow that runs it from the shipped files to the TASHA
+tables (`workflow/Snakefile`, `docs/pipeline.md`).
+
+## Installation
+
+It runs from its repository: `uv sync` installs the library editable, and every loader reads its files in place.
+Another project uses it as an editable path dependency (`uv add --editable ../eodgdl`) and reads the same clone.
+
+```bash
+git clone https://github.com/CentroFuturoCiudades/eodgdl && cd eodgdl && uv sync
+```
+
+## The processing
+
+The whole processing, from the shipped survey to the TASHA tables, is a Snakemake workflow, one rule per stage
+(`workflow/Snakefile`; the stages, what each records and the external reweighting step: `docs/pipeline.md`). What a run
+chooses (the weight, the bootstrap refits, the draws) is `config/config.yaml`.
+
+```bash
+uv sync --extra workflow
+uv run snakemake -n          # what would run, and why
+uv run snakemake -c8         # everything, into output/: cleaned tables, zones, reweight inputs, models, completed data, TASHA tables
+uv run snakemake -c8 zones   # one target and what it needs: eod, zones, reweight, impute, tasha, reports
+```
+
+Its outputs read back in a line, faster than recomputing them and exactly what the later stages used:
+
+```python
+from eodgdl import artifacts
+
+tables = artifacts.eod()              # the cleaned survey, as load_eod() returns it
+zones = artifacts.zones()             # the zones redrawn along AGEB edges (GeoDataFrame)
+units = artifacts.zone_assignment()   # every urban AGEB and rural locality's zone
+od = artifacts.tasha_tables()         # the TASHA tables, zone ids as text
+```
+
+## Loading the survey
 
 ```python
 from eodgdl import load_eod
@@ -30,15 +68,17 @@ taz = load_taz(drop_ap=True)                       # the centralidad polygons th
 # every census unit (urban AGEB, rural locality) in at most one zone: the polygons plus the
 # survey's own coding; needs the `reweight` extra (census data through mxcensus)
 tables = load_eod()
-units = reweight.assign_units(tables.viv, tables.trips)   # CVEGEO -> zone, rule, population
-zones = reweight.zone_shapes(units)                # the zones redrawn along AGEB edges
+units, zones = reweight.zone_system(tables.viv, tables.trips)   # CVEGEO -> zone, rule, population; the zones redrawn along AGEB edges
 ```
+
+The workflow writes both (`uv run snakemake -c8 zones` -> `output/zones/zones.gpkg`, `assignment.parquet`), and
+`artifacts.zones()` / `artifacts.zone_assignment()` read them back.
 
 Every loader reads the clone's `data/` by default and accepts a path override. An
 urban AGEB is never split: a sampled one takes the zone the survey coded there, an
 unsampled one takes the zone the survey coded for its trip ends, or else goes whole to the
 polygon holding most of its population. `reports/reweight_inputs.qmd`
-maps the result; `scripts/zone_system_map.py` writes the map and the redrawn zones.
+maps the result; `scripts/zone_system_map.py` draws the map.
 
 ## Travel-demand model schema
 
@@ -60,10 +100,11 @@ tasha.gaps()                         # what is assumed, constant, or unresolved
 ```
 
 ```bash
-eodgdl tasha build --data data/ --out output/   # build, write and validate (--impute output/impute --draw 0)
+uv run snakemake -c8 tasha                      # the workflow: build, write and validate -> output/tasha/od_*.csv
+eodgdl tasha build --out output/tasha           # the same command by hand (--impute output/impute --draw 0)
 eodgdl tasha check                              # mappings vs. contract
 eodgdl tasha gaps                               # open items
-eodgdl tasha validate output/                   # produced CSVs vs. contract
+eodgdl tasha validate output/tasha/             # produced CSVs vs. contract
 ```
 
 Zone columns carry the survey's own zone id as a string — a 13-character urban AGEB CVEGEO, a
@@ -102,40 +143,6 @@ brings back a row `load_eod` dropped) and say why under `note`. `verify` (and th
 browser's *load sheet* box) reads the filled cells as the edits, applies them with
 `<field>:revision` codes in `ajustes`, and reports per person which defects were cleared,
 left or made. See `eodgdl.review` for the functions behind both.
-
-## Installation
-
-eodgdl is a research pipeline, run from its repository: `uv sync` installs the package editable, and every loader
-reads its files in place. Another project uses it as an editable path dependency
-(`uv add --editable ../eodgdl`) and reads the same clone.
-
-```bash
-git clone https://github.com/CentroFuturoCiudades/eodgdl && cd eodgdl && uv sync
-```
-
-## The processing
-
-The whole processing, from the shipped survey to the TASHA tables, is a Snakemake workflow, one rule per stage
-(`workflow/Snakefile`; the stages, what each records and the external reweighting step: `docs/pipeline.md`). What a run
-chooses (the weight, the bootstrap refits, the draws) is `config/config.yaml`.
-
-```bash
-uv sync --extra workflow
-uv run snakemake -n          # what would run, and why
-uv run snakemake -c8         # everything, into output/: cleaned tables, zones, reweight inputs, models, completed data, TASHA tables
-uv run snakemake -c8 zones   # one target and what it needs: eod, zones, reweight, impute, tasha, reports
-```
-
-Its outputs read back in a line, faster than recomputing them and exactly what the later stages used:
-
-```python
-from eodgdl import artifacts
-
-tables = artifacts.eod()              # the cleaned survey, as load_eod() returns it
-zones = artifacts.zones()             # the zones redrawn along AGEB edges (GeoDataFrame)
-units = artifacts.zone_assignment()   # every urban AGEB and rural locality's zone
-od = artifacts.tasha_tables()         # the TASHA tables, zone ids as text
-```
 
 ## Data
 
@@ -176,7 +183,7 @@ part of the survey design, and the table disagreed with the survey's own zone co
 left La Aurora, Juanacatlán, whose 221 sampled dwellings the survey coded `49F`, in no
 zone). Zones are built from the census by `reweight.zoning` instead.
 
-## Imputation models (`eodgdl[giro]`)
+## Imputation models (the `giro` extra)
 
 `eodgdl.impute` is the package's categorical imputation engine; every imputation model on the survey runs on it. A
 **task** is one model, a YAML under `src/eodgdl/impute/tasks/` (source, classes, features, arms, candidate grid,
@@ -192,6 +199,10 @@ the TASHA build reads:
 | `nse` | chain: `educacion_jefe` → `amai_banos` → `amai_dormitorios` → AMAI points, level, AGEB calibration (50 draws) | the EOD's heads (education); ENIGH 2022, households in cities of 100,000+ (bathrooms, bedrooms) | every EOD dwelling |
 | `labour` | chain: `empleo` → `giro` → `informality`, all on the workers and the persons who did not answer (50 draws) | the EOD's persons aged 16+ who answered (employment); as above (giro, informality) | every EOD worker and every person aged 16+ without an employment answer |
 | `tasha` | pipeline: `labour` on the persons → each dwelling's workers aged 14+ with the drawn ones → `nse` on the dwellings (50 draws, a bootstrap model per draw) | as `labour` and `nse` | as `labour` and `nse`: what the TASHA build reads |
+
+`uv run snakemake -c8 impute` runs all of it on the run's weight (`config/config.yaml`): every task retrained with its
+bootstrap refits, the diagnostic chains `sector_informality` and `nse` scored, drawn and evaluated, and the pipeline
+`tasha`, under `output/impute/`. The commands in the sections below do one piece by hand.
 
 The fitted bundle of every task is committed under `models/` (`models/od_<task>_model.joblib`,
 giro's is `od_giro_hybrid_model.joblib`). It is a scikit-learn pickle, checked against its task when
@@ -288,7 +299,7 @@ quarto render reports/imputation_empleo.qmd
 A retrain writes the bundle, its scores and every evaluation table to `<out>/<task>/` (`--out` defaults to
 `output/impute`; `retrain <chain>` does the same for each of its tasks). Every command that needs a bundle finds it
 the same way: with `--retrained <dir>`, the one a retrain wrote under `<dir>/<task>/` when there is one, else the
-shipped one. `score` and `compare` default to the shipped bundles; `evaluate` defaults to `--retrained output/impute`,
+committed one in `models/`. `score` and `compare` default to the committed bundles; `evaluate` defaults to `--retrained output/impute`,
 where it also reads an upstream's retrain `scenarios.parquet`. To ship a retrained bundle, copy it to `models/` and
 commit it. Feature frames are cached under `.cache/impute/` (`$EODGDL_CACHE_DIR`; `--refresh` rebuilds).
 
@@ -303,3 +314,6 @@ the NSE maps by AGEB (the AGEB polygons come from `mxcensus`, the `reweight` ext
 ```bash
 quarto render reports/imputation_figures.qmd   # reads output/impute/{informality,educacion_jefe,sector_informality,nse}/
 ```
+
+Every report renders through the workflow too, against its outputs: `uv run snakemake -c8 reports` (all twelve, into
+`output/reports/`) or one by its path (`uv run snakemake -c8 output/reports/imputation_giro.html`).

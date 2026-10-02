@@ -37,7 +37,7 @@ A **source** (`sources/`) returns a task's rows as a plain frame, with its keys,
 source's YAML (`eod.workers`, `eod.dwellings`, `eod.persons`: everyone aged 16+ with the employment answer on the `empleo` levels; `eod.labour`: the workers and the unanswered, the chain `labour`'s rows, with eod.workers's builders through `builders_as`; `enoe.workers`, `enigh.households`). **Feature builders** add columns
 (`eod.work_trip`, `giro.destination`, `eod.household_education`: the other members' highest education; `census.home`: the census, DENUE and AMAI profile of the dwelling's AGEB, INEGI's ILMM auxiliary variables among it, measured and used by no task yet), and **harmonizations** are builders that map a source's raw codes to the common
 levels of `harmonization/common.yaml`, failing on any code the map does not cover. A map between a task's classes and the common levels is defined once as a named `transforms:` entry of common.yaml (`giro_sector`), read by a chain's `uses: {transform: <name>}` and by a variable's `transform: <name>` with `labels_of: <task>` (labels -> class slugs -> levels). Frames are cached as parquet under
-the eodgdl cache directory with keys over every input that could change them (the code, the configuration, the data
+`.cache/impute/` in the clone (`$EODGDL_CACHE_DIR`) with keys over every input that could change them (the code, the configuration, the data
 files' sha256).
 
 The **level contract** (`levels.py`) fixes every categorical feature's levels (declared, or the eodgdl schema's) plus
