@@ -15,36 +15,24 @@ meta:
 # ---------------------------------------------------------------------------
 # Zone system
 # ---------------------------------------------------------------------------
-# Every *Zone column in every table carries the survey's own zone id, verbatim.
+# Every *Zone column in every table carries the TAZ, an integer.
 zones:
-  name: AGEB
-  dtype: str
-  id_lengths: [9, 13]
+  name: TAZ
+  dtype: int
   description: >-
-    The INEGI zone id as the survey reports it, unchanged: a 13-character AGEB
-    CVEGEO for an urban AGEB, or 9 characters for a rural AGEB or an access
-    point. 1,701 distinct values appear across viv.ageb, trips.origen and
-    trips.destino — 1,650 urban AGEBs, 44 rural AGEBs (INEGI's 9-character rural
-    AGEB key, not a locality id, though 6 coincide with one as strings) and the
-    7 access points (99999000x: the airport and six road gateways). All 1,650
-    urban AGEBs are in INEGI's census AGEB table; a rural AGEB has no census row
-    of its own (INEGI publishes rural counts by locality) and an access point
-    has none, so those zones carry no census attributes.
+    The working group's traffic-analysis zone: one positive integer per AGEB of
+    the zone system (2,037 urban AGEBs and 50 rural AGEBs, INEGI's 9-character
+    rural AGEB key) and per access point (7: the airport and six road gateways),
+    from the working group's numbering, which eodgdl keeps (eodgdl/taz_ids.csv:
+    AGEB, TAZ, note, source). Its AGEB column joins a TAZ back to the INEGI code and the
+    census; a rural AGEB has no census row of its own (INEGI publishes rural
+    counts by locality) and an access point has none. The TAZ nest in the 64
+    survey zones (centralidades), the MTAZ (macro TAZ) of eodgdl's other outputs.
   sentinel:
     "0": Not applicable (used by EmploymentZone / SchoolZone only)
   notes: >-
-    These are ids, not numbers: keep them as strings. 154 of the 1,701 carry a
-    trailing letter (e.g. 140390001418A) and the rest are all-digit, so pandas
-    usually infers a string column from a full export — but any subset that
-    happens to be all-digit reads back as int64. Read every *Zone column with
-    dtype=str (`tasha.zone_columns(table)` lists them) rather than relying on
-    inference.
-  alternatives: >-
-    centralidad / ID_ZONAEOD (64 survey zones plus the 7 access points,
-    string codes like '06A'; eodgdl.reweight.zoning assigns every census AGEB
-    and rural locality to one of them) is also available in the eodgdl package.
-    Whichever is chosen, use it in every *Zone column — the outputs do not
-    record which one they used.
+    Ids, not quantities: ids are never renumbered or reused, so a TAZ keeps its
+    meaning across builds.
 
 # ---------------------------------------------------------------------------
 # Tables
@@ -62,7 +50,7 @@ tables:
         notes: Must be dense and 0-based; people and trips join on it.
 
       HouseholdZone:
-        dtype: str
+        dtype: int
         role: zone
         required: true
         description: Zone of the household's dwelling.
@@ -232,7 +220,7 @@ tables:
         notes: Full-time and part-time students are not distinguished.
 
       EmploymentZone:
-        dtype: str
+        dtype: int
         role: zone
         required: true
         sentinel:
@@ -240,7 +228,7 @@ tables:
         description: Destination zone of the person's first work trip.
 
       SchoolZone:
-        dtype: str
+        dtype: int
         role: zone
         required: true
         sentinel:
@@ -352,7 +340,7 @@ tables:
           is the only place in the subpackage that spells it out.
 
       ZoneOrigin:
-        dtype: str
+        dtype: int
         role: zone
         required: true
 
@@ -378,7 +366,7 @@ tables:
           is not a trip and must not appear.
 
       ZoneDestination:
-        dtype: str
+        dtype: int
         role: zone
         required: true
 

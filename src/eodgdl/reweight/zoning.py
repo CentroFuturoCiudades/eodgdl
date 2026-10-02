@@ -27,19 +27,32 @@ urban AGEBs and rural localities. :func:`assign_units` gives each unit at most o
 
 IMEPLAN's AGEB table plays no part. :func:`zone_shapes` merges the result into redrawn
 zone polygons that follow AGEB edges, a proposal for the zoning the targets are built on.
+
+Every AGEB of the zone system (:func:`zone_system_codes`) and every access point carries an integer **TAZ**, ours
+to keep, for PTV Visum and XTMF, which read ids as integers: ``eodgdl/taz_ids.csv`` (``eodgdl._resources.taz_ids``,
+checked by :func:`check_taz_ids`, joined by :func:`with_taz`). The centralidad is the **MTAZ** (macro TAZ) in every
+output: ``MTAZ`` its integer (1 + its position in the survey's levels), ``MTAZ_code`` its code
+(:func:`output_columns`). The reweight README's "TAZ ids" section says how the table is kept.
 """
 from __future__ import annotations
 
 import functools
+import re
 
 import geopandas as gpd
 import pandas as pd
 
-from eodgdl.taz import load_taz, load_zm_muns
+from eodgdl.taz import ACCESS_POINTS, load_taz, load_zm_muns
 
 STATE = 14
 RULES = ["survey", "survey over polygon", "trip ends", "trip ends over polygon", "polygon", "majority",
          "nearest polygon", "outside"]
+TAZ_IDS = "taz_ids.csv"
+TAZ_ID_COLUMNS = ["AGEB", "TAZ", "note", "source"]
+MAX_TAZ = 2**31 - 1  # XTMF parses an id as a 32-bit int
+# the assignment's zone columns (centralidad codes) as the outputs name them
+OUTPUT_ZONE_COLUMNS = {"zone": "MTAZ_code", "polygon_zone": "polygon_MTAZ_code", "survey_zone": "survey_MTAZ_code",
+                       "trip_zone": "trip_MTAZ_code"}
 
 def _mxcensus():
     try:
@@ -80,11 +93,13 @@ def zone_polygons():
 def _geography(state=STATE):
     """(urban AGEBs, rural localities, blocks), each with its census keys and a geometry.
 
-    Urban AGEBs are the census AGEB frame; the two it has that the Marco Geoestadístico
-    does not draw (El Salto's AGEB 1467 inside localities 0116 and 0134) take their
-    locality's polygon. Rural localities are the census locality frame less the localities
-    that have AGEBs, placed at their polygon's interior point or, without one, at their
-    point. Blocks carry their census population and their polygon's interior point.
+    Urban AGEBs are the census AGEB frame that the Marco Geoestadístico draws. Its other rows are rural localities
+    tabulated by block under their rural AGEB's number: El Salto's Agua Blanca (0116, the Puente Grande prisons) and
+    Parques del Triunfo (0134), both ``AMBITO`` Rural, both in rural AGEB 1467 (the census rows 1407001161467 and
+    1407001341467); they are rural localities here, with that rural AGEB (``census_ageb``) -- as INEGI's map and the
+    working group's zones have them. Rural localities are the census locality frame less the localities that have
+    urban AGEBs, placed at their polygon's interior point or, without one, at their point. Blocks carry their census
+    population and their polygon's interior point.
     """
     mxcensus, pooch = _mxcensus()
     crs = zone_polygons().crs
@@ -95,18 +110,21 @@ def _geography(state=STATE):
     agebs = agebs[agebs.MUN.astype(int).isin(muns)].copy()
     agebs["CVEGEO"] = _cvegeo(agebs, "AGEB")
     ageb_shapes = _mgn("a", crs).set_index("CVEGEO").geometry
-    loc_shapes = _mgn("l", crs).set_index("CVEGEO").geometry
+    loc_layer = _mgn("l", crs).set_index("CVEGEO")
+    loc_shapes = loc_layer.geometry
     geometry = agebs.CVEGEO.map(ageb_shapes)
-    undrawn = geometry.isna()
-    geometry[undrawn] = agebs.loc[undrawn, "CVEGEO"].str[:9].map(loc_shapes)
-    if geometry.isna().any():
-        raise ValueError(f"urban AGEBs with no shape: {agebs.loc[geometry.isna(), 'CVEGEO'].tolist()}")
-    agebs = gpd.GeoDataFrame(agebs, geometry=geometry.to_list(), crs=crs).set_index("CVEGEO")
+    undrawn = agebs.CVEGEO[geometry.isna()]
+    urban_undrawn = undrawn[undrawn.str[:9].map(loc_layer.AMBITO) != "Rural"]
+    if len(urban_undrawn):
+        raise ValueError(f"urban AGEBs with no shape: {urban_undrawn.tolist()}")
+    census_ageb = pd.Series((undrawn.str[:5] + undrawn.str[9:]).to_numpy(), index=undrawn.str[:9].to_numpy())
+    agebs = gpd.GeoDataFrame(agebs[geometry.notna()], geometry=geometry.dropna().to_list(), crs=crs).set_index("CVEGEO")
 
     locs = df_loc.reset_index()
     locs = locs[locs.MUN.astype(int).isin(muns)].copy()
     locs["CVEGEO"] = _cvegeo(locs)
     locs = locs[~locs.CVEGEO.isin(set(agebs.index.str[:9]))]
+    locs["census_ageb"] = locs.CVEGEO.map(census_ageb)
     points = _mgn("lpr", crs)
     points = points.assign(k=points.CVE_ENT + points.CVE_MUN + points.CVE_LOC).drop_duplicates("k").set_index("k").geometry
     where = locs.CVEGEO.map(loc_shapes.representative_point()).fillna(locs.CVEGEO.map(points))
@@ -236,6 +254,7 @@ def assign_units(viv, trips, state=STATE):
     inside = gpd.sjoin(locs[["geometry"]], polys[["geometry"]].reset_index(names="polygon"), how="left", predicate="within").polygon
     rural_agebs = _mgn("ar", polys.crs).set_index("CVEGEO")[["geometry"]]
     in_ageb = gpd.sjoin(locs[["geometry"]], rural_agebs.reset_index(names="rural_ageb"), how="left", predicate="within").rural_ageb
+    in_ageb = locs.census_ageb.fillna(in_ageb)  # a locality the census tabulates under its rural AGEB: that one
     rural = pd.DataFrame({
         "unit": "locality", "MUN": locs.MUN.astype(int), "POBTOT": locs.POBTOT.astype(float),
         "polygon_zone": inside, "polygon_share": inside.notna().astype(float), "straddles": False,
@@ -326,6 +345,78 @@ def check_assignment(assignment, viv, trips):
     return problems
 
 
+def zone_system_codes(assignment):
+    """The AGEB code of every unit the assignment places in a zone, indexed like it: an urban AGEB's own CVEGEO,
+    a locality's rural AGEB, a rural AGEB placed on its own (no census locality in it) its own key. The zone
+    system's AGEBs are this Series' unique values: 2,037 urban, 50 rural."""
+    placed = assignment[assignment.zone.notna()]
+    code = pd.Series(placed.index, index=placed.index).where(placed.unit == "ageb", placed.rural_ageb)
+    if code.isna().any():
+        raise ValueError(f"placed localities in no rural AGEB: {code.index[code.isna()].tolist()}")
+    return code
+
+
+def check_taz_ids(ids, assignment):
+    """What is wrong with the TAZ table against the zone system; empty when nothing is.
+
+    The table has the columns ``AGEB, TAZ, note, source``; every code is an INEGI AGEB key of Jalisco (13
+    characters urban, 9 rural) or an access point, and appears once; every TAZ is a positive integer that fits
+    XTMF's 32-bit int, written without leading zeros, and names one code (an empty TAZ is a code still pending); every AGEB of the zone system
+    (:func:`zone_system_codes`) and every access point has a TAZ, and the table names nothing else.
+    """
+    if list(ids.columns) != TAZ_ID_COLUMNS:
+        return [f"{TAZ_IDS}: columns {list(ids.columns)}, expected {TAZ_ID_COLUMNS}"]
+    problems = []
+    key = re.compile(r"14\d{3}(\d{4})?\d{3}[0-9A-Z]")
+    bad = ids.AGEB[[not key.fullmatch(a) and a not in ACCESS_POINTS for a in ids.AGEB]]
+    problems += [f"AGEB {a!r}: not an INEGI AGEB key of Jalisco (13 characters urban, 9 rural) nor an access point"
+                 for a in bad]
+    problems += [f"AGEB {a}: {n} rows" for a, n in ids.AGEB.value_counts().items() if n > 1]
+    pending = ids[ids.TAZ == ""]
+    problems += [f"AGEB {a}: no TAZ yet ({n})" for a, n in zip(pending.AGEB, pending.note)]
+    number = re.compile(r"[1-9]\d*")
+    bad = ids.TAZ[[i != "" and (not number.fullmatch(i) or int(i) > MAX_TAZ) for i in ids.TAZ]]
+    problems += [f"AGEB {a}: TAZ {i!r} is not a positive integer up to {MAX_TAZ}" for a, i in zip(ids.AGEB[bad.index], bad)]
+    for i, g in ids[ids.TAZ != ""].groupby("TAZ").AGEB:
+        if len(g) > 1:
+            problems.append(f"TAZ {i}: names {len(g)} codes, {sorted(g)}")
+    system = set(zone_system_codes(assignment)) | set(ACCESS_POINTS)
+    problems += [f"AGEB {a}: in the zone system, no TAZ" for a in sorted(system - set(ids.AGEB))]
+    problems += [f"AGEB {a}: has a TAZ, not in the zone system" for a in sorted(set(ids.AGEB) - system)]
+    return problems
+
+
+def taz_map(assignment, ids=None):
+    """{code: integer TAZ} over the zone system and the access points, from ``ids`` (default the committed table,
+    ``eodgdl._resources.taz_ids``). Raises naming every problem :func:`check_taz_ids` finds."""
+    from eodgdl._resources import taz_ids
+
+    ids = taz_ids() if ids is None else ids
+    problems = check_taz_ids(ids, assignment)
+    if problems:
+        raise ValueError(f"{TAZ_IDS} disagrees with the zone system:\n" + "\n".join(problems))
+    return ids.set_index("AGEB").TAZ.astype("int64")
+
+
+def with_taz(assignment, ids=None):
+    """The assignment with ``TAZ``: the TAZ of the AGEB each placed unit belongs to (:func:`zone_system_codes`), NA
+    on a unit outside every zone. Checks the table first (:func:`taz_map`)."""
+    mapping = taz_map(assignment, ids)
+    code = zone_system_codes(assignment)
+    return assignment.assign(TAZ=code.map(mapping).reindex(assignment.index).astype("Int64"))
+
+
+def output_columns(assignment):
+    """The assignment as the outputs write it: its TAZ (:func:`with_taz`), the zone columns renamed for the MTAZ
+    (``MTAZ_code``, ``polygon_MTAZ_code``, ``survey_MTAZ_code``, ``trip_MTAZ_code``) and the integer ``MTAZ`` beside
+    ``MTAZ_code``."""
+    from eodgdl.reweight.records import zone_index
+
+    out = with_taz(assignment).rename(columns=OUTPUT_ZONE_COLUMNS)
+    out.insert(out.columns.get_loc("MTAZ_code") + 1, "MTAZ", out.MTAZ_code.map(zone_index()).astype("Int64"))
+    return out
+
+
 def trip_end_agreement(assignment, viv, trips):
     """Every trip end classified against the zone system: a count per class.
 
@@ -395,11 +486,19 @@ def zone_shapes(assignment):
 
 
 def zone_system(viv, trips, state=STATE):
-    """The zone system as the workflow writes it (``output/zones/``): the census units' assignment
-    (:func:`assign_units`) and the zones redrawn along AGEB edges (:func:`zone_shapes`), each with the number of urban
-    AGEBs and rural localities placed in it and their population (``POBTOT``)."""
+    """The zone system as the workflow writes it (``output/zones/``): the census units' assignment as the outputs
+    name it (:func:`output_columns`: its ``TAZ``, ``MTAZ_code`` and ``MTAZ``), after :func:`check_assignment` (raises
+    on any problem), and the zones redrawn along AGEB edges (:func:`zone_shapes`), indexed by ``MTAZ_code``, with the
+    ``MTAZ``, the number of urban AGEBs and rural localities placed in each and their population (``POBTOT``)."""
+    from eodgdl.reweight.records import zone_index
+
     assignment = assign_units(viv, trips, state)
+    problems = check_assignment(assignment, viv, trips)
+    if problems:
+        raise ValueError("the zone assignment disagrees with the survey:\n" + "\n".join(problems))
     placed = assignment[assignment.zone.notna()]
     census = placed.groupby("zone").agg(agebs=("unit", lambda u: int((u == "ageb").sum())),
                                         localities=("unit", lambda u: int((u == "locality").sum())), POBTOT=("POBTOT", "sum"))
-    return assignment, zone_shapes(assignment).join(census)
+    shapes = zone_shapes(assignment).join(census)
+    shapes.insert(0, "MTAZ", shapes.index.map(zone_index()).astype("int64"))
+    return output_columns(assignment), shapes.rename_axis("MTAZ_code")

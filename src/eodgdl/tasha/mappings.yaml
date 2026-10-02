@@ -43,10 +43,9 @@ households:
 
   HouseholdZone:
     source: ageb
-    derivation: viv.ageb verbatim — the urban AGEB CVEGEO or the rural AGEB key as reported.
+    derivation: The TAZ of viv.ageb (the urban AGEB CVEGEO or the rural AGEB key as reported) in eodgdl/taz_ids.csv.
     note: >-
-      Kept as a string. No renumbering, so the value joins straight to the census
-      tables on CVEGEO.
+      An integer; taz_ids.csv's AGEB column joins it back to the census tables on CVEGEO.
 
   NumberOfPersons:
     source: personas_en_vivienda
@@ -292,14 +291,14 @@ people:
   EmploymentZone:
     source: destino
     derivation: >-
-      Destination zone of the person's first motivo_viaje == 'Trabajar' trip,
-      verbatim. The string "0" where no work trip was observed.
+      The TAZ of the destination of the person's first motivo_viaje == 'Trabajar' trip
+      (eodgdl/taz_ids.csv). 0 where no work trip was observed.
 
   SchoolZone:
     source: destino
     derivation: >-
-      Destination zone of the person's first motivo_viaje == 'Estudiar' trip,
-      verbatim. The string "0" where no school trip was observed.
+      The TAZ of the destination of the person's first motivo_viaje == 'Estudiar' trip
+      (eodgdl/taz_ids.csv). 0 where no school trip was observed.
 
   ExpansionFactor:
     source: ponderador
@@ -515,7 +514,7 @@ trips:
 
   ZoneOrigin:
     source: origen
-    derivation: trips.origen as load_eod returns it — the urban AGEB CVEGEO, the rural AGEB key or an access point.
+    derivation: The TAZ (eodgdl/taz_ids.csv) of trips.origen as load_eod returns it — the urban AGEB CVEGEO, the rural AGEB key or an access point.
     note: >-
       load_eod makes every trip start where the previous one ended
       (eodgdl.chains._start_where_previous_ended): at the household's zone
@@ -579,7 +578,7 @@ trips:
 
   ZoneDestination:
     source: destino
-    derivation: trips.destino as load_eod returns it — the urban AGEB CVEGEO, the rural AGEB key or an access point.
+    derivation: The TAZ (eodgdl/taz_ids.csv) of trips.destino as load_eod returns it — the urban AGEB CVEGEO, the rural AGEB key or an access point.
 
   ExpansionFactor:
     source: ponderador

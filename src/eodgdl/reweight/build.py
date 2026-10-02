@@ -25,9 +25,9 @@ from eodgdl.reweight.targets import (
     load_conapo,
     load_rates,
     load_vmrc,
-    sampled_agebs,
+    zone_system_agebs,
 )
-from eodgdl.reweight.zoning import assign_units
+from eodgdl.reweight.zoning import assign_units, output_columns
 
 RECORD_FILES = {
     "households": "HouseholdRecords.csv",
@@ -47,7 +47,7 @@ class ReweightFiles(NamedTuple):
     diagnostics: dict[str, pd.DataFrame]  # per year: target vs survey at the design weight
     coverage: pd.DataFrame  # the survey universe as a share of each whole municipality
     zone_assignment: pd.DataFrame = pd.DataFrame()  # every census unit's zone and the rule that set it
-    sampled_agebs: pd.DataFrame = pd.DataFrame()  # every sampled AGEB's zone, TAZ and census targets, by year
+    zone_system_agebs: pd.DataFrame = pd.DataFrame()  # every AGEB in a zone: its TAZ, MTAZ, MTAZMun cell, sampled dwellings and census targets, by year
 
 
 def years():
@@ -86,8 +86,8 @@ def build(tables, data_dir=None):
     index = pd.concat(index, ignore_index=True)
     assignment = assign_units(viv, trips)
     return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares,
-                            zone_assignment=assignment.reset_index(),
-                            sampled_agebs=sampled_agebs(universe, viv, assignment, conapo, vmrc, rates))
+                            zone_assignment=output_columns(assignment).reset_index(),
+                            zone_system_agebs=zone_system_agebs(universe, viv, assignment, conapo, vmrc, rates))
 
 
 def diagnostic(records, constraints, index):
@@ -114,7 +114,7 @@ def diagnostic(records, constraints, index):
                 "ratio": s / t if t else float("nan"),
             })
     out = pd.DataFrame(rows)
-    geo_cols = [c for c in ("Zone", "Municipality", "Region") if c in out.columns]
+    geo_cols = [c for c in ("MTAZ", "Municipality", "Region") if c in out.columns]
     return out[["file", "target_column", *geo_cols, "target", "survey_at_design_weight", "records", "ratio"]]
 
 
@@ -143,7 +143,7 @@ def write(files, out_dir, data_dir=None):
         put(f"Constraints/diagnostic_{year}.csv", df, float_format="%.4f")
     put("Constraints/coverage.csv", files.coverage.reset_index(), float_format="%.4f")
     put("ZoneAssignment.csv", files.zone_assignment, float_format="%.4f")
-    put("SampledAGEBs.csv", files.sampled_agebs, float_format="%.4f")
+    put("ZoneSystemAGEBs.csv", files.zone_system_agebs, float_format="%.4f")
     readme = resources.files("eodgdl.reweight") / "README.md"
     with resources.as_file(readme) as src:
         shutil.copy(src, out_dir / "README.md")

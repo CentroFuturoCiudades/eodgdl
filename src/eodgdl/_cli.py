@@ -250,10 +250,7 @@ def _tasha(args) -> int:
     for table in tasha.tables():
         path = directory / f"od_{table}{args.suffix}.csv"
         if path.exists():
-            # Zone ids are all-digit strings; without this they read as int64.
-            frames[table] = pd.read_csv(
-                path, dtype=dict.fromkeys(tasha.zone_columns(table), str)
-            )
+            frames[table] = pd.read_csv(path)
             print(f"read {path}  ({len(frames[table]):,} rows)")
         else:
             print(f"skip {path}  (not found)")

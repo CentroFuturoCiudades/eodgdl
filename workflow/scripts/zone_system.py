@@ -1,5 +1,5 @@
-"""Rule zone_system: every urban AGEB and rural locality in its zone (reweight.assign_units) and the zones redrawn
-along AGEB edges (reweight.zone_shapes), from the cleaned tables the eod_tables rule wrote, and the zone-system map
+"""Rule zone_system: every urban AGEB and rural locality in its zone (reweight.assign_units), with its TAZ and MTAZ
+(reweight.output_columns), and the zones redrawn along AGEB edges (reweight.zone_shapes), from the cleaned tables the eod_tables rule wrote, and the zone-system map
 twice, plain and with the rural AGEBs drawn whole. eodgdl.artifacts.zones() and zone_assignment() read the zones back.
 
 The map is the report's own fig-zone-map chunk (reports/reweight_inputs.qmd), read from the .qmd and run as written
@@ -36,10 +36,7 @@ def draw_map(out, viv, trips, *, rural_agebs=False):
 
 
 viv, trips = (pd.read_parquet(path) for path in (snakemake.input.viv, snakemake.input.trips))  # noqa: F821
-assignment, shapes = reweight.zone_system(viv, trips)
-problems = reweight.check_assignment(assignment, viv, trips)
-if problems:
-    raise SystemExit("\n".join(problems))
+assignment, shapes = reweight.zone_system(viv, trips)  # checks the assignment and the TAZ table
 zones, units = Path(snakemake.output.zones), Path(snakemake.output.assignment)  # noqa: F821
 shapes.reset_index().to_file(zones, layer="zones", driver="GPKG")
 assignment.to_parquet(units)

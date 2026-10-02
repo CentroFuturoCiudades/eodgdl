@@ -30,13 +30,13 @@ from eodgdl.reweight._spec import (
     load_spec,
 )
 from eodgdl.reweight.records import zone_index
-from eodgdl.reweight.zoning import assign_units, check_assignment
+from eodgdl.reweight.zoning import assign_units, check_assignment, taz_map, zone_system_codes
 from eodgdl.taz import load_zm_muns
 
 SEX = {"HOMBRES": "M", "MUJERES": "F"}
 AGEB_KEY = ["ENTIDAD", "MUN", "LOC", "AGEB"]
 LOC_KEY = ["ENTIDAD", "MUN", "LOC"]
-GEOGRAPHY_IDS = ["Zone", "Municipality", "Region"]
+GEOGRAPHY_IDS = ["MTAZ", "Municipality", "Region"]
 
 
 def _local(data_dir, filename):
@@ -64,7 +64,7 @@ def crosswalk(viv, trips, state=14):
 
     One row per urban AGEB or rural locality that :func:`zoning.assign_units` places in a
     zone, indexed by CVEGEO: the INEGI key (``AGEB`` is NA on a locality row), the rule
-    that placed it, and the Zone / Municipality / Region ids the records use. The survey's
+    that placed it, and the MTAZ / Municipality / Region ids the records use. The survey's
     dwellings and trip ends decide the zones, so both are needed; a rural AGEB placed on
     its own (no census locality in it) has no census row and is left out.
     """
@@ -87,7 +87,7 @@ def crosswalk(viv, trips, state=14):
     zone = a.zone.map(zone_index())
     if zone.isna().any():
         raise ValueError(f"zones outside the schema's levels: {sorted(a.zone[zone.isna()].unique())}")
-    cw["Zone"] = zone.astype(int)
+    cw["MTAZ"] = zone.astype(int)
     cw["Municipality"] = cw.MUN
     cw["Region"] = 1
     return cw
@@ -96,7 +96,7 @@ def crosswalk(viv, trips, state=14):
 def census_universe(viv, trips, state=14):
     """Every numeric census column of every AGEB and rural locality in the survey universe.
 
-    Indexed like the crosswalk (CVEGEO), with the Zone / Municipality / Region ids
+    Indexed like the crosswalk (CVEGEO), with the MTAZ / Municipality / Region ids
     appended. An AGEB row joins the census AGEB frame on (ENTIDAD, MUN, LOC, AGEB), a
     locality row the locality frame on (ENTIDAD, MUN, LOC); the crosswalk is built from
     those frames, so every row matches. Suppressed cells stay NaN, so sums skip them.
@@ -297,7 +297,7 @@ def fill_unaged(universe, counts):
     unaged = (stated == 0) & (private > 0)
     if not unaged.any():
         return counts
-    zone, aged = universe["Zone"], ~unaged
+    zone, aged = universe["MTAZ"], ~unaged
     per_resident = counts[aged].fillna(0.0).groupby(zone[aged]).sum().div(
         private[aged].groupby(zone[aged]).sum(), axis=0)
     filled = counts.copy()
@@ -411,57 +411,66 @@ def _target(universe, table, name, geography, conapo, shares, vmrc=None, rates=N
     return values.reindex(ids)
 
 
-# target -> (table, column label in SampledAGEBs.csv)
-SAMPLED_TARGETS = {
+# target -> (table, column label in ZoneSystemAGEBs.csv)
+AGEB_TARGETS = {
     "Persons": ("persons", "Persons6plus"),      # residents aged 6+, the tool's person target
     "Occupants": ("households", "Occupants"),    # residents of private dwellings, all ages
     "Dwellings": ("households", "Dwellings"),    # private inhabited dwellings
 }
 
 
-def sampled_agebs(universe, viv, assignment, conapo, vmrc=None, rates=None):
-    """The census targets of every AGEB the survey sampled, per year, as the tool sees them.
+def zone_system_agebs(universe, viv, assignment, conapo, vmrc=None, rates=None):
+    """The complete zone system by AGEB: every AGEB placed in a zone, with its census targets per year.
 
-    One row per AGEB code in ``viv.ageb``: its municipality, the centralidad the survey coded
-    there, the TAZ (zone x municipality), its sampled dwellings, and three targets for the
-    base and target years: ``Persons6plus`` (residents aged 6+, the tool's ``Persons``),
-    ``Occupants`` (residents of private dwellings, all ages) and ``Dwellings`` -- the same
-    census expression, row correction and growth as the zone targets, so an AGEB's values
-    are its share of its zone's. A sampled urban AGEB is its own census row. A sampled rural AGEB is not a census
-    unit: its values sum the localities inside it that the assignment places in the zone the
-    survey coded (``localities``), which is what its dwellings were drawn from.
+    One row per urban AGEB and rural AGEB the assignment (:func:`~eodgdl.reweight.zoning.assign_units`)
+    places in a zone, sampled or not: its ``TAZ`` (:func:`~eodgdl.reweight.zoning.taz_map`, which fails on any
+    disagreement with the zone system), its municipality, its MTAZ (``MTAZ_code`` and the integer ``MTAZ``), the
+    ``MTAZMun`` cell (MTAZ x municipality; a cell with no sampled dwelling is not in ``ZoneSystem.csv``), its
+    sampled dwellings (0 where the survey drew none), and three targets for the base and target years:
+    ``Persons6plus`` (residents aged 6+, the tool's ``Persons``), ``Occupants`` (residents of private
+    dwellings, all ages) and ``Dwellings`` -- the same census expression, row correction and growth as
+    the MTAZ targets, so each MTAZ's rows sum to its targets. An urban AGEB is its own census row. A
+    rural AGEB is not a census unit: its values sum the localities inside it that the assignment places
+    (``localities`` counts them), all in one MTAZ; one the survey records that holds no census locality
+    is a row of zeros.
     """
     spec = load_spec()["conapo"]
     years = {spec["base_year"]: None, spec["target_year"]: conapo}
-    per_row = {
+    per_row = pd.DataFrame({
         f"{label}_{year}": row_targets(universe, table, name, scaling, vmrc, rates)
-        for year, scaling in years.items() for name, (table, label) in SAMPLED_TARGETS.items()
-    }
-    rows = pd.DataFrame(per_row)
+        for year, scaling in years.items() for name, (table, label) in AGEB_TARGETS.items()
+    })
+    ageb = zone_system_codes(assignment)
+    placed = assignment.loc[ageb.index]
+    is_loc = placed.unit == "locality"
+    zones = placed.zone.astype(str).groupby(ageb).unique()
+    split = zones[zones.str.len() > 1]
+    if len(split):
+        raise ValueError(f"rural AGEBs placed in more than one zone: {split.to_dict()}")
+    out = pd.DataFrame({"AGEB": zones.index})
+    out["TAZ"] = out.AGEB.map(taz_map(assignment))
+    out["unit"] = out.AGEB.str.len().map({13: "urban", 9: "rural"})
+    out["Municipality"] = out.AGEB.str[2:5].astype(int)
+    out["municipio"] = out.Municipality.map(load_zm_muns())
+    out["MTAZ_code"] = zones.str[0].to_numpy()
+    out["MTAZ"] = out.MTAZ_code.map(zone_index())
+    out["MTAZMun"] = out.MTAZ * 1000 + out.Municipality
     code = viv.ageb.astype(str)
-    survey = pd.DataFrame({"code": code, "centralidad": viv.centralidad.astype(str),
-                           "municipio": viv.municipio.astype(str)})
-    sampled = survey.groupby("code").agg(centralidad=("centralidad", "first"), municipio=("municipio", "first"),
-                                         sampled_dwellings=("centralidad", "size"))
-    locs = assignment[(assignment.unit == "locality") & assignment.zone.notna()]
-    out = []
-    for ageb, r in sampled.iterrows():
-        if len(ageb) == 13:
-            members = [ageb]
-        else:
-            members = list(locs.index[(locs.rural_ageb == ageb) & (locs.zone == r.centralidad)])
-        values = rows.reindex(members).sum()
-        out.append({"AGEB": ageb, "unit": "urban" if len(ageb) == 13 else "rural",
-                    "Municipality": int(ageb[2:5]), "municipio": r.municipio,
-                    "centralidad": r.centralidad, "Zone": zone_index()[r.centralidad],
-                    "sampled_dwellings": int(r.sampled_dwellings),
-                    "localities": len(members) if len(ageb) == 9 else 0, **values.to_dict()})
-    out = pd.DataFrame(out)
-    out.insert(out.columns.get_loc("Zone") + 1, "TAZ", out.Zone * 1000 + out.Municipality)
-    names = load_zm_muns()
-    if (out.municipio != out.Municipality.map(names)).any():
+    out["sampled_dwellings"] = out.AGEB.map(code.value_counts()).fillna(0).astype(int)
+    out["localities"] = out.AGEB.map(is_loc.groupby(ageb).sum()).astype(int)
+    values = per_row.reindex(placed.index).fillna(0.0).groupby(ageb).sum()
+    out = out.join(values, on="AGEB")
+    if out[["unit", "municipio", "MTAZ"]].isna().any().any():
+        raise ValueError("an AGEB with no unit kind, municipality or MTAZ")
+    if missing := sorted(set(code) - set(out.AGEB)):
+        raise ValueError(f"sampled AGEBs placed in no zone: {missing}")
+    sampled = out[out.sampled_dwellings > 0].set_index("AGEB")
+    survey = viv.assign(code=code).groupby("code")
+    if (sampled.MTAZ_code != survey.centralidad.first().astype(str).reindex(sampled.index)).any():
+        raise ValueError("a sampled AGEB placed outside the zone the survey coded")
+    if (sampled.municipio != survey.municipio.first().astype(str).reindex(sampled.index)).any():
         raise ValueError("a sampled AGEB's key and the survey's municipio disagree")
-    return out
+    return out.sort_values(["MTAZ", "Municipality", "AGEB"], ignore_index=True)
 
 
 def build_constraints(universe, year=None, conapo=None, shares=None, vmrc=None, rates=None):

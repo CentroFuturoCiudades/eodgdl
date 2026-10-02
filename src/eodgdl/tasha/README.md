@@ -80,11 +80,11 @@ another household's, see `reports/duplicate_diaries.qmd`) is not read by the bui
 repeated diaries were accepted on 2026-09-25 and stay in every build; a consumer who wants
 independent observations filters `hab` and `trips` on it before building.
 
-Zone columns hold the survey's own zone id as a **string**: a 13-character urban AGEB
-CVEGEO, a 9-character rural AGEB key (INEGI's rural AGEB, not a locality id) or an access
-point (`99999000x`).
-Read them back with `dtype=str` — `tasha.zone_columns(table)` lists them —
-since most ids are all-digit and will otherwise parse as `int64`.
+Zone columns (`tasha.zone_columns(table)`) hold the **TAZ**, an integer: the working group's id of the
+AGEB the survey codes (a 13-character urban AGEB CVEGEO or a 9-character rural AGEB key, INEGI's rural
+AGEB, not a locality id) or of an access point (`99999000x`), from `src/eodgdl/taz_ids.csv`, whose
+`AGEB` column joins it back to the code. 0 is the sentinel of `EmploymentZone` / `SchoolZone`. The
+build raises on a code with no TAZ (`eodgdl._resources.taz_of`).
 
 The trip column is spelled **`PurposeOrigin`**. The downstream model misspells it
 `PuposeOrigin`; that typo belongs to the consumer, so alias it there or rename
@@ -269,20 +269,18 @@ rather than about one column's coding, so nothing surfaces them automatically.
   dropped — the held-out scores are in
   `eodgdl.chains._impute_untimed_trips`.
 
-- **Zone system.** `build()` hardcodes the AGEB ids. `model_schema.yaml`'s
-  `zones.alternatives` offers `ID_ZONAEOD` (64 survey zones plus 7 access points)
-  as the other choice, but there is no `zones=` selector, and the written tables record
-  nothing about which system produced them — so the choice is invisible to
-  whoever reads the CSVs. 1,701 AGEBs is also likely finer than a model with
-  matching networks and skims wants.
+- **Zone system.** Every zone column is the TAZ of the survey's AGEB or access point, from
+  `src/eodgdl/taz_ids.csv`, the working group's mapping. 2,094 codes (1,701 of them coded by the survey) may be finer than a model with
+  matching networks and skims wants; the MTAZ (the 64 centralidades plus the access points) is
+  the coarser system the other outputs carry, and the tables record nothing about it.
 
-  Separately, `validate()` checks a zone id's *shape* but never whether it joins.
-  The 44 rural AGEB ids (9 characters, INEGI's rural AGEB key, not locality ids)
-  have no census row of their own, since INEGI publishes rural counts by locality,
-  and the 7 access points have none: rural AGEBs are the zone of 1,417 households,
-  1,765 `EmploymentZone`s, 586 `SchoolZone`s, 10,111 trip origins and 10,088
-  destinations; access points of 827 `EmploymentZone`s, 58 `SchoolZone`s, 1,554
-  origins and 1,540 destinations.
+  `validate()` checks that a zone id is a positive integer, never whether it is in the table
+  (the build guarantees that). The 44 rural AGEBs (INEGI's 9-character rural AGEB key, not
+  locality ids) have no census row of their own, since INEGI publishes rural counts by
+  locality, and the 7 access points have none: rural AGEBs are the zone of 1,417 households,
+  1,765 `EmploymentZone`s, 586 `SchoolZone`s, 10,111 trip origins and 10,088 destinations;
+  access points of 827 `EmploymentZone`s, 58 `SchoolZone`s, 1,554 origins and 1,540
+  destinations.
 
 ## Provenance
 

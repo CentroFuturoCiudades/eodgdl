@@ -94,11 +94,7 @@ def required_columns(table):
 
 
 def zone_columns(table):
-    """Columns holding a zone id. Read these with dtype=str.
-
-    Most ids are all-digit, so a plain ``read_csv`` can turn a column into int64
-    depending on which rows are present, making the dtype vary with the data.
-    """
+    """Columns holding a zone id: the integer TAZ (``eodgdl/taz_ids.csv``), 0 where a column's sentinel allows."""
     return [c for c in columns(table) if column_spec(c, table).get("role") == "zone"]
 
 
@@ -373,8 +369,6 @@ def validate(df, table, *, check_dtypes=True):
         if dupes:
             p(f"{table}: {dupes} rows duplicate the key {key}")
 
-    id_lengths = set(load_schema()["zones"]["id_lengths"])
-
     for column in columns(table):
         if column not in df.columns:
             continue
@@ -403,21 +397,11 @@ def validate(df, table, *, check_dtypes=True):
                 p(f"{table}.{column}: expected a numeric column, got {s.dtype}")
 
         if cspec.get("role") == "zone":
-            # Zone ids are INEGI codes, not numbers: check their shape, and warn
-            # if a reader has parsed the all-digit ids into integers.
-            ids = s.dropna().astype(str)
-            if pd.api.types.is_numeric_dtype(s):
-                p(
-                    f"{table}.{column}: zone ids read as {s.dtype}, not strings; "
-                    "re-read with dtype=str, or ids that carry a trailing letter "
-                    "will not compare equal to ids that do not"
-                )
-            bad_shape = sorted(set(ids[~ids.str.len().isin(id_lengths) & ~ids.isin(sentinels)]))
-            if bad_shape:
-                p(
-                    f"{table}.{column}: {len(bad_shape)} zone ids are not "
-                    f"{sorted(id_lengths)} characters, e.g. {bad_shape[:5]}"
-                )
+            # Zone ids are TAZ integers: positive, or the column's sentinel.
+            if _is_integral(s):
+                bad = sorted(set(s[(s <= 0) & ~s.isin([int(k) for k in sentinels])].dropna().astype(int)))
+                if bad:
+                    p(f"{table}.{column}: zone ids that are not positive TAZ integers, e.g. {bad[:5]}")
         elif pd.api.types.is_numeric_dtype(s):
             lo, hi = cspec.get("range") or (None, None)
             allowed = (
@@ -538,7 +522,7 @@ def chain_report(trips):
         return int(t.loc[mask, person].drop_duplicates().shape[0])
 
     lines = []
-    breaks = has_prev & (t.ZoneOrigin.astype(str) != prev_zone.astype(str))
+    breaks = has_prev & (t.ZoneOrigin != prev_zone)  # TAZ integers; the shift's NaN makes prev_zone float
     if breaks.any():
         lines.append(
             f"trips: {int(breaks.sum())} trips ({people(breaks)} people) do not "

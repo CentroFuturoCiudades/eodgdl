@@ -51,26 +51,26 @@ def eod():
 
 
 def zones():
-    """The zones redrawn along AGEB edges (:func:`eodgdl.reweight.zone_system`), indexed by zone, with each zone's urban
-    AGEBs, rural localities and population."""
+    """The zones redrawn along AGEB edges (:func:`eodgdl.reweight.zone_system`), indexed by ``MTAZ_code``, with each
+    zone's ``MTAZ``, urban AGEBs, rural localities and population."""
     import geopandas as gpd
 
-    return gpd.read_file(_path("zones/zones.gpkg", "zones"), layer="zones").set_index("zone")
+    return gpd.read_file(_path("zones/zones.gpkg", "zones"), layer="zones").set_index("MTAZ_code")
 
 
 def zone_assignment():
-    """Every urban AGEB and rural locality with its zone and the rule that placed it
-    (:func:`eodgdl.reweight.assign_units`), indexed by CVEGEO."""
+    """Every urban AGEB and rural locality with its zone (``MTAZ_code``, ``MTAZ``), its ``TAZ`` and the rule that
+    placed it (:func:`eodgdl.reweight.zone_system`), indexed by CVEGEO."""
     import pandas as pd
 
     return pd.read_parquet(_path("zones/assignment.parquet", "zones"))
 
 
 def tasha_tables():
-    """The TASHA tables (:class:`eodgdl.tasha.ODTables`) the rule ``tasha_build`` wrote, every zone id read as text."""
+    """The TASHA tables (:class:`eodgdl.tasha.ODTables`) the rule ``tasha_build`` wrote; every zone column is the integer TAZ."""
     import pandas as pd
 
     from eodgdl import tasha
 
-    return tasha.ODTables(*(pd.read_csv(_path(f"tasha/od_{table}.csv", "tasha"), dtype=dict.fromkeys(tasha.zone_columns(table), str))
+    return tasha.ODTables(*(pd.read_csv(_path(f"tasha/od_{table}.csv", "tasha"))
                             for table in tasha.tables()))

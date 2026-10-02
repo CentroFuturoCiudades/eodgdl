@@ -15,10 +15,10 @@ import yaml
 
 TABLES = ("households", "persons", "trips")
 TABLE_LABEL = {"households": "Household", "persons": "Person", "trips": "Trip"}
-GEOGRAPHIES = ("zone", "municipality", "region")
-GEOGRAPHY_COLUMN = {"zone": "Zone", "municipality": "Municipality", "region": "Region"}
+GEOGRAPHIES = ("mtaz", "municipality", "region")
+GEOGRAPHY_COLUMN = {"mtaz": "MTAZ", "municipality": "Municipality", "region": "Region"}
 KEYS = {
-    "households": ["HouseholdID", "HouseholdTAZ"],
+    "households": ["HouseholdID", "HouseholdMTAZMun"],
     "persons": ["PersonID", "HouseholdID"],
     "trips": ["HouseholdID", "PersonID"],
 }
