@@ -63,12 +63,8 @@ def main():
     exec(compile(code, f"{REPORT.name}:fig-zone-map", "exec"), names)
     print(f"wrote {out}")
 
-    assignment = reweight.assign_units(viv, trips)
-    shapes = reweight.zone_shapes(assignment)
-    census = assignment[assignment.zone.notna()].groupby("zone").agg(
-        agebs=("unit", lambda u: int((u == "ageb").sum())), localities=("unit", lambda u: int((u == "locality").sum())),
-        POBTOT=("POBTOT", "sum"))
-    shapes = shapes.join(census).reset_index()
+    assignment, shapes = reweight.zone_system(viv, trips)
+    shapes = shapes.reset_index()
     target = Path(args.shapes)
     target.parent.mkdir(parents=True, exist_ok=True)
     shapes.to_file(target, layer="centralidades_redrawn", driver="GPKG")

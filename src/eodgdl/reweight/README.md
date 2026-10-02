@@ -296,10 +296,11 @@ internet or ENDUTIH's domain grew faster than the metro; the data here cannot te
 
 Needs the `reweight` extra (`uv sync --extra reweight`), which brings `mxcensus` and
 scikit-learn (the imputed employment scores `od_empleo_design_model.joblib`, read from
-`models/` beside `--data`, else fetched); the census files are fetched once and cached.
+`models/`); mxcensus fetches the census files once and caches them.
 
 ```bash
-uv run eodgdl reweight build --data data --out output/reweight   # build, write, check
+uv run snakemake -c8 reweight                                    # the workflow's rule reweight_inputs -> output/reweight/
+uv run eodgdl reweight build --data data --out output/reweight   # the same by hand: build, write, check
 uv run eodgdl reweight check output/reweight                     # check a set again
 ```
 

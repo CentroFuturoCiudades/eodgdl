@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from eodgdl.data._catalog import CENSUS_FILES, CONAPO_CSV, SURVEY_FILES, VMRC_CSV, ZONE_FILES
+from eodgdl.data import CENSUS_FILES, CONAPO_CSV, SURVEY_FILES, VMRC_CSV, ZONE_FILES
 from eodgdl.reweight._spec import constraint_index, load_spec
 from eodgdl.reweight.records import (
     build_households,

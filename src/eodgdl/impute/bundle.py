@@ -96,7 +96,7 @@ def check_bundle(bundle, spec, category_levels):
 
 def bundle_path(spec, path=None, retrained=None):
     """Where the task's bundle is read from: ``path``; else ``<retrained>/<task>/<bundle file>`` when a retrain wrote
-    it there; else the task's model file (:func:`eodgdl.data.resolve`: a local ``models/`` directory, else the mirror's)."""
+    it there; else the task's model file under ``models/`` (:func:`eodgdl.data.resolve`)."""
     if path is not None:
         return Path(path)
     if retrained is not None and (Path(retrained) / spec.name / spec.bundle_name).exists():
@@ -204,7 +204,7 @@ def bundle_arms(bundle, auxiliary=True):
 
 
 def save_bundle(bundle, path):
-    """Write ``bundle`` with joblib; returns its sha256 (for ``registry.txt`` and downstream bundles)."""
+    """Write ``bundle`` with joblib; returns its sha256 (for the manifests and downstream bundles)."""
     import joblib
 
     joblib.dump(bundle, path)

@@ -516,7 +516,7 @@ def provenance() -> dict:
 def export(data_dir: Path, out_dir: Path) -> dict[str, pd.DataFrame]:
     os.environ["EODGDL_DATA_DIR"] = str(data_dir)
     from eodgdl._resources import imeplan_rename_map  # noqa: PLC0415  (after the env var)
-    from eodgdl.data._catalog import VIAJES_CSV  # noqa: PLC0415
+    from eodgdl.data import VIAJES_CSV  # noqa: PLC0415
     from eodgdl._resources import chain_decisions  # noqa: PLC0415
     from eodgdl.eod import load_stages  # noqa: PLC0415
 

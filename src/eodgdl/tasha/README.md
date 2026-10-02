@@ -22,8 +22,8 @@ build.py            the builder    — turns the cleaned survey into the three
 
 The split is the point. `model_schema.yaml` changes only when the *model's*
 requirements change; `mappings.yaml` changes whenever a coding decision does, and
-is meant to be read and edited by hand. Both YAML files ship inside the package,
-so everything here works offline and from an installed wheel.
+is meant to be read and edited by hand. Both YAML files live inside the package,
+beside the code that reads them.
 
 ## Generating the files
 
@@ -33,14 +33,17 @@ from eodgdl import load_eod, tasha
 completed = tasha.load_completed("output/impute", draw=0)   # the pipeline tasha, one completed dataset
 od = tasha.build(load_eod("data"), completed=completed)    # ODTables(households, people, trips)
 assert tasha.validate_all(*od) == []
-od.trips.to_csv("output/od_trips.csv", index=False)
+od.trips.to_csv("output/tasha/od_trips.csv", index=False)
 ```
 
-or in one step:
+or in one step, as the workflow's rule `tasha_build` does:
 
 ```bash
-eodgdl tasha build --data data/ --out output/    # builds, writes, and validates
+uv run snakemake -c8 tasha                   # the workflow: builds, writes and validates -> output/tasha/
+eodgdl tasha build --out output/tasha        # the same command by hand
 ```
+
+`eodgdl.artifacts.tasha_tables()` reads the written tables back, every zone id as text.
 
 The imputed columns (`IncomeClass`; `EmploymentStatus` and `StudentStatus` where
 unanswered, `EmploymentStatus`'s `P`, `Formality`, a worker's unreported `Occupation`) read
@@ -55,8 +58,8 @@ another equally valid completed survey; `--no-impute` leaves those columns at th
 mapping's defaults (and removes an earlier `od_provenance.json`). `load_completed` refuses a
 run with the aggregates switched off (`--no-aggregate`, the parity check, which writes to
 `ROOT/tasha/no_aggregate/` unless told otherwise) and one drawn on other survey data than
-the files read now (a survey file, a chain rule or a hand decision changed since: rerun
-`eodgdl impute score tasha`), and the build fails where a row that reads a drawn value has
+the files read now (a survey file, a chain rule or a hand decision changed the cleaned tables
+since: rerun `eodgdl impute score tasha`, or `uv run snakemake -c8 tasha`), and the build fails where a row that reads a drawn value has
 none.
 
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
@@ -168,8 +171,8 @@ for problem in tasha.validate_all(households, people, trips):
 Or against a directory of written CSVs:
 
 ```
-eodgdl tasha validate output/               # reads od_{households,people,trips}.csv
-eodgdl tasha validate output/ --suffix _v2  # ...or the _v2 variants
+eodgdl tasha validate output/tasha/               # reads od_{households,people,trips}.csv
+eodgdl tasha validate output/tasha/ --suffix _v2  # ...or the _v2 variants
 ```
 
 `validate` checks required columns, unknown columns, key uniqueness, nulls, code

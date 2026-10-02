@@ -566,9 +566,8 @@ table
 versions = SUMMARY["versions"]
 display(Markdown(
     f"Bundle `{SUMMARY['bundle']['file']}`, sha256 `{SUMMARY['bundle']['sha256']}`; task spec hash `{SUMMARY['spec_hash'][:16]}…`. "
-    f"eodgdl {versions['eodgdl']}, scikit-learn {versions['sklearn']}; survey files `{versions['survey'][:16]}…`, loader "
-    f"`{versions['eod_loader'][:16]}…`, feature frame `{versions['features'][:16]}…`. Timings (s): "
-    + ", ".join(f"{k} {v}" for k, v in SUMMARY["timings_s"].items()) + ". To ship the bundle, copy it to `data/`, update "
-    "its sha256 in `src/eodgdl/data/registry.txt` and cut a release (`REF`)."
+    f"eodgdl {versions['eodgdl']}, scikit-learn {versions['sklearn']}; survey files `{versions['survey'][:16]}…`, cleaned "
+    f"tables `{versions['eod_tables'][:16]}…`, feature frame `{versions['features'][:16]}…`. Timings (s): "
+    + ", ".join(f"{k} {v}" for k, v in SUMMARY["timings_s"].items()) + ". To ship the bundle, copy it to `models/` and commit it."
 ))
 ```

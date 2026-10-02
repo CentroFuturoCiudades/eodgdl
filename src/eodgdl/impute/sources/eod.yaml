@@ -1,9 +1,14 @@
 # Sources and feature builders on the EOD survey (eodgdl.load_eod), read by eodgdl.impute.sources.eod.
 
+# The weight of the EOD sources' rows under each run weight (config/config.yaml's `weight`; eodgdl.impute.sources.source_weight).
+run_weights: &run_weights
+  design: ponderador                                  # the survey's own: the person weight (hab), the dwelling's (viv) for eod.dwellings
+  tmg: {file: EOD_peso_hogar_TMG.csv, column: peso}   # TMG.SurveyReweight's household weight (`eodgdl reweight import-weight`)
+
 eod.workers:
   # One row per interviewed person who worked last week, with the dwelling's attributes attached.
   keys: [folio_vivienda, folio_habitante]
-  weight: ponderador          # the person weight (hab)
+  weight: *run_weights
   group: folio_vivienda       # CV group: households never straddle two folds
   employed_categories:        # `trabajo_semana_pasada` levels that define a worker
     - Tiempo completo
@@ -18,7 +23,7 @@ eod.persons:
   # `situacion_laboral` (the employment answer on the employment task's levels; NA where unanswered: 4,370 adults whose
   # socio-economic block was skipped, most in February-April). The training rows of the task `empleo`.
   keys: [folio_vivienda, folio_habitante]
-  weight: ponderador
+  weight: *run_weights
   group: folio_vivienda
   min_age: 16                 # every unanswered person is 16 or older
   dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]
@@ -34,7 +39,7 @@ eod.labour:
   # employment is observed or drawn (task empleo); giro and informality are scored on every row and read only where
   # the person works (reported, or drawn). Feature builders as eod.workers's (`builders_as`).
   keys: [folio_vivienda, folio_habitante]
-  weight: ponderador
+  weight: *run_weights
   group: folio_vivienda
   min_age: 0                  # every worker, as eod.workers (243 are 12-15); the unanswered are all 16+
   dwelling_columns: [municipio, ageb, centralidad, personas_en_vivienda, n_autos_camionetas]
@@ -70,7 +75,7 @@ eod.dwellings:
   # One row per dwelling with its head of household: the reported "Jefe del hogar" (the first, in the survey's order,
   # where a dwelling holds several households), else its oldest member. Ported from informal-jobs-model's notebook 06.
   keys: [folio_vivienda]
-  weight: ponderador          # the dwelling weight (viv): the targets are the dwelling's
+  weight: *run_weights      # the targets are the dwelling's
   group: folio_vivienda
   head_relationship: Jefe del hogar
   # The head's own columns, renamed: sex, age, marital status, education (the education task's target), and the

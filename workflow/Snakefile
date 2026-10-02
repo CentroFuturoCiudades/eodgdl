@@ -1,0 +1,317 @@
+"""The processing, from the shipped survey to the TASHA tables (docs/pipeline.md): one rule per stage.
+
+    uv sync --extra workflow
+    uv run snakemake -n                       # what would run, and why (--summary: every output's state)
+    uv run snakemake -c8                      # everything, into output/
+    uv run snakemake -c8 tasha                # a target and what it needs: eod, zones, reweight, impute, tasha
+    uv run snakemake -c8 --config output=ROOT # another root (a parity run: scripts/impute/parity.py)
+
+The run parameters are config/config.yaml's, the file eodgdl itself reads (eodgdl.config). A rule reruns when an input
+is newer than its outputs or its parameters or command changed; the inputs list the data, the models and the library
+code each stage runs. After an edit that changes no result (a comment, a docstring), `uv run snakemake -c1 --touch`
+marks the outputs current instead of rerunning them. Stage 3, TMG.SurveyReweight, is external: under `weight: tmg` every
+imputation waits for data/EOD_peso_hogar_TMG.csv and the check that it was fitted on the reweight inputs written here.
+
+Every rule runs a command or a script, none a `run:` block: Snakemake executes those in a child process that parses this
+file again and plans its own DAG, and one such child once reran upstream jobs mid-run (2026-10-01).
+"""
+import os
+import sys
+from pathlib import Path
+
+from snakemake.exceptions import WorkflowError
+
+from eodgdl import config as run_config
+from eodgdl.data import SURVEY_FILES, data_dir
+from eodgdl.eod import loader_files
+from eodgdl.impute.chain import load_chain
+from eodgdl.impute.pipeline import load_pipeline
+from eodgdl.reweight.weight import SIDECAR, WEIGHT_CSV
+
+
+workdir: str(Path(workflow.basedir).parent)
+
+
+configfile: str(run_config.path())
+
+
+if config["weight"] != run_config.weight():
+    raise WorkflowError(f"eodgdl reads the weight from {run_config.path()} ({run_config.weight()!r}): set it there, not with --config")
+
+OUT = config.get("output", "output")
+DATA = os.path.relpath(data_dir())
+WEIGHT, BOOTSTRAP, DRAWS, DRAW = config["weight"], config["bootstrap"], config["draws"], config["draw"]
+
+if WEIGHT == "tmg" and not Path(DATA, WEIGHT_CSV).exists():
+    raise WorkflowError(f"weight: tmg, but there is no {DATA}/{WEIGHT_CSV}. Build the reweight inputs under weight: design "
+                        "(`snakemake reweight`), hand them over, bring the weight back (`eodgdl reweight import-weight`), then run again.")
+
+
+def code(*parts):
+    """The library files under src/eodgdl/ a stage runs: a module, or a subpackage's .py and .yaml files. The CLI
+    (_cli.py) and manifest.py are left out: they print and record, they decide no result."""
+    files = []
+    for part in parts:
+        path = Path("src/eodgdl", part)
+        if path.is_dir():
+            files += sorted(str(f) for f in path.rglob("*") if f.suffix in {".py", ".yaml"} and "__pycache__" not in f.parts)
+        else:
+            files.append(str(path))
+    return files
+
+
+SURVEY = [f"{DATA}/{name}" for name in SURVEY_FILES]
+LOADER = [os.path.relpath(path) for path in loader_files()]
+ZONING = code("reweight/zoning.py", "taz.py", "data.py")
+IMPUTE = code("impute", "giro", "config.py") + ZONING
+EOD = expand(f"{OUT}/eod/{{table}}.parquet", table=["viv", "hab", "trips", "legs"])
+
+TASKS = sorted(path.stem for path in Path("src/eodgdl/impute/tasks").glob("*.yaml"))
+DIAGNOSTIC_CHAINS = ["sector_informality", "nse"]
+PIPELINE_TASKS = sorted({task for level in load_pipeline("tasha").levels for task in load_chain(level.chain).tasks})
+# under weight: tmg, every imputation reads the TMG weight, checked against the reweight inputs first (rule tmg_weight)
+WEIGHT_CHECK = [f"{OUT}/checks/tmg_weight.txt"] if WEIGHT == "tmg" else []
+
+
+def retrains(tasks):
+    return [f"{OUT}/impute/{task}" for task in tasks]
+
+
+def chain_tasks(wildcards):
+    """The retrains a diagnostic chain reads: its tasks, and those its evaluation names (an upstream's scenarios, the
+    task it checks against the survey's own count)."""
+    chain = load_chain(wildcards.chain)
+    evaluation = chain.raw.get("evaluation") or {}
+    tasks = set(chain.tasks) | set(evaluation.get("upstream_scenarios") or {})
+    if evaluation.get("observed_check"):
+        tasks.add(evaluation["observed_check"]["task"])
+    return retrains(sorted(tasks))
+
+
+wildcard_constraints:
+    task="|".join(TASKS),
+    chain="|".join(DIAGNOSTIC_CHAINS),
+
+
+rule all:
+    input:
+        f"{OUT}/checks/verify.txt",
+
+
+rule eod:
+    input:
+        EOD,
+
+
+rule zones:
+    input:
+        f"{OUT}/zones/manifest.json",
+
+
+rule reweight:
+    input:
+        f"{OUT}/reweight",
+
+
+rule impute:
+    input:
+        retrains(TASKS),
+        expand(f"{OUT}/impute/{{chain}}", chain=DIAGNOSTIC_CHAINS),
+        f"{OUT}/impute/tasha",
+
+
+rule tasha:
+    input:
+        f"{OUT}/tasha/od_manifest.json",
+
+
+# Stage 0: the survey loaded and cleaned (rename, schemas, repeated diaries, chain rules, hand decisions, legs).
+rule eod_tables:
+    input:
+        SURVEY,
+        LOADER,
+    output:
+        EOD,
+        manifest=f"{OUT}/eod/manifest.json",
+    script:
+        "scripts/eod_tables.py"
+
+
+# The zone system: every census unit in at most one zone, and the zones redrawn along AGEB edges.
+rule zone_system:
+    input:
+        viv=f"{OUT}/eod/viv.parquet",
+        trips=f"{OUT}/eod/trips.parquet",
+        zones=f"{DATA}/AMG_Zonificacion_para_encuesta.parquet",
+        code=ZONING,
+    output:
+        zones=f"{OUT}/zones/zones.gpkg",
+        assignment=f"{OUT}/zones/assignment.parquet",
+        manifest=f"{OUT}/zones/manifest.json",
+    script:
+        "scripts/zone_system.py"
+
+
+# Stages 1-2: the reweight inputs for TMG.SurveyReweight, the unanswered's employment from the design-weight empleo
+# bundle (stage 1) among them.
+rule reweight_inputs:
+    input:
+        EOD,
+        expand(f"{DATA}/{{name}}", name=["AMG_Zonificacion_para_encuesta.parquet", "CONAPO_proyecciones_AMG.csv", "VMRC_AMG.csv", "ENDUTIH_internet_AMG.csv"]),
+        "models/od_empleo_design_model.joblib",
+        code("reweight"),
+        IMPUTE,
+    output:
+        directory(f"{OUT}/reweight"),
+    log:
+        f"{OUT}/logs/reweight_inputs.log",
+    shell:
+        "eodgdl reweight build --out {output} > {log} 2>&1"
+
+
+# Stage 3 comes back from outside: TMG's weight, checked against the reweight inputs it was fitted on.
+rule tmg_weight:
+    input:
+        reweight=f"{OUT}/reweight",
+        weight=f"{DATA}/{WEIGHT_CSV}",
+        sidecar=f"{DATA}/{SIDECAR}",
+    output:
+        f"{OUT}/checks/tmg_weight.txt",
+    script:
+        "scripts/tmg_weight.py"
+
+
+# Stage 4: every task selected, evaluated and refitted on the run's weight, with its bootstrap refits.
+rule retrain:
+    input:
+        EOD,
+        IMPUTE,
+        WEIGHT_CHECK,
+    output:
+        directory(f"{OUT}/impute/{{task}}"),
+    params:
+        weight=WEIGHT,
+        bootstrap=BOOTSTRAP,
+    threads: workflow.cores
+    log:
+        f"{OUT}/logs/retrain_{{task}}.log",
+    shell:
+        "eodgdl impute retrain {wildcards.task} --out {OUT}/impute --jobs {threads} --bootstrap {params.bootstrap} > {log} 2>&1"
+
+
+# The diagnostic chains, scored alone: their scores, multiple imputations (with a bootstrap model per draw) and
+# evaluations, which the imputation reports read.
+rule diagnostic_chain:
+    input:
+        chain_tasks,
+        EOD,
+        IMPUTE,
+        WEIGHT_CHECK,
+    output:
+        directory(f"{OUT}/impute/{{chain}}"),
+    params:
+        weight=WEIGHT,
+        draws=DRAWS,
+        # skipped without bootstrap refits, as their evaluations' Rubin's rules then are
+        multiple_imputation=lambda wildcards, output: (f"&& eodgdl impute score {wildcards.chain} --retrained {OUT}/impute --draws {DRAWS} "
+                                                       f"--bootstrap --out {output[0]}/multiple_imputation" if BOOTSTRAP else ""),
+    threads: workflow.cores
+    log:
+        f"{OUT}/logs/chain_{{chain}}.log",
+    shell:
+        "(eodgdl impute score {wildcards.chain} --retrained {OUT}/impute --out {output} {params.multiple_imputation} "
+        "&& eodgdl impute evaluate {wildcards.chain} --retrained {OUT}/impute) > {log} 2>&1"
+
+
+# Stage 5: the completed datasets the TASHA build reads (pipeline tasha: persons -> workers -> dwellings, its draws
+# each scored with a bootstrap model).
+rule pipeline_tasha:
+    input:
+        retrains(PIPELINE_TASKS),
+        EOD,
+        IMPUTE,
+        WEIGHT_CHECK,
+    output:
+        directory(f"{OUT}/impute/tasha"),
+    params:
+        weight=WEIGHT,
+    threads: workflow.cores
+    log:
+        f"{OUT}/logs/pipeline_tasha.log",
+    shell:
+        "eodgdl impute score tasha --retrained {OUT}/impute --out {output} > {log} 2>&1"
+
+
+# Stage 6: the TASHA tables, the imputed columns from completed dataset `draw`.
+rule tasha_build:
+    input:
+        f"{OUT}/impute/tasha",
+        EOD,
+        code("tasha"),
+    output:
+        expand(f"{OUT}/tasha/od_{{table}}.csv", table=["households", "people", "trips"]),
+        f"{OUT}/tasha/od_provenance.json",
+        manifest=f"{OUT}/tasha/od_manifest.json",
+    params:
+        draw=DRAW,
+    log:
+        f"{OUT}/logs/tasha_build.log",
+    shell:
+        "eodgdl tasha build --impute {OUT}/impute --draw {params.draw} --out {OUT}/tasha > {log} 2>&1"
+
+
+# Every stage's manifest walked: outputs, inputs and upstream links, and TMG's weight against the reweight inputs.
+rule verify:
+    input:
+        rules.eod_tables.output.manifest,
+        rules.zone_system.output.manifest,
+        f"{OUT}/reweight",
+        retrains(TASKS),
+        expand(f"{OUT}/impute/{{chain}}", chain=DIAGNOSTIC_CHAINS),
+        rules.tasha_build.output.manifest,
+        WEIGHT_CHECK,
+    output:
+        f"{OUT}/checks/verify.txt",
+    shell:
+        "eodgdl pipeline verify {OUT} > {output}"
+
+
+# The reports (reports/*.qmd), rendered against this root's outputs into its reports/: their figures and asserted claims
+# are recomputed at render time, so a render that fails is a finding. Not part of `all`: `snakemake -c8 reports`, or one
+# of them by its path. Each depends on its .qmd, the survey and the whole library, plus the outputs it reads.
+IMPUTE_OUTPUTS = retrains(TASKS) + expand(f"{OUT}/impute/{{chain}}", chain=DIAGNOSTIC_CHAINS) + [f"{OUT}/impute/tasha"]
+REPORTS = {
+    "eod_survey_report": [], "loading": [], "trip_chains": [], "duplicate_diaries": [], "expansion_factors": [],
+    "reweight_inputs": expand(f"{DATA}/{{name}}", name=["CONAPO_proyecciones_AMG.csv", "VMRC_AMG.csv", "ENDUTIH_internet_AMG.csv"]),
+    "imputation_giro": IMPUTE_OUTPUTS, "imputation_informality": IMPUTE_OUTPUTS, "imputation_nse": IMPUTE_OUTPUTS,
+    "imputation_empleo": IMPUTE_OUTPUTS, "imputation_figures": IMPUTE_OUTPUTS,
+    "pipeline": [f"{OUT}/checks/verify.txt"],
+}
+ROOT = os.path.abspath(OUT)       # the reports run in reports/: every path they are given is absolute
+REPORT_ENV = " ".join(f"{name}={value}" for name, value in {
+    "QUARTO_PYTHON": sys.executable, "EODGDL_OUTPUT_DIR": ROOT, "EODGDL_PIPELINE_ROOT": ROOT, "EODGDL_IMPUTE_DIR": f"{ROOT}/impute",
+    "EODGDL_IMPUTE_GIRO": f"{ROOT}/impute/giro", "EODGDL_IMPUTE_INFORMALITY": f"{ROOT}/impute/informality",
+    "EODGDL_IMPUTE_SECTOR_INFORMALITY": f"{ROOT}/impute/sector_informality", "EODGDL_FIGURES_DIR": f"{ROOT}/figures"}.items())
+
+
+rule reports:
+    input:
+        expand(f"{OUT}/reports/{{report}}.html", report=sorted(REPORTS)),
+
+
+rule report:
+    input:
+        "reports/{report}.qmd",
+        lambda wildcards: REPORTS[wildcards.report],
+        SURVEY,
+        code("."),
+    output:
+        f"{OUT}/reports/{{report}}.html",
+    wildcard_constraints:
+        report="|".join(REPORTS),
+    threads: workflow.cores       # one render at a time: they share reports/.quarto
+    log:
+        f"{OUT}/logs/report_{{report}}.log",
+    shell:
+        f"{REPORT_ENV} quarto render {{input[0]}} --output-dir {ROOT}/reports > {{log}} 2>&1"
+

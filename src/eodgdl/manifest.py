@@ -8,7 +8,7 @@ writes a manifest beside them (:func:`write_manifest`):
   files, Python, the platform and ``uv.lock``'s sha256 (:func:`code_identity`). Same platform and lock: the same bytes
   are expected; elsewhere, equivalence within Monte Carlo error.
 - ``parameters``: the stage's settings (seeds, draws, bootstrap refits).
-- ``versions``: the data versions the stage's sources declare (the survey files and loader code, the weight file's
+- ``versions``: the data versions the stage's sources declare (the survey files, the cleaned tables' digest, the weight file's
   sha256) and ``environment``: the packages whose data or models it reads (mxcensus and its registry's sha256, which
   pins every census, ENOE, ENIGH and DENUE file it fetches; scikit-learn).
 - ``inputs``: ``{label: {path, sha256}}`` of every file read (survey files, model bundles, weight file), the path
@@ -187,7 +187,7 @@ def check_manifest(path) -> list[str]:
 
 def verify(root="output", data_dir=None) -> list[str]:
     """Every broken link under ``root``: each manifest's (:func:`check_manifest`), and TMG's weight sidecar in
-    ``data_dir`` (default ``$EODGDL_DATA_DIR``) against the reweight inputs it was fitted on
+    ``data_dir`` (default :func:`eodgdl.data.data_dir`) against the reweight inputs it was fitted on
     (:func:`eodgdl.reweight.weight.check_weight`). Empty when the chain is sound."""
     root = Path(root)
     problems = []

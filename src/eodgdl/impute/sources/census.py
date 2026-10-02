@@ -22,7 +22,7 @@ def _versions(context, config):
     from eodgdl.data import resolve
 
     package = Path(str(resources.files("eodgdl")))
-    return {**survey_versions(), "mxcensus": version("mxcensus"), "zoning": files_digest([package / "reweight" / "zoning.py", package / "taz.py"]),
+    return {**survey_versions(context), "mxcensus": version("mxcensus"), "zoning": files_digest([package / "reweight" / "zoning.py", package / "taz.py"]),
             "amai": file_digest(str(resolve(_amai_config(config)["file"]))), "chain": file_digest(str(package / "impute" / "chains" / f"{config['amai']['chain']}.yaml"))}
 
 

@@ -3,7 +3,7 @@ reviews (``docs/handoff_impute_engine.md`` §0).
 
     uv run python scripts/impute/parity.py ROOT_A ROOT_B [--models] [--tolerance 1e-12] [--data data] [--strict] [--ignore-columns PATTERN ...]
 
-A root has the layout of ``output/impute/`` (``scripts/impute/rerun.sh ROOT`` writes one): ``<task>/`` retrains (the
+A root has the layout of ``output/impute/`` (``snakemake impute --config output=ROOT`` writes one under ``ROOT/impute/``): ``<task>/`` retrains (the
 bundle, ``scores.parquet``, ``scenarios.parquet``, ``evaluation/*.parquet``, ``summary.json``), ``<chain>/`` runs
 (``scores.parquet``, ``completions.parquet``, ``provenance.json``, ``evaluation/``) and ``giro_scores.parquet``.
 
@@ -225,7 +225,7 @@ def main():
     parser.add_argument("root_b", type=Path)
     parser.add_argument("--models", action="store_true", help="Also compare every fitted model of each task's two bundles by predict_proba")
     parser.add_argument("--tolerance", type=float, default=1e-12, help="Absolute below one, relative above (default 1e-12)")
-    parser.add_argument("--data", default=None, help="Local data directory for --models (else $EODGDL_DATA_DIR or fetch)")
+    parser.add_argument("--data", default=None, help="Data directory for --models (default: the clone's data/, or $EODGDL_DATA_DIR)")
     parser.add_argument("--strict", action="store_true", help="Exit 1 on any difference beyond the tolerance, held-out tables included")
     parser.add_argument("--ignore-columns", nargs="+", default=[], metavar="PATTERN",
                         help="Drop the columns matching these shell patterns from every parquet of both roots before comparing (e.g. a "

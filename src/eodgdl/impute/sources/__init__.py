@@ -5,11 +5,13 @@ cache).
 A source is registered with :func:`register_source` in a module listed in ``SOURCE_MODULES``; its configuration is
 the entry of the same name in that module's YAML (``keys``, ``weight``, ``group`` and whatever the builder reads).
 
-A source's ``weight`` names a column of its rows (``weight: ponderador``, the survey's design weight) or a column of a
+A source's ``weight`` names a column of its rows (``weight: ponderador``, the survey's design weight), a column of a
 weight file under the data directory, joined on a key (``weight: {file: EOD_peso_hogar_TMG.csv, column: peso,
-key: folio_vivienda}``; ``key`` defaults to ``folio_vivienda``): every row must find its weight there, and the file's
-sha256 is one of the source's data ``versions`` (:meth:`Source.data_versions`), so the feature cache, a bundle's
-training data version and :func:`changed_versions` all move when the weight's values do."""
+key: folio_vivienda}``; ``key`` defaults to ``folio_vivienda``), or maps the run's weights to one of those
+(``{design: ponderador, tmg: {file: ...}}``, the EOD sources' ``run_weights``): the entry ``config/config.yaml``'s
+``weight`` names (:func:`source_weight`). Every row must find its weight in a weight file, and the file's sha256 is one
+of the source's data ``versions`` (:meth:`Source.data_versions`), so the feature cache, a bundle's training data
+version and :func:`changed_versions` all move when the weight's values do."""
 
 import functools
 import hashlib
@@ -49,7 +51,7 @@ class Source:
     @property
     def weight(self):
         """The weight column of the source's rows (a weight file's column joins them under its own name)."""
-        weight = self.config["weight"]
+        weight = source_weight(self.config)
         return weight if isinstance(weight, str) else weight["column"]
 
     def data_versions(self, context):
@@ -87,10 +89,25 @@ def changed_versions(name, recorded, context=None):
     return sorted(key for key in current if key != "eodgdl" and recorded.get(key) != current[key])
 
 
-def weight_file(config):
-    """The weight file a source configuration names, ``{file, column, key}``, or None where ``weight`` is a column of
-    the source's own rows."""
+def source_weight(config):
+    """The weight a source configuration reads: its ``weight``, or, where that maps the run's weights to theirs (no
+    ``file`` key: ``{design: ponderador, tmg: {file: ...}}``), the entry of the run's weight
+    (:func:`eodgdl.config.weight`)."""
     weight = config["weight"]
+    if isinstance(weight, dict) and "file" not in weight:
+        from eodgdl.config import path, weight as run_weight
+
+        name = run_weight()
+        if name not in weight:
+            raise ValueError(f"the run's weight {name!r} ({path()}) is none of this source's: {sorted(weight)}")
+        return weight[name]
+    return weight
+
+
+def weight_file(config):
+    """The weight file a source configuration reads (:func:`source_weight`), ``{file, column, key}``, or None where
+    its weight is a column of the source's own rows."""
+    weight = source_weight(config)
     if isinstance(weight, str):
         return None
     unknown = set(weight) - {"file", "column", "key"}
@@ -205,6 +222,6 @@ class Context:
     def cache_path(self):
         if self.cache_dir is not None:
             return Path(self.cache_dir)
-        from eodgdl.data import get_pooch_cache_dir
+        from eodgdl.data import cache_dir
 
-        return get_pooch_cache_dir() / "impute"
+        return cache_dir() / "impute"

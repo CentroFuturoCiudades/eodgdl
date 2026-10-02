@@ -48,7 +48,7 @@ import pandas as pd
 import pandera.pandas as pa
 
 from eodgdl import clean_eod, imeplan_rename_map, load_eod, rename_imeplan, tasha
-from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
+from eodgdl.data import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
 from eodgdl.eod import _VIAJES_MEDIO_FIXES
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 from eodgdl.tasha._schema import _lookups, load_mappings

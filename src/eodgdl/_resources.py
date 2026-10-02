@@ -1,7 +1,7 @@
 """Lazy loaders for bundled package config: the IMEPLAN column rename map, the hand decisions and the leg minutes.
 
 This is *code config*, not data: ``rename_imeplan`` and ``load_eod`` need it to run, so it
-ships inside the package (not via the data mirror) and the package works offline.
+lives inside the package, beside the code that reads it, not under ``data/``.
 """
 from __future__ import annotations
 

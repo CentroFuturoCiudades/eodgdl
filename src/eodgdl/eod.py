@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import NamedTuple
@@ -11,7 +13,7 @@ import pandas as pd
 
 from eodgdl._resources import imeplan_rename_map, leg_minutes
 from eodgdl.chains import PERSON, clean_trip_chains
-from eodgdl.data._catalog import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
+from eodgdl.data import HABITANTES_CSV, VIAJES_CSV, VIVIENDAS_CSV
 from eodgdl.schemas import hab_schema, trips_schema, viv_schema
 
 log = logging.getLogger(__name__)
@@ -69,6 +71,29 @@ class EODTables(NamedTuple):
         pd.DataFrame
     )  # trips, indexed by (folio_vivienda, folio_habitante, folio_viaje)
     legs: pd.DataFrame  # trip legs, indexed by (..., folio_viaje, folio_traslado)
+
+
+# What load_eod() reads besides the survey files: its code and bundled configuration (the chain rules, the hand
+# decisions and leg minutes, the schemas, the rename map). The workflow's eod rule lists them as its code.
+LOADER_FILES = ("eod.py", "chains.py", "review.py", "schemas.py", "_resources.py", "imeplan_rename_map.json")
+
+
+def loader_files() -> list[Path]:
+    """The files of :data:`LOADER_FILES` and ``revisions/*.csv.gz``, as paths."""
+    package = Path(__file__).parent
+    return [package / name for name in LOADER_FILES] + sorted((package / "revisions").glob("*.csv.gz"))
+
+
+def tables_digest(tables: EODTables) -> str:
+    """One sha256 over what ``tables`` hold: each table's index names, columns and dtypes (a categorical's levels and
+    their order included) and every value with its index. Two loads that give the same tables give the same digest,
+    whatever code produced them."""
+    digest = hashlib.sha256()
+    for name, frame in zip(tables._fields, tables):
+        schema = [name, [str(level) for level in frame.index.names], [(str(column), repr(dtype)) for column, dtype in frame.dtypes.items()]]
+        digest.update(json.dumps(schema, ensure_ascii=False).encode())
+        digest.update(pd.util.hash_pandas_object(frame, index=True).to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 class EODStages(NamedTuple):
@@ -338,8 +363,8 @@ def load_eod(
 ) -> EODTables:
     """Load and clean the EOD survey at four linked levels.
 
-    With no argument the three master CSVs are fetched from the data mirror (and cached);
-    pass ``eod_path`` (or set ``$EODGDL_DATA_DIR``) to read them from a local directory.
+    With no argument the three master CSVs are read from the clone's ``data/`` (or
+    ``$EODGDL_DATA_DIR``); pass ``eod_path`` to read them from another directory.
     :func:`load_stages` returns all three stages below from one read.
 
     By default the trip chains are cleaned (:func:`eodgdl.chains.clean_trip_chains`, whose

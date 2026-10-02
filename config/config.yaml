@@ -1,0 +1,23 @@
+# The processing's run parameters (docs/pipeline.md): what a run chooses, in one file. eodgdl reads the weight from it
+# (eodgdl.config), scripts/pipeline/run.sh and scripts/impute/rerun.sh read the rest, and so will the Snakefile. What
+# defines a model stays beside it: seeds, grids and the pipeline tasha's draws in src/eodgdl/impute/{tasks,chains,pipelines}/.
+# A change here is a change to the processing: commit it with what it produced (every manifest records the commit, and
+# whether the clone was dirty).
+
+# The weight of every EOD source's rows (the survey's tasks train and are evaluated on it; src/eodgdl/impute/sources/eod.yaml,
+# `run_weights`, says what each name reads):
+#   design  the survey's own: each table's `ponderador` (reports/expansion_factors.qmd)
+#   tmg     TMG.SurveyReweight's household weight, data/EOD_peso_hogar_TMG.csv (`eodgdl reweight import-weight`):
+#           stages 4-6 run on it (docs/pipeline.md), and only once it is there
+weight: design
+
+# Stage 4: the bootstrap refits of every task (`eodgdl impute retrain --bootstrap B`); draw d of a chain or of the
+# pipeline tasha reads bootstrap bundle d mod B.
+bootstrap: 50
+
+# The multiple imputations of the diagnostic chains scored alone (`eodgdl impute score <chain> --draws M --bootstrap`,
+# <root>/<chain>/multiple_imputation/, read by their evaluations' Rubin's rules).
+draws: 50
+
+# Stage 6: the completed dataset of the pipeline tasha the TASHA build reads (`eodgdl tasha build --draw`).
+draw: 0

@@ -6,7 +6,7 @@
 
 task: giro
 source: eod.workers
-bundle: od_giro_hybrid_model.joblib   # model file of the fitted bundle (models/, eodgdl.data.resolve)
+bundle: od_giro_hybrid_model.joblib   # model file of the fitted bundle (models/)
 
 target:
   column: giro_empresa                # survey labels; the models are trained on the slugs (column `giro`)

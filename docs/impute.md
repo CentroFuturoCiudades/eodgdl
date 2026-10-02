@@ -37,7 +37,7 @@ A **source** (`sources/`) returns a task's rows as a plain frame, with its keys,
 source's YAML (`eod.workers`, `eod.dwellings`, `eod.persons`: everyone aged 16+ with the employment answer on the `empleo` levels; `eod.labour`: the workers and the unanswered, the chain `labour`'s rows, with eod.workers's builders through `builders_as`; `enoe.workers`, `enigh.households`). **Feature builders** add columns
 (`eod.work_trip`, `giro.destination`, `eod.household_education`: the other members' highest education; `census.home`: the census, DENUE and AMAI profile of the dwelling's AGEB, INEGI's ILMM auxiliary variables among it, measured and used by no task yet), and **harmonizations** are builders that map a source's raw codes to the common
 levels of `harmonization/common.yaml`, failing on any code the map does not cover. A map between a task's classes and the common levels is defined once as a named `transforms:` entry of common.yaml (`giro_sector`), read by a chain's `uses: {transform: <name>}` and by a variable's `transform: <name>` with `labels_of: <task>` (labels -> class slugs -> levels). Frames are cached as parquet under
-the eodgdl cache directory with keys over every input that could change them (the code, the configuration, the data
+`.cache/impute/` in the clone (`$EODGDL_CACHE_DIR`) with keys over every input that could change them (the code, the configuration, the data
 files' sha256).
 
 The **level contract** (`levels.py`) fixes every categorical feature's levels (declared, or the eodgdl schema's) plus
@@ -89,8 +89,8 @@ contract and metadata: hashes of the spec, of what decides scoring and of the le
 selection and held-out metrics, the scikit-learn and eodgdl versions. `check_bundle` **refuses** a bundle that could not
 score the task as it stands: another scikit-learn, other levels, classes, arms, features or auxiliary predictors, or a
 scoring or level-contract hash that differs. `load_bundle` reads an explicit file, else the one a retrain wrote under
-`<root>/<task>/`, else the installed model file (`models/od_<task>_model.joblib`, fetched from the mirror's `models/`). A change
-to a task's features or levels therefore requires retraining and reinstalling its bundle.
+`<root>/<task>/`, else the committed model file (`models/od_<task>_model.joblib`). A change
+to a task's features or levels therefore requires retraining it and committing the new bundle under `models/`.
 
 ## Chains
 
@@ -206,7 +206,7 @@ uv run eodgdl impute score tasha --data data --retrained output/impute [--draws 
 uv run eodgdl impute score tasha --data data --retrained output/impute --no-aggregate   # parity -> output/impute/tasha/no_aggregate/
 uv run eodgdl impute evaluate <chain> --data data                        # -> output/impute/<chain>/evaluation/
 uv run eodgdl impute compare <task> --spec candidates.yaml --seeds 42 7 11
-scripts/impute/rerun.sh ROOT [TASK ...]                                  # every output into ROOT
+uv run snakemake -c8 impute --config output=ROOT                      # every output into ROOT/impute (workflow/Snakefile)
 uv run python scripts/impute/parity.py ROOT_A ROOT_B [--models]          # what moved between two roots
 ```
 

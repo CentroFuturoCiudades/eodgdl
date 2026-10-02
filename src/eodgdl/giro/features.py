@@ -124,7 +124,7 @@ def _destination_versions(context, config):
     from eodgdl.impute.sources.eod import survey_versions
 
     package = Path(str(resources.files("eodgdl")))
-    return {**survey_versions(), "mxcensus": version("mxcensus"), "zoning": files_digest([package / "reweight" / "zoning.py", package / "taz.py"])}
+    return {**survey_versions(context), "mxcensus": version("mxcensus"), "zoning": files_digest([package / "reweight" / "zoning.py", package / "taz.py"])}
 
 
 @register_builder("giro.destination", versions=_destination_versions)

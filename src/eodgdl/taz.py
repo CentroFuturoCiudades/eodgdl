@@ -9,7 +9,7 @@ from pathlib import Path
 
 import geopandas as gpd
 
-from eodgdl.data._catalog import ZONIFICACION_PARQUET
+from eodgdl.data import ZONIFICACION_PARQUET
 
 # Zona-EOD access-point ids (airport / external gateways), dropped when drop_ap=True
 _TAZ_ACCESS_POINTS = [
@@ -49,8 +49,8 @@ def load_zm_muns() -> dict[int, str]:
 def load_taz(fpath: Path | None = None, drop_ap: bool = False) -> gpd.GeoDataFrame:
     """Load the EOD traffic-analysis zones (TAZ), indexed by ``ID_ZONAEOD``.
 
-    With no ``fpath`` the zonification parquet is fetched from the mirror (or read from
-    ``$EODGDL_DATA_DIR``); pass a path to read a local file.
+    With no ``fpath`` the zonification parquet is read from the clone's ``data/`` (or
+    ``$EODGDL_DATA_DIR``); pass a path to read another file.
     """
     taz = gpd.read_parquet(_resolve(fpath, ZONIFICACION_PARQUET)).set_index("ID_ZONAEOD")
     if drop_ap:

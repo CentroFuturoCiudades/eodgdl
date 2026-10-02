@@ -205,10 +205,67 @@ stage summaries. (4) Stage 4 **always** retrains on the TMG weight.
   parity of the two roots are written to run once stage 4 has (the parity section still to add then).
 - **Pending, not in the brief:** stage 6's expansion (`tasha/mappings.yaml` `ExpansionFactor` reads each table's
   `ponderador`; with the TMG weight every table should read the household weight) — a mapping change when it arrives.
-- **H waits for the user** (tags and pushes are outward-facing).
-- **Found:** the `v0.9.0` tag was never pushed (`git ls-remote` shows up to v0.8.0), so installs fetch 404 for every
-  bundle under `.../v0.9.0/models/`.
+- **Committed** per item (7fe9adf A, 5a4ebc3 B, a08de68 C, c5bafc0 D, 7f59d26 E, d23bc67 F, 645771a G).
+- **H, first release done** (2026-10-01): the `v0.9.0` tag, never pushed until then (installs fetched 404 for every
+  bundle under `.../v0.9.0/models/`), pushed; `v0.10.0` (9c5e6d9: version, `REF`, lock) tagged and pushed, every model
+  bundle fetched from the mirror and sha256-checked; `impute-chains` merged into `main` (a31de77). The reweight set can
+  be handed over (`output/reweight/`, reproducible from v0.10.0). The second release waits for the weight.
 
+## The simplification (decided 2026-10-01, session 12)
+
+The user's decision: eodgdl is an academic data pipeline, not a user-facing package. Keep the library (the chain rules,
+review, impute engine, reweight, tasha: ~90% of the code, untouched) and replace the convenience and orchestration layer
+with a Snakemake workflow in the same repo; the package stays installed editable, so `load_eod()`, `load_taz()` and the
+rest still read the clone. The release ritual (a registry sha256, `REF`, version and lock per data or model change: nine
+releases in five days) was the most frequent non-scientific chore. Four steps, the suite and output parity green at
+each (`scripts/impute/parity.py`, the manifests):
+
+1. **Drop distribution — done (db5d3eb).** `src/eodgdl/data/` (Pooch, `registry.txt`, `_catalog.py`, `_registry.py`,
+   `_paths.py`) replaced by `src/eodgdl/data.py`: `data_dir()`, `models_dir()`, `cache_dir()` (`<clone>/.cache/`, the
+   feature cache moved there from the platform cache dir), `resolve()` (`*.joblib` → `models/`), the input files' names.
+   `eodgdl info|fetch` removed, `pooch` / `platformdirs` dropped from the dependencies, the reweight spec's `imputed`
+   bundle checked against `models/` instead of a catalog list. The "second release" of H is now a commit; tags mark
+   milestones (Zenodo at paper time, with the published outputs). The import line it changed in `eod.py` moved the
+   `eod_loader` version key, so `output/impute/tasha` was re-scored at db5d3eb (completions identical to the v0.9.0
+   run's, now with its manifest). A content key for the loader (the hash of `load_eod()`'s tables, not of its source)
+   would spare such re-runs: a candidate for step 3.
+2. **One `config.yaml` — done (uncommitted).** `config/config.yaml` + `src/eodgdl/config.py`: `weight` (design | tmg),
+   `bootstrap`, `draws` (the diagnostic chains' multiple imputations), `draw` (the TASHA build's default), checked key by
+   key. The four EOD sources' weight is `run_weights` (`eod.yaml`: `{design: ponderador, tmg: {file: ...}}`), resolved by
+   `sources.source_weight`, so the TMG weight enters by `weight: tmg` instead of editing four sources; `run.sh` and
+   `rerun.sh` read the parameters (`python -m eodgdl.config NAME`), `tasha build --draw` defaults to it. Seeds, grids
+   and the pipeline's draws stay in their YAMLs (narrowed from the plan: they define models and feed the spec hashes).
+   The guards (`weight_conflicts`, `check_weight`) stay until step 4: the config makes a mixed run unlikely, not
+   impossible (an old root under a new weight).
+3. **The Snakefile — done (0431b5c); `output/` rebuilt by it the same day** (16 jobs, `verify` holds, its 326 tables
+   identical to the scratch root's). Proved first on a scratch root (`--config output=ROOT`, 16 jobs, 49 min on 18
+   cores): all 326 parquet tables of `output/impute` identical, the 21 models identical (`parity.py --models`), the
+   reweight set's outputs digest, the TASHA tables and the zone assignment (2,824 units) identical; only provenance
+   metadata differs (fields added since, manifests the old roots lacked). The first run lost its last step: a `run:`
+   block (verify) runs in a child Snakemake that re-plans the DAG, and that child reran eod_tables and zone_system
+   (not reproduced; the Snakefile had been edited mid-run): no rule has a `run:` block now. `workflow/Snakefile`, one rule per stage: `eod_tables` (the cleaned
+   tables as parquet, exact), `zone_system` (`reweight.zone_system`: `output/zones/zones.gpkg`, `assignment.parquet`),
+   `reweight_inputs`, `tmg_weight` (under `weight: tmg` only: `check_weight`, gating every imputation), `retrain` (one
+   job per task), `diagnostic_chain` (sector_informality, nse: score, multiple imputations, evaluate), `pipeline_tasha`,
+   `tasha_build`, `verify`; targets `eod zones reweight impute tasha`, `all` (= verify), `reports` (opt-in, 12 renders
+   into `<root>/reports/`). The rules call the CLI (it holds each stage's writing logic: manifests, provenance), and the
+   two scripts `workflow/scripts/{eod_tables,zone_system}.py` the stages without a command; `--config output=ROOT`
+   writes another root. `scripts/pipeline/run.sh` and `scripts/impute/rerun.sh` removed; `giro_scores.parquet` (read by
+   nothing) no longer written. `eodgdl.artifacts` reads `eod()` (warning when the loader now gives other tables),
+   `zones()`, `zone_assignment()`, `tasha_tables()`. The survey's data version is now a content key, `eod_tables`
+   (`eod.tables_digest` of `load_eod()`'s tables, cached under `.cache/eod/` per loader code, survey files and pandas
+   stack), replacing `eod_loader` (the loader's source bytes): an edit that leaves the tables as they were stales
+   nothing. Two corrections to the plan: **mtime stays a rerun trigger** (Snakemake's `input` trigger sees only the list
+   of inputs, so content changes propagate by timestamps alone; `snakemake --touch` after a no-op edit), and the CLI
+   stays as the rules' interface (step 4 trims it instead of deleting it).
+4. **Delete what became redundant — assessed, little to delete (2026-10-01, for the user to decide).** The CLI (501
+   lines) is now the rules' interface (`tasha build`, `reweight build`, `impute score|retrain|evaluate`, `pipeline
+   verify`), the hand work (the four review commands, `reweight import-weight`, `impute compare`) and four inspection
+   commands documented in the handover READMEs (`tasha check|gaps|validate`, `reweight check`, ~30 lines). The guards
+   (`weight_conflicts`, `check_bootstrap`, `load_completed`'s versions) cost little and still protect a command run by
+   hand on another root; the manifests are the content-linked provenance Snakemake lacks (the parity checks read them).
+   Candidates if wanted: the four inspection commands, `impute score <task>`'s default `giro_scores.parquet` (read by
+   nothing; an orphan from before the workflow sits in `output/impute/`).
 ## Do not
 
 - Change a target or attribute in Python: `spec.yaml` holds every definition (`reweight/README.md`).
