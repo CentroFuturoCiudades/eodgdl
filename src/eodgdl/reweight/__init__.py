@@ -15,16 +15,18 @@ From the shell::
 
     eodgdl reweight build --data data --out output/reweight
     eodgdl reweight check output/reweight
+    eodgdl reweight build --data data --base taz     # the TAZ set -> output/reweight_taz
 """
 from eodgdl.reweight._spec import (
     attributes,
+    bases,
     check_spec,
     constraint_index,
     constraints,
     load_spec,
     matching_attributes,
 )
-from eodgdl.reweight.build import ReweightFiles, build, diagnostic, write, years
+from eodgdl.reweight.build import ReweightFiles, build, diagnostic, rebase, write, years
 from eodgdl.reweight.check import check
 from eodgdl.reweight.records import (
     build_households,
@@ -46,6 +48,8 @@ from eodgdl.reweight.targets import (
     dwelling_scale,
     person_scale,
     row_targets,
+    taz_constraints,
+    taz_targets,
     zone_system_agebs,
 )
 from eodgdl.reweight.zoning import (
@@ -65,11 +69,12 @@ from eodgdl.reweight.zoning import (
 )
 
 __all__ = [
-    "load_spec", "attributes", "constraints", "matching_attributes", "constraint_index", "check_spec",
-    "ReweightFiles", "build", "write", "diagnostic", "years",
+    "load_spec", "attributes", "constraints", "matching_attributes", "constraint_index", "check_spec", "bases",
+    "ReweightFiles", "build", "rebase", "write", "diagnostic", "years",
     "check",
     "build_zones", "zone_ids", "build_households", "build_people", "build_trips",
     "assign_units", "check_assignment", "survey_codes", "trip_end_agreement", "unit_shapes", "zone_polygons", "zone_shapes", "zone_system",
     "zone_system_codes", "check_taz_ids", "taz_map", "with_taz", "output_columns",
     "crosswalk", "census_universe", "coverage", "row_targets", "zone_system_agebs", "load_conapo", "Conapo", "load_vmrc", "Vmrc", "load_rates", "build_constraints", "person_scale", "dwelling_scale",
+    "taz_targets", "taz_constraints",
 ]

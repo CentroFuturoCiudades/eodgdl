@@ -30,7 +30,8 @@
 #
 # Constraint entries (one per target column; the file it lands in is
 # `<Table>ConstraintsBy<Geography>[_<year>].csv`, one row per geography):
-#   geography    mtaz | municipality | region — the ZoneSystem.csv column the MTAZMun cell maps to
+#   geography    mtaz | municipality | region — the ZoneSystem.csv column the base category maps to;
+#                taz — the base category itself, so only the TAZ set has it (see `zones.bases`)
 #   attributes   record attributes the tool multiplies (MatchingAttributes); default [name]
 #   census       expression over the census columns, evaluated AFTER summing them by
 #                geography (so ratios are ratios of totals)
@@ -58,6 +59,9 @@
 #   grow_within  {group, total} with conapo: after growing, the group's targets are
 #                rescaled row by row so they sum to the grown total's targets, as they do
 #                in the census
+#   rows_of      on a taz target, instead of census / constant: the mtaz target whose values
+#                by AGEB (ZoneSystemAGEBs.csv's column for it, every year) it redistributes
+#                onto the sampled TAZ (targets.taz_targets); it matches the same attributes
 #   note, status as above
 
 meta:
@@ -75,12 +79,26 @@ zones:
   # them straddle two or three municipalities, so neither is an aggregate of the other. The
   # tool's base category is the MTAZ x municipality cell, MTAZMun; ZoneSystem.csv maps it to each.
   # The TAZ is the AGEB (and the access point): its integer in eodgdl/taz_ids.csv, kept by hand
-  # and never renumbered (README, "TAZ ids"); no constraint reads it.
+  # and never renumbered (README, "TAZ ids"); no constraint reads it. HouseholdRecords.csv carries each
+  # household's (HouseholdTAZ, the AGEB it was surveyed in), which the tool reads as an inert attribute.
   mtazmun: mtaz * 1000 + cve_mun
   mtaz: 1-based position of the centralidad code (MTAZ_code) in the survey's ordered categorical (71 levels)
   municipality: INEGI CVE_MUN (eodgdl.load_zm_muns)
   region: 1 for every MTAZMun (the whole study area)
   taz: eodgdl/taz_ids.csv
+  # Two sets are built from the same records and census, one per base category (the tool's
+  # "TAZ", column 0 of ZoneSystem.csv and column 1 of HouseholdRecords.csv):
+  #   mtazmun  output/reweight/: the MTAZ x municipality cell; every constraint on mtaz,
+  #            municipality or region. The set the survey's design supports.
+  #   taz      output/reweight_taz/: the TAZ (the AGEB), the working group's proposal (2026-10-08):
+  #            every constraint of the mtazmun set, plus the taz targets below, which put the
+  #            census total of each MTAZMun cell on its sampled TAZ in proportion to their own
+  #            census values and 0 on the rest (a cell with no sampled TAZ, 26098, goes to its
+  #            MTAZ's). The survey drew AGEBs, and dwellings within them, in proportion to size
+  #            (README, "The TAZ set"), so these targets count size twice.
+  bases:
+    mtazmun: {column: MTAZMun, directory: reweight}
+    taz: {column: TAZ, directory: reweight_taz}
   # The census side of a zone is the urban AGEBs and rural localities that
   # eodgdl.reweight.zoning.assign_units places in it: a sampled AGEB takes the zone the
   # survey coded there, an unsampled one goes whole to the polygon holding most of its
@@ -420,6 +438,18 @@ constraints:
         part of the pandemic surge the March 2020 census missed, so this is if anything
         conservative -- yet it puts the target above the survey: at its design weights the
         survey reaches 0.93x of it. The two sources disagree here, unlike for motorcycles.
+
+    TAZDwellings:
+      geography: taz
+      rows_of: Dwellings
+      attributes: [Dwellings]
+      note: >-
+        The TAZ set only. Each MTAZMun cell's private inhabited dwellings (its AGEBs' Dwellings
+        in ZoneSystemAGEBs.csv, which sum to the MTAZ target) on its sampled TAZ, in proportion
+        to their own: a sampled TAZ with 2 % of its cell's sampled dwellings-by-census gets 2 %
+        of the cell; an unsampled one 0, which the tool leaves alone (no record, no
+        correction). Its households then carry about T / n each, so a large AGEB with few
+        sampled dwellings needs weights past 1,000 (MaximumExpansionFactor).
 
   persons:
 

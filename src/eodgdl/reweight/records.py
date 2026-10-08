@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from eodgdl._resources import taz_of
 from eodgdl.chains import non_trips
 from eodgdl.reweight._spec import GEOGRAPHY_COLUMN, TABLES, attributes, load_spec
 from eodgdl.taz import load_zm_muns
@@ -125,8 +126,14 @@ def _imputed(df, name, entry, values, scores):
 
 
 def build_households(viv):
+    """One record per dwelling: its id, its MTAZMun cell (the tool's base category), the TAZ of
+    the AGEB it was surveyed in, and the spec's attributes."""
     ids = zone_ids(viv)
-    out = pd.DataFrame({"HouseholdID": viv.index.to_numpy(), "HouseholdMTAZMun": ids.MTAZMun.to_numpy()})
+    out = pd.DataFrame({
+        "HouseholdID": viv.index.to_numpy(),
+        "HouseholdMTAZMun": ids.MTAZMun.to_numpy(),
+        "HouseholdTAZ": taz_of(viv.ageb.astype(str)).to_numpy(),
+    })
     for name, entry in attributes("households").items():
         out[name] = _attribute(viv, name, entry).to_numpy()
     return out
@@ -185,10 +192,11 @@ def build_trips(trips, legs):
 
 
 def record_geography(records, table, zone_system, geography):
-    """The geography id of every record of `table`, through its household's MTAZMun cell."""
-    cell = records.households.set_index("HouseholdID").HouseholdMTAZMun
+    """The geography id of every record of `table`, through its household's base category (``zone_system``'s
+    first column: the MTAZMun cell, or the TAZ in the TAZ set)."""
+    base = zone_system.columns[0]
+    cell = records.households.set_index("HouseholdID")[f"Household{base}"]
     column = GEOGRAPHY_COLUMN[geography]
-    to_geo = zone_system.set_index("MTAZMun")[column]
     frame = getattr(records, table)
-    hh = frame.HouseholdMTAZMun if table == "households" else frame.HouseholdID.map(cell)
-    return hh.map(to_geo)
+    hh = frame[f"Household{base}"] if table == "households" else frame.HouseholdID.map(cell)
+    return hh if column == base else hh.map(zone_system.set_index(base)[column])

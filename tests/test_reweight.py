@@ -52,6 +52,23 @@ def test_constraint_index_places_every_target_once():
     assert not idx.duplicated(["file", "target_column"]).any()
     assert (idx.groupby("file").column_index.min() == 1).all()
     assert set(idx.map_column) == {"MTAZ", "Municipality", "Region"}
+    # the TAZ set: every constraint of the MTAZMun set, plus the targets on the TAZ, its base category
+    taz = reweight.constraint_index(2020, "taz")
+    assert taz.merge(idx, how="left", indicator=True).query("_merge == 'left_only'").target_column.tolist() == ["TAZDwellings"]
+    assert taz.set_index("target_column").loc["TAZDwellings", ["file", "map_column", "matching_attributes"]].tolist() == [
+        "HouseholdConstraintsByTAZ_2020.csv", "TAZ", "Dwellings"]
+
+
+def test_check_spec_holds_taz_targets_to_an_ageb_column(monkeypatch):
+    broken = copy.deepcopy(_spec.load_spec())
+    broken["constraints"]["households"]["TAZDwellings"]["rows_of"] = "HasCar"          # not in ZoneSystemAGEBs.csv
+    broken["constraints"]["persons"]["Persons"]["rows_of"] = "Persons"                  # not a taz target
+    broken["constraints"]["persons"]["TAZPersons"] = {"geography": "taz", "census": "POBTOT"}   # no rows_of
+    monkeypatch.setattr(_spec, "load_spec", lambda: broken)
+    problems = reweight.check_spec()
+    assert any("TAZDwellings: rows_of 'HasCar'" in p for p in problems)
+    assert any("persons.Persons: a taz target is rows_of" in p for p in problems)
+    assert any("persons.TAZPersons: a taz target is rows_of" in p for p in problems)
 
 
 @pytest.fixture(scope="module")
@@ -140,6 +157,11 @@ def test_zone_system_is_the_cells_of_the_survey(files):
     assert zs.MTAZ.between(1, 71).all() and (zs.Region == 1).all()
     assert (zs.MTAZMun == zs.MTAZ * 1000 + zs.Municipality).all()
     assert files.households.HouseholdMTAZMun.isin(zs.MTAZMun).all()
+    # each household's TAZ is its surveyed AGEB's, in its own cell, and the AGEB table counts them
+    hh, agebs = files.households, files.zone_system_agebs.set_index("TAZ")
+    assert hh.HouseholdTAZ.map(agebs.MTAZMun).eq(hh.HouseholdMTAZMun).all()
+    assert hh.HouseholdTAZ.value_counts().eq(agebs.sampled_dwellings[agebs.sampled_dwellings > 0]).all()
+    assert hh.HouseholdTAZ.nunique() == 1_046
     assert files.zone_labels.sampled_dwellings.sum() == len(files.households)
 
 
@@ -557,3 +579,62 @@ def test_rows_without_a_stated_age_take_their_zone_s_mix(viv, trips):
     bands = [reweight.row_targets(universe, "persons", b).loc["1412000013876"]
              for b in ["Age6_11", "Age12_14", "Age15_17", "Age18_24", "Age25_59", "Age60p"]]
     assert sum(bands) == pytest.approx(persons.loc["1412000013876"])
+
+
+@pytest.fixture(scope="module")
+def taz_files(files):
+    return reweight.rebase(files, "taz")
+
+
+def test_taz_targets_put_each_cell_on_its_sampled_taz(files, taz_files):
+    agebs = files.zone_system_agebs.set_index("TAZ")
+    sampled = agebs.sampled_dwellings > 0
+    for year in (2020, 2023):
+        t = taz_files.constraints[f"HouseholdConstraintsByTAZ_{year}.csv"].set_index("TAZ").TAZDwellings
+        own = agebs[f"Dwellings_{year}"]
+        assert t.index.equals(agebs.index.sort_values()) and len(t) == 2087
+        # 0 on the 1,041 TAZ with no sampled dwelling, positive on the 1,046 with one
+        assert (t[~sampled] == 0).all() and (t[sampled] > 0).all() and sampled.sum() == 1046
+        # every cell keeps its census total on its sampled TAZ, in proportion to their own; the cell with no sampled
+        # TAZ (26098) goes to its MTAZ's sampled TAZ (all in 26120), so every MTAZ keeps its total, the MTAZ target
+        cell = agebs.MTAZMun
+        assert ((t.groupby(cell).sum() - own.groupby(cell).sum()).drop(index=[26098, 26120]).abs() < 1e-6).all()
+        assert (t.groupby(agebs.MTAZ).sum() - files.constraints[f"HouseholdConstraintsByMTAZ_{year}.csv"]
+                .set_index("MTAZ").Dwellings).abs().max() < 1e-6
+        assert t.groupby(cell).sum()[26120] == pytest.approx(own.groupby(cell).sum()[[26120, 26098]].sum())   # Tlaquepaque to Zapopan
+        factor = (t / own)[sampled].groupby(cell[sampled])
+        assert ((factor.max() - factor.min()) < 1e-9).all()
+
+
+def test_taz_set_is_the_mtazmun_set_on_the_taz(files, taz_files, tmp_path):
+    from eodgdl.manifest import read_manifest
+
+    zs = taz_files.zone_system
+    assert list(zs.columns) == ["TAZ", "MTAZ", "Municipality", "Region"] and len(zs) == 2087 and zs.TAZ.is_unique
+    assert list(taz_files.households.columns[:3]) == ["HouseholdID", "HouseholdTAZ", "HouseholdMTAZMun"]
+    assert taz_files.households.drop(columns="HouseholdTAZ").equals(files.households.drop(columns="HouseholdTAZ"))
+    assert taz_files.persons is files.persons and taz_files.trips is files.trips
+    for name, frame in files.constraints.items():
+        assert taz_files.constraints[name] is frame
+    assert set(taz_files.constraints) - set(files.constraints) == {f"HouseholdConstraintsByTAZ_{y}.csv" for y in (2020, 2023)}
+    assert (taz_files.index.groupby("year").size() == files.index.groupby("year").size() + 1).all()
+    # the diagnostic reads the same weights through the TAZ: identical above it, and the TAZ rows besides
+    d, d0 = taz_files.diagnostics[2020], files.diagnostics[2020]
+    taz_rows = d[d.target_column == "TAZDwellings"]
+    assert len(taz_rows) == 2087 and (taz_rows.records > 0).sum() == 1046
+    assert d[d.target_column != "TAZDwellings"].drop(columns="TAZ").reset_index(drop=True).equals(d0)
+    with pytest.raises(ValueError, match="rebase goes from the mtazmun set"):
+        reweight.rebase(taz_files, "mtazmun")
+
+    reweight.write(taz_files, tmp_path, data_dir=DATA_DIR)
+    assert reweight.check(tmp_path) == []
+    assert read_manifest(tmp_path)["parameters"] == {"years": [2020, 2023], "base": "taz"}
+    # a TAZ target on a TAZ with no record makes the tool abort
+    path = tmp_path / "Constraints" / "HouseholdConstraintsByTAZ_2020.csv"
+    df = pd.read_csv(path)
+    df.loc[df.TAZDwellings == 0, "TAZDwellings"] = 1.0
+    df.to_csv(path, index=False)
+    assert any("TAZDwellings > 0 but no households record" in p for p in reweight.check(tmp_path))
+    # the records read with the other base first
+    pd.read_csv(tmp_path / "HouseholdRecords.csv")[list(files.households.columns)].to_csv(tmp_path / "HouseholdRecords.csv", index=False)
+    assert any("the loader reads HouseholdID and the base category, HouseholdTAZ" in p for p in reweight.check(tmp_path))
