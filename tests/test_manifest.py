@@ -73,6 +73,11 @@ def test_the_tmg_weight_enters_with_its_sidecar(tmp_path, monkeypatch):
     assert recorded["reweight_inputs"]["base"] == "mtazmun"   # a manifest that names no base is the MTAZMun set's
     assert recorded["configuration_sha256"] is None and recorded["constraint_report_sha256"] is None   # only the weight came back
     assert weight.check_weight(data, root) == [] and verify(root, data) == []
+    # what the TASHA build expands with under expansion: tmg
+    from eodgdl import tasha
+
+    assert weight.read_weight(data).to_dict() == {1: 10.5, 2: 20.0, 3: 30.25}
+    assert tasha.load_expansion("tmg", data).equals(weight.read_weight(data))
 
     # reweight inputs rebuilt with other content: the weight was fitted on something else
     (root / "reweight" / "HouseholdRecords.csv").write_text("HouseholdID,HouseholdMTAZMun\n1,1001\n2,1001\n3,2001\n")
@@ -81,6 +86,8 @@ def test_the_tmg_weight_enters_with_its_sidecar(tmp_path, monkeypatch):
     # the weight file edited after the import
     csv.write_text("folio_vivienda,peso\n1,1\n2,1\n3,1\n")
     assert any("not the weight its sidecar records" in p for p in weight.check_weight(data, root))
+    with pytest.raises(ValueError, match="not the weight its sidecar EOD_peso_hogar_TMG.yaml records"):
+        weight.read_weight(data)
 
 
 def test_a_weight_fitted_on_the_taz_set_is_checked_against_it(tmp_path, monkeypatch):

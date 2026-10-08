@@ -3,7 +3,7 @@
 # The weight of the EOD sources' rows under each run weight (config/config.yaml's `weight`; eodgdl.impute.sources.source_weight).
 run_weights: &run_weights
   design: ponderador                                  # the survey's own: the person weight (hab), the dwelling's (viv) for eod.dwellings
-  tmg: {file: EOD_peso_hogar_TMG.csv, column: peso}   # TMG.SurveyReweight's household weight (`eodgdl reweight import-weight`)
+  tmg: {file: EOD_peso_hogar_TMG.csv, column: peso}   # TMG.SurveyReweight's household weight: a sensitivity run only (config/config.yaml)
 
 eod.workers:
   # One row per interviewed person who worked last week, with the dwelling's attributes attached.

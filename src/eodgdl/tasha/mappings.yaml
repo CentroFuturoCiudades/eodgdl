@@ -126,9 +126,18 @@ households:
 
   ExpansionFactor:
     source: ponderador
-    derivation: viv.ponderador verbatim.
+    derivation: >-
+      config/config.yaml's `expansion`: under design, viv.ponderador verbatim; under tmg, TMG.SurveyReweight's
+      household weight (data/EOD_peso_hogar_TMG.csv, the file its sidecar records: tasha.load_expansion), which every
+      dwelling must have.
     note: >-
-      Survey-provided dwelling design weight; sums to 1,476,347. This is stage 1
+      The one column the reweighting reaches (decided 2026-10-08): the imputed columns train on the design weight,
+      so a new household weight changes nothing else in the three tables. Under tmg every table carries the
+      household's weight: the tool fits one weight per household against the census and SETRAN targets
+      (src/eodgdl/reweight/spec.yaml), the cyclists and the bus boardings the survey's stages 2 and 3 calibrate
+      among them.
+
+      Under design: survey-provided dwelling design weight; sums to 1,476,347. This is stage 1
       of the survey's three-stage expansion (Informe Técnico Final, p. 16):
       W_c = dwellings INEGI reports in the centralidad / dwellings interviewed
       there. It is constant within a centralidad for 52 of the 64; the other 12
@@ -214,24 +223,12 @@ people:
     note: >-
       DECISION (2026-09-30): P is an informal worker, the Monterrey convention (PIMUS 2019), not part-time; part-time
       workers ('Medio tiempo', 1,305) are F or P by their formality like everyone else, and hours are lost. The EOD
-      asks no formality question: every worker's informality is imputed (the pipeline `tasha`'s persons, the chain
-      `labour`: ENOE's model over the giro, reported or imputed). 'Tenía trabajo, pero no trabajó' (105) counts as
+      asks no formality or social-security question: every worker's informality is imputed (the pipeline `tasha`'s
+      persons, the chain `labour`: ENOE's informality model over the giro, reported or imputed). The people table has
+      no Formality column since 2026-10-08: P carries the informality. 'Tenía trabajo, pero no trabajó' (105) counts as
       employed. The 4,370 people aged 16+ who did not answer take the pipeline's drawn situation (task empleo); the
       default O is left to persons under 16 without
       an answer (none).
-
-  Formality:
-    imputed: {pipeline: tasha, column: informalidad}
-    values:
-      formal: F
-      informal: I
-    default: O
-    derivation: O wherever EmploymentStatus is O.
-    status: imputed
-    note: >-
-      The same draw as EmploymentStatus's P, so I exactly where it is P. The EOD has no formality or social-security
-      question: the pipeline tasha (chain labour) scores ENOE's informality model on the EOD workers (reported, or drawn by the task
-      empleo), given their giro (reported, or imputed by the giro task).
 
   Occupation:
     source: giro_empresa
@@ -253,8 +250,8 @@ people:
     default: G
     derivation: >-
       The reported giro through `values`; a worker who did not report it takes the pipeline's drawn giro (the same draw
-      as Formality). Then force O wherever EmploymentStatus is O, so that the two columns agree exactly, as the
-      schema requires.
+      as EmploymentStatus's P). Then force O wherever EmploymentStatus is O, so that the two columns agree exactly, as
+      the schema requires.
     status: imputed
     note: >-
       9,484 of the 26,913 workers did not report their giro, nor did the unanswered persons drawn as workers; the giro
@@ -302,9 +299,13 @@ people:
 
   ExpansionFactor:
     source: ponderador
-    derivation: hab.ponderador verbatim.
+    derivation: >-
+      config/config.yaml's `expansion`: under design, hab.ponderador verbatim; under tmg, the household's
+      TMG.SurveyReweight weight (households' ExpansionFactor), the same for every member.
     note: >-
-      Survey-provided person design weight; sums to 4,892,583. Because it is a
+      Under tmg the tool's person targets (age and sex, activity, the cyclists of stage 2 below) are met by the
+      household weight, so no person weight of its own is needed. Under design: survey-provided person design
+      weight; sums to 4,892,583. Because it is a
       design weight rather than a trip-derived one, non-travellers carry a real
       weight instead of zero.
 
@@ -582,9 +583,12 @@ trips:
 
   ExpansionFactor:
     source: ponderador
-    derivation: trips.ponderador verbatim.
+    derivation: >-
+      config/config.yaml's `expansion`: under design, trips.ponderador verbatim; under tmg, the household's
+      TMG.SurveyReweight weight (households' ExpansionFactor), the same for every trip of its members.
     note: >-
-      Survey-provided trip design weight; sums to 11,796,386 in the survey as
+      Under tmg the bus boardings below are one of the tool's targets (BusBoardings, SETRAN's 1,851,750), met by the
+      household weight. Under design: survey-provided trip design weight; sums to 11,796,386 in the survey as
       shipped (load_eod(clean_chains=False)) and to 11,701,226 after load_eod's
       chain cleaning. Stage 3 of the
       survey's three-stage expansion (Informe Técnico Final, p. 16): the person

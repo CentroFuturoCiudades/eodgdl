@@ -1,7 +1,8 @@
 """The processing's run parameters: ``config/config.yaml`` in the clone (``$EODGDL_CONFIG`` names another file).
 
-eodgdl reads the run's weight from it (:func:`weight`: the EOD sources of eodgdl.impute read the entry of their
-``run_weights`` it names); the drivers read the rest (``python -m eodgdl.config NAME`` prints one parameter). Every
+eodgdl reads two weights from it: the imputations' (:func:`weight`: the EOD sources of eodgdl.impute read the entry of
+their ``run_weights`` it names) and the TASHA tables' expansion (:func:`expansion`: what ``ExpansionFactor`` reads,
+eodgdl.tasha.load_expansion); the drivers read the rest (``python -m eodgdl.config NAME`` prints one parameter). Every
 parameter must be there with its type, and nothing else: a typo fails the run instead of being ignored.
 """
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from eodgdl.data import REPO
 
-PARAMETERS = {"weight": str, "bootstrap": int, "draws": int, "draw": int}
+PARAMETERS = {"weight": str, "expansion": str, "bootstrap": int, "draws": int, "draw": int}
 
 
 def path() -> Path:
@@ -38,8 +39,13 @@ def load() -> dict:
 
 
 def weight() -> str:
-    """The run's weight: the name every EOD source's ``run_weights`` resolves (``design``, ``tmg``)."""
+    """The imputations' weight: the name every EOD source's ``run_weights`` resolves (``design``, ``tmg``)."""
     return load()["weight"]
+
+
+def expansion() -> str:
+    """The TASHA tables' expansion weight (``design``, ``tmg``): what their ``ExpansionFactor`` reads."""
+    return load()["expansion"]
 
 
 if __name__ == "__main__":

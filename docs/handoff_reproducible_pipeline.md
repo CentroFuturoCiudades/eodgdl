@@ -6,6 +6,13 @@ TMG.SurveyReweight**, and make it reproducible. Read `CLAUDE.md` (local), `src/e
 `docs/impute.md` (Pipelines) and the top of `docs/handoff_impute_engine.md` (session 11) first. `docs/handoff_pipeline.md`
 is the earlier brief for the staged imputation pipeline (done in session 10); this file does not replace it.
 
+**Superseded on 2026-10-08 (the user's decision), answer (4) below:** stage 4 no longer retrains on the TMG weight. The
+imputations train on the design weight, and TMG's weight reaches the TASHA tables only as their `ExpansionFactor`
+(`config/config.yaml`'s `expansion`); the workflow gates only `tasha_build` on `tmg_weight`. Refitting the EOD-trained
+tasks with no weights moves each imputed row less than a bootstrap refit does, and stage 1's `empleo` and stage 4's
+design-weight retrain predict the same probabilities, so there is no loop left. `docs/pipeline.md`, "Two weights, two
+roles", is the current account; `weight: tmg` remains as a sensitivity run.
+
 ## Why
 
 Two things the reweighting adds to what is already reproducible:
@@ -168,7 +175,7 @@ The user's answers: (1) a colleague runs it and **only the weight comes back**; 
 the pipeline later, so E's sidecar records what is known (stage-2 manifest hash, tool commit if given) and leaves the
 configuration and report optional. (2) **Fractional** `Employed` = P(`trabaja`). (3) **Both, layered**: hashes chain every
 input and output; on the same platform with `uv.lock`, identical bytes are expected; elsewhere a tolerance check on the
-stage summaries. (4) Stage 4 **always** retrains on the TMG weight.
+stage summaries. (4) Stage 4 **always** retrains on the TMG weight (reversed 2026-10-08: see the top).
 
 ## Progress (session 12, 2026-10-01; uncommitted until the user asks)
 

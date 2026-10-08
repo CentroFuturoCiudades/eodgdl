@@ -11,7 +11,10 @@ EOD_SOURCES = ("eod.workers", "eod.persons", "eod.labour", "eod.dwellings")
 def test_the_clone_s_config_holds_every_parameter():
     assert config.path() == config.REPO / "config" / "config.yaml"
     values = config.load()
-    assert set(values) == set(config.PARAMETERS) and values["weight"] in ("design", "tmg")
+    assert set(values) == set(config.PARAMETERS) and values["weight"] in ("design", "tmg") and values["expansion"] in ("design", "tmg")
+    # the delivery's imputations train on the design weight: the reweighting reaches the TASHA tables only through
+    # their ExpansionFactor (expansion: tmg once TMG's weight is in)
+    assert values["weight"] == "design" and config.expansion() == values["expansion"]
     assert values["bootstrap"] >= 0 and values["draws"] > 0 and values["draw"] >= 0
 
 

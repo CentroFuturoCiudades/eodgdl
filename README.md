@@ -19,7 +19,8 @@ git clone https://github.com/CentroFuturoCiudades/eodgdl && cd eodgdl && uv sync
 
 The whole processing, from the shipped survey to the TASHA tables, is a Snakemake workflow, one rule per stage
 (`workflow/Snakefile`; the stages, what each records and the external reweighting step: `docs/pipeline.md`). What a run
-chooses (the weight, the bootstrap refits, the draws) is `config/config.yaml`.
+chooses (the imputations' weight, the TASHA tables' expansion weight, the bootstrap refits, the draws) is
+`config/config.yaml`.
 
 ```bash
 uv sync --extra workflow
@@ -30,8 +31,10 @@ uv run snakemake -c8 zones   # one target and what it needs: eod, zones, reweigh
 
 The rules in the order they run, with the stage numbers of `docs/pipeline.md` and where each writes under `output/`.
 An arrow is "runs after"; one implied by a longer path is left out (every stage also reads `eod/`, and `verify` reads
-every stage). `tmg_weight` (dashed) runs only under `weight: tmg`, after TMG's weight comes back; the reports are
-opt-in (`snakemake reports`). Every edge as Snakemake sees it: `uv run snakemake -c1 --rulegraph mermaid-js all reports`.
+every stage). `tmg_weight` (dashed) runs only under `expansion: tmg`, after TMG's weight comes back, and gates the
+TASHA build alone: the imputations train on the design weight, and the weight enters the tables as their
+`ExpansionFactor`. The reports are opt-in (`snakemake reports`). Every edge as Snakemake sees it:
+`uv run snakemake -c1 --rulegraph mermaid-js all reports`.
 
 ```mermaid
 flowchart LR
@@ -47,7 +50,7 @@ flowchart LR
     report["report ×12, opt-in<br/>reports/"]
 
     eod_tables --> zone_system & reweight_inputs & retrain
-    reweight_inputs -.-> tmg_weight -.-> retrain
+    reweight_inputs -.-> tmg_weight -.-> tasha_build
     retrain --> diagnostic_chain & pipeline_tasha
     pipeline_tasha --> tasha_build
     zone_system & reweight_inputs & diagnostic_chain & tasha_build --> verify
@@ -148,11 +151,12 @@ dataset at a time, of the pipeline `tasha` (persons and dwellings drawn jointly)
 `IncomeClass` is the dwelling's AMAI socioeconomic level (its dwellings, the chain `nse`, as
 the model's Monterrey inputs coded it, counting the members drawn as workers);
 `EmploymentStatus` takes the drawn employment situation of the persons who did not answer,
-and `P` is an informal worker (Monterrey's convention, not part-time), with `Formality`
-mirroring it; a worker without a reported giro takes the drawn one for `Occupation`, and an
+and `P` is an informal worker (Monterrey's convention, not part-time; there is no separate
+`Formality` column); a worker without a reported giro takes the drawn one for `Occupation`, and an
 unanswered person drawn as a student is `S` (its persons, the chain `labour`). The build
-writes `od_provenance.json` with the draw and the models; `--no-impute` leaves those columns
-at their defaults.
+writes `od_provenance.json` with the draw and the models, the data dictionary `od_dictionary.md`
+and one small table of columns and code meanings per file (`od_<table>_codes.csv`); `--no-impute`
+leaves those columns at their defaults.
 
 See [`src/eodgdl/tasha/README.md`](src/eodgdl/tasha/README.md) for the full guide, the
 mapping-entry format, and the open items.

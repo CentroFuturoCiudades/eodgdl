@@ -9,12 +9,17 @@ AGEB or access point in ``eodgdl/taz_ids.csv`` (``eodgdl._resources.taz_of``, wh
 the rules compare the survey's codes before that.
 
 The columns a mapping marks ``imputed`` (IncomeClass; EmploymentStatus and StudentStatus where unanswered,
-EmploymentStatus's P, Formality, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute
+EmploymentStatus's P, a worker's unreported Occupation) read one completed dataset of the eodgdl.impute
 pipeline ``tasha`` (persons and dwellings drawn jointly: a dwelling's NSE counts its drawn workers):
 ``load_completed(root, draw)`` (each level's ``<root>/tasha/<level>/completions.parquet``, draw ``draw``; it refuses a
 run with the aggregates switched off and one drawn on other data than the survey's now), passed as
 ``build(tables, completed=...)``, where every row that reads a drawn value must have one. Without it those columns
-take their mapping's default (IncomeClass 7, Formality O, no P, the reported giro only).
+take their mapping's default (IncomeClass 7, no P, the reported giro only).
+
+``ExpansionFactor`` is the one column the reweighting reaches (mappings.yaml's derivation): each table's own
+``ponderador`` by default, or, passed as ``build(tables, expansion=...)``, TMG.SurveyReweight's household weight on every
+table (``load_expansion()``: the run's ``expansion`` in config/config.yaml). The imputations never read it (they train
+on the design weight), so a new weight changes nothing but this column.
 
 The input is what ``load_eod`` returns: trip chains already cleaned by
 ``eodgdl.chains.clean_trip_chains`` (untimed trips imputed, mislabelled returns
@@ -27,7 +32,7 @@ untimed rows rather than guess at them.
 
     from eodgdl import load_eod, tasha
 
-    od = tasha.build(load_eod("data"), completed=tasha.load_completed("output/impute", draw=0))
+    od = tasha.build(load_eod("data"), completed=tasha.load_completed("output/impute", draw=0), expansion=tasha.load_expansion())
     tasha.validate_all(*od)
     od.households.to_csv("output/od_households.csv", index=False)
 """
@@ -112,6 +117,40 @@ def _stale_levels(provenance: dict) -> list[str]:
     return stale
 
 
+EXPANSIONS = ("design", "tmg")
+
+
+def load_expansion(name=None, data_dir=None) -> pd.Series | None:
+    """The household weight the tables expand with under ``name`` (default: config/config.yaml's ``expansion``):
+    None under ``design`` (each table its own ``ponderador``), TMG.SurveyReweight's household weight under ``tmg``
+    (``peso`` by ``folio_vivienda``, the file its sidecar records: eodgdl.reweight.weight.read_weight)."""
+    if name is None:
+        from eodgdl import config
+
+        name = config.expansion()
+    if name not in EXPANSIONS:
+        raise ValueError(f"expansion {name!r}: not one of {', '.join(EXPANSIONS)}")
+    if name == "design":
+        return None
+    from eodgdl.reweight.weight import read_weight
+
+    return read_weight(data_dir)
+
+
+def _expansion(own: pd.Series, index: pd.Index, expansion=None) -> pd.Series:
+    """ExpansionFactor of the rows of ``index`` (mappings.yaml's derivation): the table's own ``ponderador``
+    (``own``), or with ``expansion`` (:func:`load_expansion`) their household's weight, which every household must have."""
+    if expansion is None:
+        return own.astype(float)
+    households = index.get_level_values("folio_vivienda")
+    values = pd.Series(expansion.reindex(households).to_numpy(), index=index, dtype=float)
+    if values.isna().any():
+        missing = pd.unique(households[values.isna().to_numpy()])
+        raise ValueError(f"no expansion weight for {len(missing):,} households (e.g. folio_vivienda {', '.join(map(str, missing[:5]))}): "
+                         "a weight fitted on other household records than this survey's")
+    return values
+
+
 def _imputed(completed, pipeline: str, column: str, index: pd.Index, needed=None) -> pd.Series:
     """The completed ``column`` of ``pipeline`` (from the level whose completions hold it) for the rows of ``index``
     (NA where the pipeline has no value, or with no ``completed``). ``needed`` (a boolean mask over ``index``): the
@@ -164,8 +203,9 @@ def _purposes(trips: pd.DataFrame, viv: pd.DataFrame) -> tuple[pd.Series, pd.Ser
     return destination, origin
 
 
-def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd.DataFrame:
-    """od_households.csv, one row per dwelling (``completed``: :func:`load_completed`)."""
+def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None, expansion=None) -> pd.DataFrame:
+    """od_households.csv, one row per dwelling (``completed``: :func:`load_completed`; ``expansion``:
+    :func:`load_expansion`)."""
     veh, veh_default = build_map("Vehicles"), mapping("Vehicles")["default"]
     # Both lookups carry a default, so an answer the survey adds later widens the
     # column instead of raising an opaque cast error mid-build; `tasha check`
@@ -185,12 +225,13 @@ def build_households(viv: pd.DataFrame, hab: pd.DataFrame, completed=None) -> pd
         # the AMAI level of the pipeline's completed dataset (its dwellings: the chain nse given the drawn workers)
         "IncomeClass": (_imputed_codes("IncomeClass", viv.index, completed, needed=np.ones(len(viv), dtype=bool))
                            .fillna(mapping("IncomeClass")["default"]).astype(int)),
-        "ExpansionFactor": viv.ponderador.astype(float),
+        "ExpansionFactor": _expansion(viv.ponderador, viv.index, expansion),
     }).sort_values("HouseholdId").reset_index(drop=True)
 
 
-def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, completed=None) -> pd.DataFrame:
-    """od_people.csv, one row per person in ``hab`` (``completed``: :func:`load_completed`)."""
+def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, completed=None, expansion=None) -> pd.DataFrame:
+    """od_people.csv, one row per person in ``hab`` (``completed``: :func:`load_completed`; ``expansion``:
+    :func:`load_expansion`)."""
     # the answer, else the drawn situation (a person who did not answer), else the default; with a completed dataset
     # every row that reads a drawn value must have one (_imputed's needed)
     answered = hab.trabajo_semana_pasada.map(build_map("EmploymentStatus")).astype("object")
@@ -199,8 +240,6 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, comp
     # a worker's code from the drawn informality (P: informal), where the completed dataset has one
     informal = _imputed_codes("EmploymentStatus", hab.index, completed, "override imputed", needed=employment.eq("F"))
     employment = employment.mask((employment == "F") & informal.notna(), informal)
-    formality = (_imputed_codes("Formality", hab.index, completed, needed=employment.ne("O"))
-                    .fillna(mapping("Formality")["default"]).mask(employment == "O", "O"))
     # The reported giro, else the drawn one; O for exactly the non-workers, as the schema requires.
     reported = hab.giro_empresa.map(build_map("Occupation")).astype("object")
     occupation = (reported.fillna(_imputed_codes("Occupation", hab.index, completed, needed=reported.isna() & employment.ne("O")))
@@ -233,23 +272,24 @@ def build_people(hab: pd.DataFrame, trips: pd.DataFrame, viv: pd.DataFrame, comp
         "License": np.where(hab.edad >= 18, "Y", "N"),
         "TransitPass": mapping("TransitPass")["constant"],
         "EmploymentStatus": employment.to_numpy(),
-        "Formality": formality.to_numpy(),
         "Occupation": occupation.to_numpy(),
         "FreeParking": mapping("FreeParking")["constant"],
         "StudentStatus": np.where(student, "S", "O"),
         "EmploymentZone": first_destination(["Trabajar"]).to_numpy(),
         "SchoolZone": first_destination(["Estudiar"]).to_numpy(),
-        "ExpansionFactor": hab.ponderador.astype(float).to_numpy(),
+        "ExpansionFactor": _expansion(hab.ponderador, hab.index, expansion).to_numpy(),
     })
 
 
 def build_trips(
-    trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame, hab: pd.DataFrame | None = None
+    trips: pd.DataFrame, legs: pd.DataFrame, viv: pd.DataFrame, hab: pd.DataFrame | None = None, expansion=None
 ) -> pd.DataFrame:
     """od_trips.csv, one row per trip, in chain (folio_viaje) order.
 
     ``hab`` gives the ages that tell a daycare trip (school) from an escort to one
-    (F); without it every Guardería trip keeps the lookup's S.
+    (F); without it every Guardería trip keeps the lookup's S. ``expansion``
+    (:func:`load_expansion`): the household weight every trip carries instead of
+    its own ``ponderador``.
 
     The rows ``load_eod`` marked as non-trips (``eodgdl.chains.non_trips``) are
     left out; ``TripNumber`` is renumbered over them and over the gaps in
@@ -302,17 +342,19 @@ def build_trips(
         "ZoneOrigin": taz_of(trips.origen.astype(str)).to_numpy(),
         "PurposeDestination": destination.to_numpy(),
         "ZoneDestination": taz_of(trips.destino.astype(str)).to_numpy(),
-        "ExpansionFactor": trips.ponderador.astype(float).to_numpy(),
+        "ExpansionFactor": _expansion(trips.ponderador, trips.index, expansion).to_numpy(),
         "Duration": duration.astype(int).to_numpy(),
     })
 
 
-def build(tables, completed=None) -> ODTables:
+def build(tables, completed=None, expansion=None) -> ODTables:
     """Build all three tables from an :class:`~eodgdl.EODTables` as ``load_eod`` returns it, with the imputed
-    columns from ``completed`` (:func:`load_completed`; without it they take their mapping's default)."""
+    columns from ``completed`` (:func:`load_completed`; without it they take their mapping's default) and
+    ``ExpansionFactor`` from ``expansion`` (:func:`load_expansion`: TMG's household weight on every table; without it
+    each table's own ``ponderador``)."""
     viv, hab, trips, legs = tables
     return ODTables(
-        build_households(viv, hab, completed),
-        build_people(hab, trips, viv, completed),
-        build_trips(trips, legs, viv, hab),
+        build_households(viv, hab, completed, expansion),
+        build_people(hab, trips, viv, completed, expansion),
+        build_trips(trips, legs, viv, hab, expansion),
     )

@@ -8,10 +8,11 @@ file, the reweight inputs it was fitted on (stage 2's manifest: its ``outputs_di
 constraint set (year), and whatever else is known about the run (the tool's commit, the exported ``.xmsys``
 configuration's and the constraint report's sha256 when they are handed back; None otherwise).
 
-The EOD sources read the weight under ``weight: tmg`` in ``config/config.yaml`` (their ``run_weights``,
-:func:`eodgdl.impute.sources.with_weight`). :func:`check_weight` (run by ``eodgdl pipeline verify`` and the workflow's
-rule ``tmg_weight`` before stage 4) fails where the weight file is not the one the sidecar records, or the reweight inputs written now
-are not the ones the weight was fitted on.
+The TASHA build expands with it under ``expansion: tmg`` in ``config/config.yaml`` (:func:`read_weight`, read by
+eodgdl.tasha.load_expansion); the EOD sources read it only under ``weight: tmg``, the imputations' sensitivity run
+(their ``run_weights``, :func:`eodgdl.impute.sources.with_weight`). :func:`check_weight` (run by ``eodgdl pipeline
+verify`` and the workflow's rule ``tmg_weight`` before whatever reads the weight) fails where the weight file is not the
+one the sidecar records, or the reweight inputs written now are not the ones the weight was fitted on.
 """
 from __future__ import annotations
 
@@ -78,6 +79,28 @@ def read_sidecar(data_dir=None):
     if not (folder / SIDECAR).exists():
         return None
     return yaml.safe_load((folder / SIDECAR).read_text(encoding="utf-8"))
+
+
+def read_weight(data_dir=None) -> pd.Series:
+    """TMG's household weight in ``data_dir`` (default :func:`eodgdl.data.data_dir`): ``peso`` indexed by
+    ``folio_vivienda``. Fails where it has not come back (no file, or no sidecar), is not the file its sidecar records,
+    repeats a household or holds a weight that is not a positive number."""
+    from eodgdl.manifest import sha256
+
+    folder = _data_dir(data_dir)
+    path, sidecar = folder / WEIGHT_CSV, read_sidecar(folder)
+    if not path.exists() or sidecar is None:
+        raise FileNotFoundError(f"{folder}: no TMG weight with its sidecar ({WEIGHT_CSV}, {SIDECAR}): bring it in with "
+                                "`eodgdl reweight import-weight` (docs/pipeline.md, stage 3)")
+    if sha256(path) != sidecar["weight_sha256"]:
+        raise ValueError(f"{path}: not the weight its sidecar {SIDECAR} records")
+    table = pd.read_csv(path)
+    if table[KEY].duplicated().any():
+        raise ValueError(f"{path}: {int(table[KEY].duplicated().sum())} repeated {KEY} values")
+    weight = pd.to_numeric(table[COLUMN], errors="coerce")
+    if not (weight > 0).all():
+        raise ValueError(f"{path}: {int((~(weight > 0)).sum())} weights that are not positive numbers")
+    return pd.Series(weight.astype(float).to_numpy(), index=pd.Index(table[KEY], name=KEY), name=COLUMN)
 
 
 def set_directory(sidecar):

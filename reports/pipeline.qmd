@@ -1,6 +1,6 @@
 ---
 title: "The processing pipeline"
-subtitle: "From the shipped survey to the TASHA tables, the reweighting by TMG.SurveyReweight included: the stages, what each recorded, and the one-pass compromise measured"
+subtitle: "From the shipped survey to the TASHA tables, the reweighting by TMG.SurveyReweight included: the stages, what each recorded, and one employment model on both sides of the weight"
 author: "IMEPLAN EOD 2023 · prepared with the `eodgdl` toolkit"
 date: today
 lang: en
@@ -57,7 +57,8 @@ fmt = lambda x: f"{x:,.0f}"
 
 This report reads what a run of the processing wrote under ``{python} str(RUN.relative_to(ROOT)) if RUN.is_relative_to(ROOT) else str(RUN)``
 and checks it. The plan and its decisions are in `docs/handoff_reproducible_pipeline.md`; the reference for each stage
-is `docs/pipeline.md`. Nothing here trains or scores a model.
+is `docs/pipeline.md`. Nothing here trains a model; the last section scores the 4,370 unanswered with the two `empleo`
+bundles.
 
 # The stages
 
@@ -67,10 +68,10 @@ flowchart LR
   S1 --> S2["2 · reweight inputs<br/>output/reweight"]
   S0 --> S2
   S2 --> S3["3 · TMG.SurveyReweight<br/>(external)"]
-  S3 --> S4["4 · every task retrained<br/>TMG weight"]
-  S0 --> S4
+  S0 --> S4["4 · every task retrained<br/>design weight"]
   S4 --> S5["5 · pipeline tasha<br/>50 draws"]
   S5 --> S6["6 · TASHA build"]
+  S3 -->|ExpansionFactor| S6
 ```
 
 | stage | weight | writes | manifest |
@@ -79,9 +80,13 @@ flowchart LR
 | 1. employment before reweighting | design | inside stage 2 | stage 2's `inputs` (the bundle's sha256) |
 | 2. reweight inputs | — | `reweight/` | `reweight/manifest.json` |
 | 3. household weight | — | `data/EOD_peso_hogar_TMG.csv` | its sidecar `EOD_peso_hogar_TMG.yaml` |
-| 4. final models | TMG | `impute/<task>/` | `impute/<task>/manifest.json` |
-| 5. completed datasets | TMG | `impute/tasha/` | `impute/tasha/manifest.json` |
-| 6. TASHA tables | TMG | `od_*.csv` | `od_manifest.json` |
+| 4. final models | design | `impute/<task>/` | `impute/<task>/manifest.json` |
+| 5. completed datasets | design | `impute/tasha/` | `impute/tasha/manifest.json` |
+| 6. TASHA tables | TMG (`ExpansionFactor` only, `expansion: tmg`) | `od_*.csv` | `od_manifest.json` |
+
+The imputations train on the design weight, and TMG's weight reaches the TASHA tables only as their `ExpansionFactor`
+(decided 2026-10-08; `docs/pipeline.md`, "Two weights, two roles", has what the training weight moves, measured). A
+run under `weight: tmg` is the sensitivity check: its stages 4–5 train on TMG's weight, into another root.
 
 # What the run recorded {#sec-manifests}
 
@@ -151,8 +156,8 @@ activity.rename(columns={"survey_at_design_weight": "survey"}).round(3).style.fo
 #| label: stage3
 sidecar = read_sidecar(DATA)
 WEIGHT = sidecar is not None
-text = ("The TMG weight has not come back yet: stages 4–6 below wait for it. Under `weight: tmg` the workflow refuses to start "
-        "without it; under `weight: design` its imputations run on the survey's own weight.") if not WEIGHT else (
+text = ("The TMG weight has not come back yet: the TASHA tables expand with the survey's own weights (`expansion: design`). "
+        "Under `expansion: tmg` the workflow refuses to start without it; the imputations never wait for it.") if not WEIGHT else (
         f"`{WEIGHT_CSV}` (sha256 `{sidecar['weight_sha256'][:12]}`…) was fitted on the reweight inputs with outputs digest "
         f"`{sidecar['reweight_inputs']['outputs_digest'][:12]}`… (commit `{(sidecar['reweight_inputs']['commit'] or '')[:9]}`), constraint set "
         f"{sidecar['reweight_inputs']['constraint_year']}; the tool's commit: {sidecar['tool']['commit'] or 'not recorded'}; configuration "
@@ -161,35 +166,42 @@ text = ("The TMG weight has not come back yet: stages 4–6 below wait for it. U
 display(Markdown(text))
 ```
 
-# The one-pass compromise {#sec-one-pass}
+# One employment model on both sides of the weight {#sec-one-pass}
 
 ```{python}
 #| label: one-pass
+import joblib
+
+from eodgdl.data import resolve
+from eodgdl.impute.bundle import training_weight
+from eodgdl.impute.run import score_task
+
 EMPLEO = RUN / "impute" / "empleo"
-stage4 = None
-if WEIGHT and (EMPLEO / "manifest.json").exists():
-    from eodgdl.impute.bundle import training_weight
-    import joblib
-
-    stage4 = joblib.load(EMPLEO / "od_empleo_model.joblib")
-    if training_weight(stage4["metadata"]) != sidecar["weight_sha256"]:
-        stage4 = None
+keys = ["folio_vivienda", "folio_habitante"]
+unanswered = pd.MultiIndex.from_arrays([fractional.PersonID // 10, fractional.PersonID % 10], names=keys)
+stage4 = joblib.load(EMPLEO / "od_empleo_model.joblib") if (EMPLEO / "manifest.json").exists() else None
+trained = None if stage4 is None else training_weight(stage4["metadata"])
 if stage4 is None:
-    display(Markdown("Stage 4 has not run on the TMG weight yet. When it has, this section compares the two `empleo` "
-                     "models on the 4,370 unanswered (shares, and the `Employed` total each implies under the TMG weight) "
-                     "and `scripts/impute/parity.py` between the design-weight and the TMG-weight roots measures what the "
-                     "weight moved in every task's drawn shares and held-out metrics."))
+    display(Markdown("Stage 4 has not run under this root yet."))
 else:
-    from eodgdl.data import resolve
-    from eodgdl.impute.run import score_task
-
-    keys = ["folio_vivienda", "folio_habitante"]
-    design = score_task("empleo", path=resolve("od_empleo_design_model.joblib")).set_index(keys)["prob_situacion_laboral_trabaja"]
-    final = score_task("empleo", bundle=stage4).set_index(keys)["prob_situacion_laboral_trabaja"]
-    weights = pd.read_csv(DATA / WEIGHT_CSV).set_index("folio_vivienda")["peso"]
-    unanswered = pd.MultiIndex.from_arrays([fractional.PersonID // 10, fractional.PersonID % 10], names=keys)
-    tmg = weights.reindex(unanswered.get_level_values(0)).to_numpy()
-    compare = pd.DataFrame({"stage 1 (design)": design.reindex(unanswered).to_numpy(), "stage 4 (TMG)": final.reindex(unanswered).to_numpy()})
-    summary = pd.DataFrame({"mean": compare.mean(), "employed at the TMG weight": (compare.mul(tmg, axis=0)).sum()})
-    display(summary.round(3))
+    design = score_task("empleo", path=resolve("od_empleo_design_model.joblib")).set_index(keys)["prob_situacion_laboral_trabaja"].reindex(unanswered)
+    final = score_task("empleo", bundle=stage4).set_index(keys)["prob_situacion_laboral_trabaja"].reindex(unanswered)
+    assert design.notna().all() and final.notna().all()
+    gap = float((design - final).abs().max())
+    if trained == "design":
+        assert gap < 1e-9                       # the employment TMG's weight is fitted against is the one the tables draw from
+        display(Markdown(f"Stage 4's `empleo` is trained on the design weight, as stage 1's: on the {len(unanswered):,} unanswered "
+                         f"their P(`trabaja`) differ by at most {gap:.1g}. The employment TMG's weight is fitted against "
+                         "(stage 1, the reweight records' `Employed`) is the employment the TASHA tables draw from (stage 5)."))
+    elif WEIGHT and trained == sidecar["weight_sha256"]:
+        # a sensitivity root (weight: tmg): what the TMG weight moved in the employment model
+        tmg = pd.read_csv(DATA / WEIGHT_CSV).set_index("folio_vivienda")["peso"].reindex(unanswered.get_level_values(0)).to_numpy()
+        compare = pd.DataFrame({"stage 1 (design)": design.to_numpy(), "stage 4 (TMG)": final.to_numpy()})
+        summary = pd.DataFrame({"mean": compare.mean(), "employed at the TMG weight": compare.mul(tmg, axis=0).sum()})
+        display(Markdown(f"This root is a sensitivity run (`weight: tmg`): its `empleo` is trained on TMG's weight, and on the "
+                         f"{len(unanswered):,} unanswered its P(`trabaja`) moves by at most {gap:.3f} from stage 1's. "
+                         "`scripts/impute/parity.py` against the design-weight root measures every task."))
+        display(summary.round(3))
+    else:
+        display(Markdown(f"Stage 4's `empleo` is trained on a weight file (sha256 `{trained[:12]}`…) that is not TMG's weight in the data."))
 ```
