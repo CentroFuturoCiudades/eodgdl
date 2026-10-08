@@ -60,7 +60,8 @@ def import_weight(updated, reweight_dir, data_dir, year, *, tool_commit=None, co
         "weight_file": WEIGHT_CSV, "weight_sha256": sha256(out), "key": KEY, "column": COLUMN,
         "received": {"file": Path(updated).name, "sha256": sha256(updated), "imported": datetime.date.today().isoformat()},
         "reweight_inputs": {"outputs_digest": manifest["outputs_digest"], "manifest_sha256": sha256(reweight_dir / "manifest.json"),
-                            "commit": manifest["code"]["commit"], "constraint_year": int(year)},
+                            "commit": manifest["code"]["commit"], "constraint_year": int(year),
+                            "base": manifest["parameters"].get("base", "mtazmun")},
         "tool": {"repository": TOOL, "commit": tool_commit},
         "configuration_sha256": sha256(configuration) if configuration else None,
         "constraint_report_sha256": sha256(report) if report else None,
@@ -79,10 +80,20 @@ def read_sidecar(data_dir=None):
     return yaml.safe_load((folder / SIDECAR).read_text(encoding="utf-8"))
 
 
+def set_directory(sidecar):
+    """The folder, under a root, of the reweight set a sidecar's weight was fitted on: ``reweight`` (the MTAZMun
+    set; a sidecar from before the TAZ set names no base) or ``reweight_taz`` (spec.yaml's ``zones.bases``)."""
+    from eodgdl.reweight._spec import bases
+
+    base = (sidecar or {}).get("reweight_inputs", {}).get("base", "mtazmun")
+    return bases()[base]["directory"]
+
+
 def check_weight(data_dir=None, root="output") -> list[str]:
     """What does not hold of the TMG weight in ``data_dir`` (none where it has not come back yet): the weight file is
-    the one its sidecar records, and the reweight inputs under ``<root>/reweight`` (their manifest) are the ones it was
-    fitted on. The workflow's rule ``tmg_weight`` runs it on the stage 2 it just wrote, before any imputation."""
+    the one its sidecar records, and the reweight inputs under ``<root>/<set>`` (their manifest; the set the sidecar
+    names, :func:`set_directory`) are the ones it was fitted on. The workflow's rule ``tmg_weight`` runs it on the
+    stage 2 it just wrote, before any imputation."""
     from eodgdl.manifest import read_manifest, sha256
 
     folder = _data_dir(data_dir)
@@ -95,7 +106,7 @@ def check_weight(data_dir=None, root="output") -> list[str]:
         problems.append(f"{weight}: missing (its sidecar is there)")
     elif sha256(weight) != sidecar["weight_sha256"]:
         problems.append(f"{weight}: not the weight its sidecar records")
-    manifest = Path(root) / "reweight" / "manifest.json"
+    manifest = Path(root) / set_directory(sidecar) / "manifest.json"
     if not manifest.exists():
         problems.append(f"{manifest}: no reweight inputs to check the weight against (eodgdl reweight build --out {manifest.parent})")
     elif read_manifest(manifest)["outputs_digest"] != sidecar["reweight_inputs"]["outputs_digest"]:

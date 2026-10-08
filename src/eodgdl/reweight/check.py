@@ -14,10 +14,11 @@ import numpy as np
 import pandas as pd
 
 KEYS = {
-    "households": ("HouseholdRecords.csv", ["HouseholdID", "HouseholdMTAZMun"]),
+    "households": ("HouseholdRecords.csv", ["HouseholdID"]),   # + Household<base>, the base category second
     "persons": ("PersonRecords.csv", ["PersonID", "HouseholdID"]),
     "trips": ("TripRecords.csv", ["HouseholdID", "PersonID"]),
 }
+BASES = ("MTAZMun", "TAZ")   # ZoneSystem.csv's first column: the MTAZ x municipality cell, or the TAZ
 TOLERANCE = 1e-6   # float32's resolution at 1, the tool's attribute precision
 PARTITIONS = {
     "persons": [
@@ -51,19 +52,27 @@ def check(out_dir):
     if zones is None or any(r is None for r in records.values()) or index is None:
         return problems
 
-    # --- zone system: ints, unique MTAZMun, every map column present
-    for col in ["MTAZMun", "MTAZ", "Municipality", "Region"]:
+    # --- zone system: the base category first, ints, unique, every map column present
+    base = zones.columns[0]
+    if base not in BASES:
+        return [f"ZoneSystem.csv: first column {base}, expected one of {BASES}"]
+    for col in [base, "MTAZ", "Municipality", "Region"]:
         if col not in zones.columns:
             problems.append(f"ZoneSystem.csv: no column {col}")
         elif not pd.api.types.is_integer_dtype(zones[col]):
             problems.append(f"ZoneSystem.csv: {col} is not integer")
-    if "MTAZMun" in zones.columns and zones.MTAZMun.duplicated().any():
-        problems.append("ZoneSystem.csv: duplicated MTAZMun")
+    if zones[base].duplicated().any():
+        problems.append(f"ZoneSystem.csv: duplicated {base}")
     if problems:
         return problems
+    household_base = f"Household{base}"
+    if list(records["households"].columns[:2]) != ["HouseholdID", household_base]:
+        problems.append(f"HouseholdRecords.csv: columns 0-1 are {list(records['households'].columns[:2])}, "
+                        f"the loader reads HouseholdID and the base category, {household_base}")
 
     # --- records: integer keys, unique ids, joins, numeric attributes
     for table, (file, keys) in KEYS.items():
+        keys = keys + [household_base] if table == "households" else keys
         df = records[table]
         for k in keys:
             if k not in df.columns:
@@ -82,8 +91,12 @@ def check(out_dir):
         problems.append("HouseholdRecords.csv: duplicated HouseholdID")
     if pp.PersonID.duplicated().any():
         problems.append("PersonRecords.csv: duplicated PersonID")
-    if not hh.HouseholdMTAZMun.isin(zones.MTAZMun).all():
-        problems.append("HouseholdRecords.csv: a HouseholdMTAZMun is not in ZoneSystem.csv")
+    if not hh[household_base].isin(zones[base]).all():
+        problems.append(f"HouseholdRecords.csv: a {household_base} is not in ZoneSystem.csv")
+    if {"HouseholdTAZ", "HouseholdMTAZMun"} <= set(hh.columns) and (out_dir / "ZoneSystemAGEBs.csv").exists():
+        cell = _read(out_dir / "ZoneSystemAGEBs.csv").set_index("TAZ").MTAZMun
+        if not hh.HouseholdTAZ.map(cell).eq(hh.HouseholdMTAZMun).all():
+            problems.append("HouseholdRecords.csv: a HouseholdTAZ is not in ZoneSystemAGEBs.csv under the household's MTAZMun")
     if not pp.HouseholdID.isin(hh.HouseholdID).all():
         problems.append("PersonRecords.csv: a HouseholdID has no household record")
     if not tt.HouseholdID.isin(hh.HouseholdID).all():
@@ -108,9 +121,9 @@ def check(out_dir):
 
     # --- constraints: every target column present, every map geography covered, feasible
     cell_of = {
-        "households": hh.HouseholdMTAZMun,
-        "persons": pp.HouseholdID.map(hh.set_index("HouseholdID").HouseholdMTAZMun),
-        "trips": tt.HouseholdID.map(hh.set_index("HouseholdID").HouseholdMTAZMun),
+        "households": hh[household_base],
+        "persons": pp.HouseholdID.map(hh.set_index("HouseholdID")[household_base]),
+        "trips": tt.HouseholdID.map(hh.set_index("HouseholdID")[household_base]),
     }
     files: dict[str, pd.DataFrame] = {}
     for row in index.itertuples(index=False):
@@ -145,7 +158,8 @@ def check(out_dir):
             problems.append(f"{row.file}: {row.target_column} matches {absent}, not in {KEYS[row.table][0]}")
             continue
         value = df[attrs].prod(axis=1)
-        geo_of = cell_of[row.table].map(zones.set_index("MTAZMun")[row.map_column])
+        # a constraint on the base category itself takes no CategoryMap
+        geo_of = cell_of[row.table] if row.map_column == base else cell_of[row.table].map(zones.set_index(base)[row.map_column])
         present = set(geo_of[value > 0])
         infeasible = sorted(g for g, t in target.items() if t > 0 and g not in present)
         if infeasible:

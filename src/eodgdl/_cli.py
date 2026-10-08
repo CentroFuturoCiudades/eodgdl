@@ -88,13 +88,17 @@ def main() -> None:
     rew_sub = rew_p.add_subparsers(dest="reweight_cmd", required=True)
     rb_p = rew_sub.add_parser("build", help="Build the record, zone and constraint files from the survey and the census")
     rb_p.add_argument("--data", default=None, help="Data directory (default: the clone's data/)")
-    rb_p.add_argument("--out", default="output/reweight", help="Where to write (default: output/reweight/)")
+    rb_p.add_argument("--base", choices=["mtazmun", "taz"], default="mtazmun",
+                      help="The tool's base category: mtazmun (the MTAZ x municipality cell, the default) or taz "
+                           "(the TAZ set: the working group's TAZ targets on the sampled TAZ)")
+    rb_p.add_argument("--out", default=None, help="Where to write (default: output/reweight/, output/reweight_taz/ for --base taz)")
     rc_p = rew_sub.add_parser("check", help="Read a written set back the way the tool will; list what would fail")
     rc_p.add_argument("directory", help="Directory holding the set")
     ri_p = rew_sub.add_parser("import-weight", help="Bring TMG.SurveyReweight's household weight into the data, with its sidecar")
     ri_p.add_argument("updated", help="The tool's UpdatedExpansionFactorsFile (one UpdatedExpansionFactor per household record)")
     ri_p.add_argument("--year", type=int, required=True, help="The constraint set it was fitted to (2020 or 2023)")
-    ri_p.add_argument("--reweight", default="output/reweight", help="The reweight set handed over (default: output/reweight/)")
+    ri_p.add_argument("--reweight", default="output/reweight",
+                      help="The reweight set handed over (default: output/reweight/; output/reweight_taz/ for the TAZ set)")
     ri_p.add_argument("--data", default="data", help="Where to write the weight and its sidecar (default: data/)")
     ri_p.add_argument("--tool-commit", default=None, help="TMG.SurveyReweight's commit, if known")
     ri_p.add_argument("--configuration", default=None, help="The exported model system (.xmsys), if handed back")
@@ -389,11 +393,12 @@ def _reweight(args) -> int:
 
         if args.data:   # every file the build resolves, the survey's included
             os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
-        files = reweight.build(load_eod(args.data), data_dir=args.data)
-        for path in reweight.write(files, args.out, data_dir=args.data):
+        out = args.out or f"output/{reweight.bases()[args.base]['directory']}"
+        files = reweight.build(load_eod(args.data), data_dir=args.data, base=args.base)
+        for path in reweight.write(files, out, data_dir=args.data):
             print(f"wrote {path}")
         print()
-        return _report(reweight.check(args.out), "the set is loadable and every constraint is feasible")
+        return _report(reweight.check(out), "the set is loadable and every constraint is feasible")
 
     if args.reweight_cmd == "import-weight":
         from eodgdl.reweight.weight import import_weight

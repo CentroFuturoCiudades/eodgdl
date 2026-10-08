@@ -490,10 +490,54 @@ def build_constraints(universe, year=None, conapo=None, shares=None, vmrc=None, 
     for table in TABLES:
         for target, entry in constraints(table).items():
             geography = entry["geography"]
+            if geography == "taz":   # the TAZ set's, from ZoneSystemAGEBs.csv (taz_constraints)
+                continue
             suffix = year if (year is not None and is_scaled(table, geography)) else None
             name = constraint_file(table, geography, suffix)
             series = _target(universe, table, target, geography, scaling, shares, vmrc, rates)
             if name not in files:
                 files[name] = pd.DataFrame({GEOGRAPHY_COLUMN[geography]: series.index.astype(int)})
+            files[name][target] = series.to_numpy()
+    return files
+
+
+def taz_targets(agebs, values):
+    """One target per TAZ of the zone system: the census total of each MTAZMun cell on its sampled TAZ.
+
+    ``agebs`` is :func:`zone_system_agebs`' frame, ``values`` one of its target columns (an AGEB's census value).
+    The working group's proposal (2026-10-08): within each MTAZ x municipality cell the TAZ with a sampled dwelling
+    share the cell's total in proportion to their own values, and every other TAZ gets 0, so the cell, its MTAZ and
+    its municipality keep their census totals. A cell with no sampled TAZ (26098, one unsampled Tlaquepaque AGEB)
+    has nowhere to go inside itself: its total goes to its MTAZ's sampled TAZ the same way, so the MTAZ keeps its
+    total and the municipalities trade it. Raises where a sampled TAZ would get 0, which the tool would read as
+    "remove these households". Indexed by TAZ, ascending.
+    """
+    name, values = values, agebs[values].astype(float)
+    sampled = agebs.sampled_dwellings > 0
+    on_sampled = values.where(sampled, 0.0)
+    cell, mtaz = agebs.MTAZMun, agebs.MTAZ
+    out = (values * values.groupby(cell).transform("sum") / on_sampled.groupby(cell).transform("sum")).where(sampled, 0.0)
+    unsampled_cell = ~sampled.groupby(cell).transform("any")
+    orphans = values.where(unsampled_cell, 0.0).groupby(mtaz).transform("sum")
+    out += (values * orphans / on_sampled.groupby(mtaz).transform("sum")).where(sampled, 0.0)
+    if out.isna().any() or (out[sampled] <= 0).any():
+        raise ValueError(f"sampled TAZ with no {name}: {agebs.TAZ[sampled & ~(out > 0)].tolist()}")
+    if abs(out.sum() - values.sum()) > 1e-6 * max(values.sum(), 1.0):
+        raise ValueError(f"{name}: the TAZ targets lose {values.sum() - out.sum():,.1f} (an MTAZ with no sampled TAZ)")
+    return pd.Series(out.to_numpy(), index=pd.Index(agebs.TAZ.to_numpy(), name="TAZ")).sort_index()
+
+
+def taz_constraints(agebs, year):
+    """{file name: frame} of the TAZ set's taz targets for one year (`rows_of` in spec.yaml): one row per TAZ of
+    the zone system (:func:`taz_targets` over :func:`zone_system_agebs`' frame, ``agebs``)."""
+    files = {}
+    for table in TABLES:
+        for target, entry in constraints(table).items():
+            if entry["geography"] != "taz":
+                continue
+            series = taz_targets(agebs, f"{AGEB_TARGETS[entry['rows_of']][1]}_{year}")
+            name = constraint_file(table, "taz", year)
+            if name not in files:
+                files[name] = pd.DataFrame({"TAZ": series.index.astype("int64")})
             files[name][target] = series.to_numpy()
     return files

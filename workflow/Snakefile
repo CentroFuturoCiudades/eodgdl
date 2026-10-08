@@ -26,7 +26,8 @@ from eodgdl.data import SURVEY_FILES, data_dir
 from eodgdl.eod import loader_files
 from eodgdl.impute.chain import load_chain
 from eodgdl.impute.pipeline import load_pipeline
-from eodgdl.reweight.weight import SIDECAR, WEIGHT_CSV
+from eodgdl.reweight._spec import bases as reweight_bases
+from eodgdl.reweight.weight import SIDECAR, WEIGHT_CSV, read_sidecar, set_directory
 
 
 workdir: str(Path(workflow.basedir).parent)
@@ -45,6 +46,12 @@ WEIGHT, BOOTSTRAP, DRAWS, DRAW = config["weight"], config["bootstrap"], config["
 if WEIGHT == "tmg" and not Path(DATA, WEIGHT_CSV).exists():
     raise WorkflowError(f"weight: tmg, but there is no {DATA}/{WEIGHT_CSV}. Build the reweight inputs under weight: design "
                         "(`snakemake reweight`), hand them over, bring the weight back (`eodgdl reweight import-weight`), then run again.")
+
+
+# The two reweight sets, by folder: the MTAZMun set (reweight/) and the TAZ set (reweight_taz/); TMG's weight is checked
+# against the one its sidecar says it was fitted on.
+REWEIGHT_SETS = {spec["directory"]: base for base, spec in reweight_bases().items()}
+TMG_SET = set_directory(read_sidecar(DATA)) if WEIGHT == "tmg" else "reweight"
 
 
 def code(*parts):
@@ -112,7 +119,7 @@ rule zones:
 
 rule reweight:
     input:
-        f"{OUT}/reweight",
+        expand(f"{OUT}/{{reweight_set}}", reweight_set=REWEIGHT_SETS),
 
 
 rule impute:
@@ -160,7 +167,7 @@ rule zone_system:
 
 
 # Stages 1-2: the reweight inputs for TMG.SurveyReweight, the unanswered's employment from the design-weight empleo
-# bundle (stage 1) among them.
+# bundle (stage 1) among them; one set per base category: reweight/ (MTAZMun) and reweight_taz/ (TAZ).
 rule reweight_inputs:
     input:
         EOD,
@@ -170,17 +177,21 @@ rule reweight_inputs:
         TAZ_IDS,
         IMPUTE,
     output:
-        directory(f"{OUT}/reweight"),
+        directory(f"{OUT}/{{reweight_set}}"),
+    wildcard_constraints:
+        reweight_set="|".join(REWEIGHT_SETS),
+    params:
+        base=lambda wildcards: REWEIGHT_SETS[wildcards.reweight_set],
     log:
-        f"{OUT}/logs/reweight_inputs.log",
+        f"{OUT}/logs/{{reweight_set}}_inputs.log",
     shell:
-        "eodgdl reweight build --out {output} > {log} 2>&1"
+        "eodgdl reweight build --base {params.base} --out {output} > {log} 2>&1"
 
 
 # Stage 3 comes back from outside: TMG's weight, checked against the reweight inputs it was fitted on.
 rule tmg_weight:
     input:
-        reweight=f"{OUT}/reweight",
+        reweight=f"{OUT}/{TMG_SET}",
         weight=f"{DATA}/{WEIGHT_CSV}",
         sidecar=f"{DATA}/{SIDECAR}",
     output:
@@ -274,7 +285,7 @@ rule verify:
     input:
         rules.eod_tables.output.manifest,
         rules.zone_system.output.manifest,
-        f"{OUT}/reweight",
+        expand(f"{OUT}/{{reweight_set}}", reweight_set=REWEIGHT_SETS),
         retrains(TASKS),
         expand(f"{OUT}/impute/{{chain}}", chain=DIAGNOSTIC_CHAINS),
         rules.tasha_build.output.manifest,

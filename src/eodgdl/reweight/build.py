@@ -9,7 +9,7 @@ from typing import NamedTuple
 import pandas as pd
 
 from eodgdl.data import CENSUS_FILES, CONAPO_CSV, SURVEY_FILES, VMRC_CSV, ZONE_FILES
-from eodgdl.reweight._spec import constraint_index, load_spec
+from eodgdl.reweight._spec import base_column, constraint_index, keys, load_spec
 from eodgdl.reweight.records import (
     build_households,
     build_people,
@@ -48,6 +48,7 @@ class ReweightFiles(NamedTuple):
     coverage: pd.DataFrame  # the survey universe as a share of each whole municipality
     zone_assignment: pd.DataFrame = pd.DataFrame()  # every census unit's zone and the rule that set it
     zone_system_agebs: pd.DataFrame = pd.DataFrame()  # every AGEB in a zone: its TAZ, MTAZ, MTAZMun cell, sampled dwellings and census targets, by year
+    base: str = "mtazmun"  # the tool's base category (spec.yaml's zones.bases): mtazmun, or taz for the TAZ set
 
 
 def years():
@@ -55,9 +56,10 @@ def years():
     return (c["base_year"], c["target_year"])
 
 
-def build(tables, data_dir=None):
+def build(tables, data_dir=None, base="mtazmun"):
     """Everything the tool reads, from `load_eod`'s tables, the imputed attributes' models
-    (spec.yaml's `imputed`) and the census."""
+    (spec.yaml's `imputed`) and the census; `base` taz builds the TAZ set (:func:`rebase`)."""
+    base_column(base)
     viv, hab, trips, legs = tables
     zone_system, zone_labels = build_zones(viv)
     records = ReweightFiles(
@@ -70,11 +72,11 @@ def build(tables, data_dir=None):
     conapo = load_conapo(Path(data_dir) / CONAPO_CSV if data_dir is not None else None)
     vmrc = load_vmrc(Path(data_dir) / VMRC_CSV if data_dir is not None else None)
     rates = load_rates(data_dir)
-    base, target = years()
+    base_year, target_year = years()
     constraints = {}
     index = []
     diagnostics = {}
-    for year in (base, target):
+    for year in (base_year, target_year):
         frames = build_constraints(universe, year, conapo, shares, vmrc, rates)
         constraints.update(frames)
         idx = constraint_index(year).assign(year=year)
@@ -85,9 +87,41 @@ def build(tables, data_dir=None):
     # 2023 set without BusBoardings).
     index = pd.concat(index, ignore_index=True)
     assignment = assign_units(viv, trips)
-    return records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares,
-                            zone_assignment=output_columns(assignment).reset_index(),
-                            zone_system_agebs=zone_system_agebs(universe, viv, assignment, conapo, vmrc, rates))
+    files = records._replace(constraints=constraints, index=index, diagnostics=diagnostics, coverage=shares,
+                             zone_assignment=output_columns(assignment).reset_index(),
+                             zone_system_agebs=zone_system_agebs(universe, viv, assignment, conapo, vmrc, rates))
+    return files if base == "mtazmun" else rebase(files, base)
+
+
+def rebase(files, base):
+    """The set of another base category, from a built MTAZMun set: the same records, census and targets.
+
+    The TAZ set (``taz``): ``ZoneSystem.csv`` lists every TAZ of the zone system (``ZoneSystemAGEBs.csv``'s AGEBs,
+    sampled or not) with its MTAZ, municipality and region; ``HouseholdRecords.csv`` carries ``HouseholdTAZ`` second,
+    where the loader reads the base category; the constraints are the MTAZMun set's plus the taz targets
+    (:func:`~eodgdl.reweight.targets.taz_constraints`), each year's index and diagnostic redone over them.
+    """
+    if files.base == base:
+        return files
+    if files.base != "mtazmun" or base != "taz":
+        raise ValueError(f"rebase goes from the mtazmun set to the taz set, not {files.base} -> {base}")
+    from eodgdl.reweight.targets import taz_constraints
+
+    agebs = files.zone_system_agebs
+    zone_system = (agebs.assign(Region=1)[["TAZ", "MTAZ", "Municipality", "Region"]]
+                   .sort_values("TAZ", ignore_index=True).astype("int64"))
+    households = files.households[[*keys(base)["households"],
+                                   *(c for c in files.households.columns if c not in keys(base)["households"])]]
+    out = files._replace(zone_system=zone_system, households=households, base=base)
+    constraints, index, diagnostics = dict(files.constraints), [], {}
+    for year in years():
+        frames = {name: files.constraints[name] for name in constraint_index(year, files.base).file.unique()}
+        frames |= taz_constraints(agebs, year)
+        constraints |= frames
+        idx = constraint_index(year, base).assign(year=year)
+        index.append(idx)
+        diagnostics[year] = diagnostic(out, frames, idx)
+    return out._replace(constraints=constraints, index=pd.concat(index, ignore_index=True), diagnostics=diagnostics)
 
 
 def diagnostic(records, constraints, index):
@@ -114,7 +148,7 @@ def diagnostic(records, constraints, index):
                 "ratio": s / t if t else float("nan"),
             })
     out = pd.DataFrame(rows)
-    geo_cols = [c for c in ("MTAZ", "Municipality", "Region") if c in out.columns]
+    geo_cols = [c for c in ("TAZ", "MTAZ", "Municipality", "Region") if c in out.columns]
     return out[["file", "target_column", *geo_cols, "target", "survey_at_design_weight", "records", "ratio"]]
 
 
@@ -148,14 +182,14 @@ def write(files, out_dir, data_dir=None):
     with resources.as_file(readme) as src:
         shutil.copy(src, out_dir / "README.md")
         written.append(out_dir / "README.md")
-    written.append(write_manifest(out_dir, data_dir, written))
+    written.append(write_manifest(out_dir, data_dir, written, files.base))
     return written
 
 
-def write_manifest(out_dir, data_dir, outputs):
+def write_manifest(out_dir, data_dir, outputs, base="mtazmun"):
     """Stage 2's manifest (eodgdl.manifest): the survey files, the zone polygons, the CONAPO /
     VMRC / ENDUTIH tables and the imputed attributes' model files read, the survey's data versions, the
-    constraint years and the sha256 of `outputs`. The census comes through mxcensus, whose
+    constraint years, the base category and the sha256 of `outputs`. The census comes through mxcensus, whose
     version and registry the manifest's `environment` records."""
     from eodgdl.data import resolve
     from eodgdl.impute.sources.eod import survey_versions
@@ -168,5 +202,5 @@ def write_manifest(out_dir, data_dir, outputs):
         for entry in attributes(table).values():
             if "imputed" in entry:
                 inputs[entry["imputed"]["bundle"]] = resolve(entry["imputed"]["bundle"])
-    return write(out_dir, "reweight_inputs", inputs=inputs, parameters={"years": list(years())},
+    return write(out_dir, "reweight_inputs", inputs=inputs, parameters={"years": list(years()), "base": base},
                  versions=survey_versions(), outputs=outputs)

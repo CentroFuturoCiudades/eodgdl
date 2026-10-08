@@ -319,7 +319,8 @@ Each record table is one row per survey unit with integer keys and numeric attri
 built from `load_eod()`'s cleaned tables:
 
 - **`HouseholdRecords.csv`**: `{python} fmt(len(hh))` rows, one per dwelling.
-  `HouseholdID` is `folio_vivienda`, `HouseholdMTAZMun` the cell of @sec-zones.
+  `HouseholdID` is `folio_vivienda`, `HouseholdMTAZMun` the cell of @sec-zones,
+  `HouseholdTAZ` the TAZ of the AGEB the dwelling was surveyed in (an attribute no constraint reads).
 - **`PersonRecords.csv`**: `{python} fmt(len(pp))` rows, every interviewed person (the
   survey interviews ages 6 and over). `PersonID = folio_vivienda × 10 + folio_habitante`,
   which is unique because no dwelling has more than nine interviewed persons.
@@ -1077,7 +1078,8 @@ Three checks run on every build, and the build (or the CLI's exit code) fails if
 reports a problem. All three report none for the set described here.
 
 - **`check_spec()`** reads `spec.yaml` alone: each attribute has exactly one way to be built,
-  each constraint names existing attributes and exactly one of `census` / `constant`,
+  each constraint names existing attributes and exactly one of `census` / `constant` /
+  `rows_of` (a TAZ target, @sec-taz-set),
   constants have integer geography ids and a provenance, growth sources and band groups
   exist, and no target has two growth sources.
 - **`check_assignment()`** requires every AGEB the survey sampled or recorded a trip end in
@@ -1085,7 +1087,8 @@ reports a problem. All three report none for the set described here.
   it (@sec-universe).
 - **`check(out_dir)`** reads the written files back the way the tool's loaders do, and
   imports nothing else from the package: every key an integer, ids unique, every person and
-  trip joined to its household, every household's MTAZMun in `ZoneSystem.csv`, no empty cell, the
+  trip joined to its household, every household's base category (its MTAZMun, or its TAZ in the
+  TAZ set) in column 1 and in `ZoneSystem.csv`, no empty cell, the
   sex and age dummies partitioning `Persons`, every map geography present in every
   constraint file (a missing row would silently be a target of 0), no negative target, and
   **every positive target with at least one matching record in its geography**, the
@@ -1158,6 +1161,158 @@ plt.tight_layout()
 plt.show()
 ```
 
+# The TAZ set {#sec-taz-set}
+
+```{python}
+#| label: taz-set
+#| include: false
+
+# Exactly what `eodgdl reweight build --data data --base taz` does, from the set above.
+taz_files = reweight.rebase(files, "taz")
+taz_dir = Path(tempfile.mkdtemp(prefix="reweight_taz_"))
+reweight.write(taz_files, taz_dir)
+assert reweight.check(taz_dir) == []
+ag = files.zone_system_agebs
+N = "Dwellings_2020"
+taz_target = taz_files.constraints["HouseholdConstraintsByTAZ_2020.csv"].set_index("TAZ").TAZDwellings
+n_taz, n_sampled_taz = len(ag), int((ag.sampled_dwellings > 0).sum())
+assert (n_taz, n_sampled_taz) == (2087, 1046) and int((taz_target > 0).sum()) == n_sampled_taz
+assert abs(taz_target.sum() - ag[N].sum()) < 1e-3
+
+# How the survey drew AGEBs and dwellings: urban AGEBs by fifth of size (census dwellings) within their MTAZ.
+u = ag[(ag.unit == "urban") & (ag[N] > 0)].copy()
+u["fifth"] = u.groupby("MTAZ")[N].transform(lambda x: pd.qcut(x.rank(method="first"), 5, labels=False)) + 1
+u["expected"] = u[N] * u.groupby("MTAZ").sampled_dwellings.transform("sum") / u.groupby("MTAZ")[N].transform("sum")
+hh = files.households
+in_taz = hh.HouseholdTAZ.map(hh.HouseholdTAZ.value_counts())
+w_taz = hh.HouseholdTAZ.map(taz_target) / in_taz                  # each household under the TAZ target alone
+mtaz_of = hh.HouseholdMTAZMun // 1000
+w_mtaz = mtaz_of.map(ag.groupby("MTAZ")[N].sum()) / mtaz_of.map(mtaz_of.value_counts())   # under the MTAZ target alone
+fifth = hh.HouseholdTAZ.map(u.set_index("TAZ").fifth)
+g = u.groupby("fifth")
+design = pd.DataFrame({
+    "AGEBs": g.size(),
+    "mean dwellings": g[N].mean(),
+    "share sampled": g.sampled_dwellings.apply(lambda s: (s > 0).mean()),
+    "dwellings per sampled AGEB": g.sampled_dwellings.apply(lambda s: s[s > 0].mean()),
+    "sampled / at the MTAZ's rate": g.sampled_dwellings.sum() / g.expected.sum(),
+    "expanded / census, MTAZ target": w_mtaz.groupby(fifth).sum() / g[N].sum(),
+    "expanded / census, TAZ target": w_taz.groupby(fifth).sum() / g[N].sum(),
+})
+assert design["share sampled"].is_monotonic_increasing and design["dwellings per sampled AGEB"].is_monotonic_increasing
+assert design["share sampled"].iloc[0] < 0.2 and design["share sampled"].iloc[-1] > 0.85
+assert design["sampled / at the MTAZ's rate"].between(0.85, 1.1).all()
+assert design["expanded / census, MTAZ target"].between(0.85, 1.1).all()
+assert design["expanded / census, TAZ target"].iloc[0] < 0.6 and design["expanded / census, TAZ target"].iloc[-1] > 1.2
+share_lo, share_hi = (pct(x, 0) for x in design["share sampled"].iloc[[0, -1]])
+per_lo, per_hi = (f"{x:.0f}" for x in design["dwellings per sampled AGEB"].iloc[[0, -1]])
+rate_lo, rate_hi = (f"{x:.2f}" for x in design["sampled / at the MTAZ's rate"].agg(["min", "max"]))
+mtaz_lo, mtaz_hi = (f"{x:.2f}" for x in design["expanded / census, MTAZ target"].agg(["min", "max"]))
+taz_lo, taz_hi = (f"{x:.2f}" for x in design["expanded / census, TAZ target"].iloc[[0, -1]])
+ratios = ["sampled / at the MTAZ's rate", "expanded / census, MTAZ target", "expanded / census, TAZ target"]
+design_tbl = design.rename_axis("size fifth").reset_index().assign(**{
+    "mean dwellings": lambda d: d["mean dwellings"].map(fmt),
+    "share sampled": lambda d: d["share sampled"].map(lambda x: pct(x, 0)),
+    "dwellings per sampled AGEB": lambda d: d["dwellings per sampled AGEB"].map(lambda x: f"{x:.1f}"),
+    **{c: (lambda d, c=c: d[c].map(lambda x: f"{x:.2f}")) for c in ratios}})
+
+
+def kish(w):
+    return len(w) * w.mean() ** 2 / (w ** 2).mean()
+
+
+kish_mtaz, kish_taz = kish(w_mtaz), kish(w_taz)
+assert w_taz.max() > 1000 and kish_taz < kish_mtaz
+
+# What each weighting says the survey measures.
+pp, tt = files.persons, files.trips
+estimate_rows = []
+for label, w in (("MTAZ target", w_mtaz), ("TAZ target", w_taz)):
+    w = w.set_axis(hh.HouseholdID)
+    hw, pw, tw = w.reindex(hh.HouseholdID).to_numpy(), pp.HouseholdID.map(w), tt.HouseholdID.map(w)
+    estimate_rows.append({"weights": label,
+                          "dwellings with a car": pct((hw * hh.HasCar).sum() / hw.sum()),
+                          "persons 60+": pct((pw * pp.Age60p).sum() / pw.sum()),
+                          "trips per person": f"{tw.sum() / pw.sum():.3f}",
+                          "transit boardings per trip": f"{(tw * tt.TransitBoardings).sum() / tw.sum():.3f}"})
+estimates_tbl = pd.DataFrame(estimate_rows)
+
+# Which MTAZ targets could move to the TAZ: sampled TAZ with no record a target could match.
+taz_of = {"households": hh.HouseholdTAZ, "persons": pp.HouseholdID.map(hh.set_index("HouseholdID").HouseholdTAZ),
+          "trips": tt.HouseholdID.map(hh.set_index("HouseholdID").HouseholdTAZ)}
+empty = {}
+for row in reweight.constraint_index(BASE).itertuples():
+    frame = getattr(files, row.table)
+    hit = frame[row.matching_attributes.split(";")].prod(axis=1) > 0
+    empty[row.target_column] = n_sampled_taz - taz_of[row.table][hit].nunique()
+empty = pd.Series(empty)
+assert empty[["Dwellings", "Occupants", "Persons", "Employed", "NotEmployed"]].eq(0).all()
+under_18 = [f"{sex}_Age{band}" for sex in ("Male", "Female") for band in ("6_11", "12_14", "15_17")]
+assert empty[under_18].between(350, 500).all() and empty["Cyclist"] > 700 and empty["HasMoto"] > 150
+empty_tbl = (empty[empty > 0].sort_values(ascending=False).rename("sampled TAZ with no matching record")
+             .rename_axis("target").reset_index())
+```
+
+The working group proposed (2026-10-08) to set the targets **by TAZ**: within each of the
+`{python} ag.MTAZMun.nunique()` MTAZMun cells, put the census total on the TAZ that hold a
+sampled dwelling, in proportion to their own census counts, and 0 on the others, so every
+cell, MTAZ and municipality keeps its total. The aim: a better picture of where the population
+lives inside a cell, on the view that weighting by MTAZ under-represents the denser TAZ.
+`eodgdl reweight build --base taz` writes that set to `output/reweight_taz/` (`reweight.rebase`
+from the set above; the workflow builds both): the same records and the same constraints, with
+the TAZ as the tool's base category (`ZoneSystem.csv` lists all `{python} fmt(n_taz)` TAZ with
+their MTAZ, municipality and region; `HouseholdRecords.csv` carries `HouseholdTAZ` second, where
+the loader reads the base category), plus one target per TAZ and year, `TAZDwellings`
+(`HouseholdConstraintsByTAZ_{2020,2023}.csv`; spec.yaml `rows_of: Dwellings`): positive on the
+`{python} fmt(n_sampled_taz)` sampled TAZ and 0 on the rest, which the tool leaves alone. The
+one cell with no sampled TAZ, 26098 (one Tlaquepaque AGEB), goes to its MTAZ's sampled TAZ, all
+in Zapopan's cell 26120. An MTAZ's TAZ targets sum to its `Dwellings` target, so the two
+constraints agree.
+
+**The survey already drew the denser TAZ in proportion.** Within each MTAZ, the larger an AGEB
+the likelier it was drawn and the more dwellings it was given (@tbl-taz-design): the smallest
+fifth of AGEBs was sampled `{python} share_lo` of the time, the largest `{python} share_hi`,
+with `{python} per_lo` and `{python} per_hi` dwellings each. Together they make the sample
+close to self-weighting inside an MTAZ: each fifth holds `{python} rate_lo`–`{python} rate_hi`
+times the dwellings its share of the MTAZ's census predicts, which is why IMEPLAN's stage-1
+weight is one ratio per MTAZ and why equal weights within an MTAZ expand every size class to
+its census (`{python} mtaz_lo`–`{python} mtaz_hi`). The TAZ target weights each sampled AGEB by
+its size a second time: its households alone would carry `{python} taz_lo` of the smallest
+fifth's dwellings and `{python} taz_hi` of the largest's. Inside a sampled TAZ its expanded count matches the census; across the MTAZ,
+the households of small AGEBs stand for half as many dwellings as they should.
+
+```{python}
+#| label: tbl-taz-design
+#| tbl-cap: "Urban AGEBs by fifth of size (census dwellings) within their MTAZ: how often the survey drew them, how many dwellings it drew in each, those dwellings against the MTAZ's own sampling rate, and the dwellings their households stand for, as a share of the census, under the MTAZ target alone (equal weights within an MTAZ) and under the TAZ target alone (each sampled TAZ at its target)."
+show(design_tbl)
+```
+
+What it costs, before any other constraint: the TAZ target alone puts each household at its
+TAZ's target over its sampled dwellings, up to `{python} fmt(w_taz.max())` (equal weights
+within an MTAZ: `{python} fmt(w_mtaz.max())`), and Kish's effective sample size falls from
+`{python} fmt(kish_mtaz)` to `{python} fmt(kish_taz)` households. `MaximumExpansionFactor`
+must sit above that for the tool to reach the TAZ targets; at 500 it cannot. What it changes
+in the survey's estimates is small (@tbl-taz-estimates): within an MTAZ, travel and ownership
+vary little with the size of the AGEB.
+
+```{python}
+#| label: tbl-taz-estimates
+#| tbl-cap: "The survey's estimates under the MTAZ target alone and under the TAZ target alone (households at those weights; persons and trips at their household's)."
+show(estimates_tbl)
+```
+
+Only totals can go to the TAZ. A sampled TAZ holds `{python} fmt(hh.HouseholdTAZ.value_counts().median())`
+sampled dwellings in the median, and the tool aborts on a positive target with no matching
+record; moved to the TAZ, most targets would have none in hundreds of TAZ (@tbl-taz-empty).
+`Dwellings`, `Occupants`, `Persons` and the two activity targets match a record in every
+sampled TAZ; the set moves `Dwellings` alone, the household count the proposal is about.
+
+```{python}
+#| label: tbl-taz-empty
+#| tbl-cap: "Targets of the MTAZ set by the number of the 1,046 sampled TAZ in which no record matches them: a TAZ target there would abort the tool."
+show(empty_tbl)
+```
+
 # Caveats and open decisions {#sec-caveats}
 
 - **Sparse sex × age cells.** The twelve crosses have as few as
@@ -1226,6 +1381,7 @@ into all of it, which is what makes the hybrid the natural choice for the target
 ```bash
 uv sync --extra reweight                                          # mxcensus; census files are fetched once and cached
 uv run eodgdl reweight build --data data --out output/reweight    # build, write, check
+uv run eodgdl reweight build --data data --base taz               # the TAZ set (@sec-taz-set) -> output/reweight_taz
 uv run eodgdl reweight check output/reweight                      # check a written set again
 QUARTO_PYTHON=$PWD/.venv/bin/python quarto render reports/reweight_inputs.qmd
 ```

@@ -16,7 +16,7 @@ Paths are under the workflow's root, `output/` (`--config output=ROOT` for anoth
 | 0. load | `eod_tables` | `load_eod()`: rename, clean, schemas, repeated diaries, chain rules, hand decisions, legs | — | `data/` survey files, the loader's code and `src/eodgdl/revisions/` (`eod.loader_files()`) | `eod/{viv,hab,trips,legs}.parquet` + `manifest.json`; its `versions` carry the tables' digest |
 | — | `zone_system` | every urban AGEB and rural locality in its zone, the zones redrawn (`reweight.zone_system`) | — | stage 0, the zone polygons, the census via `mxcensus` | `zones/zones.gpkg`, `zones/assignment.parquet`, the map `zones/zone_system_map.pdf` and `zone_system_map_rural_agebs.pdf` (`reports/reweight_inputs.qmd`'s fig-zone-map chunk, run by the rule) + `manifest.json` |
 | 1. employment before reweighting | (inside 2) | P(`trabaja`) of the 4,370 persons 16+ who did not answer the activity question | design (`ponderador`) | stage 0, `models/od_empleo_design_model.joblib` | the records' `Employed` = P, `NotEmployed` = 1 − P (`reweight/spec.yaml`, `imputed:`) |
-| 2. reweight inputs | `reweight_inputs` | `eodgdl reweight build` | — | stages 0–1, census via `mxcensus`, CONAPO / VMRC / ENDUTIH, the zone polygons | `reweight/` + `manifest.json` (stage `reweight_inputs`) |
+| 2. reweight inputs | `reweight_inputs` (one job per set) | `eodgdl reweight build [--base taz]` | — | stages 0–1, census via `mxcensus`, CONAPO / VMRC / ENDUTIH, the zone polygons | `reweight/` (by MTAZ × municipality) and `reweight_taz/` (by TAZ, the working group's TAZ targets), each + `manifest.json` (stage `reweight_inputs`, `parameters.base`) |
 | 3. household weight | (external), `tmg_weight` | TMG.SurveyReweight (XTMF2, run by hand); the rule checks what comes back | — | stage 2's set | `data/EOD_peso_hogar_TMG.csv` + sidecar `.yaml` (`eodgdl reweight import-weight`); `checks/tmg_weight.txt` |
 | 4. final models | `retrain` (one job per task) | every task retrained, `bootstrap` refits each | the run's (`tmg` for the delivery) | stage 0, stage 3 under `tmg`, ENOE, ENIGH, DENUE (through `mxcensus`) | `impute/<task>/` + `manifest.json` (stage `retrain`) |
 | — | `diagnostic_chain` | `sector_informality` and `nse` scored alone, `draws` multiple imputations, evaluated | the run's | stage 4's bundles | `impute/<chain>/` (scores, `multiple_imputation/`, `evaluation/`), read by the imputation reports |
@@ -90,11 +90,11 @@ TMG.SurveyReweight (`github.com/TravelModellingGroup/TMG.SurveyReweight`; read a
 model system with no headless runner (`XTMF2.Run` serves runs sent by the GUI or a RunServer; `-config` is "not
 supported yet"); a colleague runs it and **only the weight comes back** (the user, 2026-10-01; adopting the
 reweighting inside the pipeline is planned for later). What is handed over: `output/reweight/` with its README (how to
-configure the model system) and manifest. What must come back: the `UpdatedExpansionFactorsFile` and the constraint
+configure the model system) and manifest, or `output/reweight_taz/` for the TAZ set. What must come back: the `UpdatedExpansionFactorsFile` and the constraint
 year used; the tool's commit, the exported `.xmsys` and the `ConstraintReportFile` when available. Then:
 
 ```bash
-uv run eodgdl reweight import-weight UPDATED.csv --year 2023 --reweight output/reweight --data data
+uv run eodgdl reweight import-weight UPDATED.csv --year 2023 --reweight output/reweight --data data   # or --reweight output/reweight_taz
 ```
 
 writes `data/EOD_peso_hogar_TMG.csv` (`folio_vivienda`, `peso`, in `HouseholdRecords.csv`'s order) and

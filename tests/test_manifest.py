@@ -70,6 +70,7 @@ def test_the_tmg_weight_enters_with_its_sidecar(tmp_path, monkeypatch):
     recorded = weight.read_sidecar(data)
     assert recorded["reweight_inputs"]["outputs_digest"] == read_manifest(root / "reweight")["outputs_digest"]
     assert recorded["reweight_inputs"]["constraint_year"] == 2023 and recorded["tool"]["commit"] == "960c5ed"
+    assert recorded["reweight_inputs"]["base"] == "mtazmun"   # a manifest that names no base is the MTAZMun set's
     assert recorded["configuration_sha256"] is None and recorded["constraint_report_sha256"] is None   # only the weight came back
     assert weight.check_weight(data, root) == [] and verify(root, data) == []
 
@@ -80,6 +81,31 @@ def test_the_tmg_weight_enters_with_its_sidecar(tmp_path, monkeypatch):
     # the weight file edited after the import
     csv.write_text("folio_vivienda,peso\n1,1\n2,1\n3,1\n")
     assert any("not the weight its sidecar records" in p for p in weight.check_weight(data, root))
+
+
+def test_a_weight_fitted_on_the_taz_set_is_checked_against_it(tmp_path, monkeypatch):
+    from eodgdl import manifest as module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_repo", lambda: None)
+    data, root = tmp_path / "data", tmp_path / "output"
+    data.mkdir()
+    _reweight_set(root / "reweight")
+    (root / "reweight_taz").mkdir(parents=True)
+    pd.DataFrame({"HouseholdID": [1, 2, 3], "HouseholdTAZ": [7, 7, 8]}).to_csv(root / "reweight_taz" / "HouseholdRecords.csv", index=False)
+    write_manifest(root / "reweight_taz", "reweight_inputs", parameters={"years": [2020, 2023], "base": "taz"})
+    pd.DataFrame({"UpdatedExpansionFactor": [10.5, 20.0, 30.25]}).to_csv(tmp_path / "updated.csv", index=False)
+    weight.import_weight(tmp_path / "updated.csv", root / "reweight_taz", data, 2023)
+    recorded = weight.read_sidecar(data)
+    assert recorded["reweight_inputs"]["base"] == "taz" and weight.set_directory(recorded) == "reweight_taz"
+    assert weight.check_weight(data, root) == []
+    # the MTAZMun set rebuilt does not touch it; the TAZ set rebuilt makes it stale
+    (root / "reweight" / "HouseholdRecords.csv").write_text("HouseholdID,HouseholdMTAZMun\n1,1001\n2,1001\n3,2001\n")
+    write_manifest(root / "reweight", "reweight_inputs", parameters={"years": [2020, 2023]})
+    assert weight.check_weight(data, root) == []
+    (root / "reweight_taz" / "HouseholdRecords.csv").write_text("HouseholdID,HouseholdTAZ\n1,7\n2,8\n3,8\n")
+    write_manifest(root / "reweight_taz", "reweight_inputs", parameters={"years": [2020, 2023], "base": "taz"})
+    assert any("reweight_taz: other reweight inputs" in p for p in weight.check_weight(data, root))
 
 
 def test_import_weight_refuses_what_does_not_fit_the_records(tmp_path):

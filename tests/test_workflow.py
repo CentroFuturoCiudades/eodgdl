@@ -22,7 +22,7 @@ def test_a_dry_run_schedules_every_stage(tmp_path):
     result, jobs = _dry_run(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert {rule: int(n) for rule, n in jobs.items() if rule != "total"} == {
-        "eod_tables": 1, "zone_system": 1, "reweight_inputs": 1, "retrain": 7, "diagnostic_chain": 2, "pipeline_tasha": 1,
+        "eod_tables": 1, "zone_system": 1, "reweight_inputs": 2, "retrain": 7, "diagnostic_chain": 2, "pipeline_tasha": 1,
         "tasha_build": 1, "verify": 1, "all": 1}
 
 

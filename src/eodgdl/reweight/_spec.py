@@ -15,14 +15,35 @@ import yaml
 
 TABLES = ("households", "persons", "trips")
 TABLE_LABEL = {"households": "Household", "persons": "Person", "trips": "Trip"}
-GEOGRAPHIES = ("mtaz", "municipality", "region")
-GEOGRAPHY_COLUMN = {"mtaz": "MTAZ", "municipality": "Municipality", "region": "Region"}
-KEYS = {
-    "households": ["HouseholdID", "HouseholdMTAZMun"],
-    "persons": ["PersonID", "HouseholdID"],
-    "trips": ["HouseholdID", "PersonID"],
-}
+GEOGRAPHIES = ("taz", "mtaz", "municipality", "region")
+GEOGRAPHY_COLUMN = {"taz": "TAZ", "mtaz": "MTAZ", "municipality": "Municipality", "region": "Region"}
+# The tool's base category per set (spec.yaml's zones.bases): its column in ZoneSystem.csv, and the
+# geographies its constraints may read. Only the TAZ base reads the TAZ, its own category.
+BASE_GEOGRAPHIES = {"mtazmun": ("mtaz", "municipality", "region"), "taz": GEOGRAPHIES}
 _TOKEN = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+
+
+def bases():
+    """{base: {column, directory}}: the two sets, spec.yaml's zones.bases."""
+    return dict(load_spec()["zones"]["bases"])
+
+
+def base_column(base):
+    """The base category's column: ZoneSystem.csv's first, and HouseholdRecords.csv's second as Household<column>."""
+    if base not in bases():
+        raise ValueError(f"base {base!r} is not one of {sorted(bases())}")
+    return bases()[base]["column"]
+
+
+def keys(base="mtazmun"):
+    """The key columns of each record table in the set of `base`, in the order the tool's loader reads them: the
+    household's base category second, the other set's category third (an attribute no constraint reads)."""
+    other = [c["column"] for b, c in bases().items() if b != base]
+    return {
+        "households": ["HouseholdID", *(f"Household{c}" for c in [base_column(base), *other])],
+        "persons": ["PersonID", "HouseholdID"],
+        "trips": ["HouseholdID", "PersonID"],
+    }
 
 
 @functools.cache
@@ -47,6 +68,11 @@ def matching_attributes(target, table):
     return list(constraints(table)[target].get("attributes") or [target])
 
 
+def base_constraints(table, base="mtazmun"):
+    """{target column: entry} for one record table in the set of `base`: the constraints whose geography it maps to."""
+    return {t: e for t, e in constraints(table).items() if e["geography"] in BASE_GEOGRAPHIES[base]}
+
+
 def census_columns(expression):
     """The census column names an expression refers to."""
     return sorted(set(_TOKEN.findall(expression)))
@@ -58,29 +84,30 @@ def constraint_file(table, geography, year=None):
     return f"{name}_{year}.csv" if year is not None else f"{name}.csv"
 
 
-GROWTH_KEYS = ("conapo", "vmrc", "sum_of")
+GROWTH_KEYS = ("conapo", "vmrc", "sum_of", "rows_of")   # rows_of: a census target's values, grown with it
 
 
 def is_scaled(table, geography):
     """Whether the file for (table, geography) has a year suffix: any target with a growth
-    source (`conapo` or `vmrc`)."""
+    source (`conapo` or `vmrc`, or the census target `rows_of` names)."""
     return any(
         any(k in e for k in GROWTH_KEYS)
         for e in constraints(table).values() if e["geography"] == geography
     )
 
 
-def constraint_index(year):
-    """One row per target column, for the year's constraint set: where it is and what it matches.
+def constraint_index(year, base="mtazmun"):
+    """One row per target column, for the year's constraint set of `base`: where it is and what it matches.
 
     Columns: file, target_column, column_index (0-based, the tool's TargetColumn), table,
-    geography, map_column (the ZoneSystem.csv column the CategoryMap maps to; the geography
+    geography, map_column (the ZoneSystem.csv column the CategoryMap maps to, or the base
+    category's own column for a constraint on it, which takes no CategoryMap; the geography
     column of the file is always column 0), matching_attributes (';'-joined), scaled.
     """
     rows = []
     for table in TABLES:
         groups: dict[str, list[str]] = {}
-        for target, entry in constraints(table).items():
+        for target, entry in base_constraints(table, base).items():
             groups.setdefault(entry["geography"], []).append(target)
         for geography, targets in groups.items():
             scaled = is_scaled(table, geography)
@@ -131,8 +158,19 @@ def check_spec():
             for attr in matching_attributes(target, table):
                 if attr not in attrs:
                     problems.append(f"{table}.{target}: matches {attr!r}, not a {table} attribute")
-            if ("census" in entry) == ("constant" in entry):
-                problems.append(f"{table}.{target}: needs exactly one of census / constant")
+            if sum(k in entry for k in ("census", "constant", "rows_of")) != 1:
+                problems.append(f"{table}.{target}: needs exactly one of census / constant / rows_of")
+            if (entry.get("geography") == "taz") != ("rows_of" in entry):
+                problems.append(f"{table}.{target}: a taz target is rows_of an mtaz target, and only a taz target is")
+            if "rows_of" in entry:
+                from eodgdl.reweight.targets import AGEB_TARGETS
+
+                of = constraints(table).get(entry["rows_of"])
+                if entry["rows_of"] not in AGEB_TARGETS or AGEB_TARGETS[entry["rows_of"]][0] != table or of is None:
+                    problems.append(f"{table}.{target}: rows_of {entry['rows_of']!r} is not a {table} target "
+                                    "ZoneSystemAGEBs.csv carries (targets.AGEB_TARGETS)")
+                elif of.get("geography") != "mtaz" or matching_attributes(target, table) != matching_attributes(entry["rows_of"], table):
+                    problems.append(f"{table}.{target}: rows_of {entry['rows_of']!r} must be an mtaz target matching the same attributes")
             if "constant" in entry:
                 if not all(isinstance(k, int) for k in entry["constant"]):
                     problems.append(f"{table}.{target}: constant keys must be integer geography ids")
