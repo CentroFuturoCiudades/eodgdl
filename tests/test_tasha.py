@@ -77,7 +77,7 @@ def test_ambiguous_column_needs_a_table():
 def test_gaps_are_declared():
     gaps = tasha.gaps()
     assert set(gaps.status) <= {"imputed", "assumed", "not_surveyed", "pending"}
-    assert {"IncomeClass", "EmploymentStatus", "Formality", "Occupation"} <= set(gaps.column[gaps.status == "imputed"])
+    assert {"IncomeClass", "EmploymentStatus", "Occupation"} <= set(gaps.column[gaps.status == "imputed"])
     assert "DwellingType" in set(gaps.column)
 
 
@@ -191,7 +191,7 @@ def test_number_of_persons_may_exceed_but_not_undercount_the_person_rows():
     h = pd.DataFrame([{"HouseholdId": 0, **HOUSEHOLD}])
     p = pd.DataFrame([
         {"HouseholdId": 0, "PersonNumber": n, "Age": 30, "Sex": "M", "License": "Y",
-         "TransitPass": "N", "EmploymentStatus": "O", "Formality": "O",
+         "TransitPass": "N", "EmploymentStatus": "O",
          "Occupation": "O", "FreeParking": "O", "StudentStatus": "O",
          "EmploymentZone": 0, "SchoolZone": 0, "ExpansionFactor": 1.0}
         for n in (1, 2, 3)
@@ -343,9 +343,74 @@ def test_build_round_trips_through_csv(stages, tmp_path):
     assert back.HouseholdZone.equals(od.households.HouseholdZone)
 
 
+def test_expansion_puts_the_household_weight_on_every_table(stages):
+    # expansion: tmg (tasha.load_expansion): TMG's household weight on every table, a person and a trip their
+    # household's, and nothing else moves; a household without a weight fails the build
+    viv, hab = stages.revised.viv, stages.revised.hab
+    weight = pd.Series(range(1, len(viv) + 1), index=viv.index, dtype=float, name="peso")
+    design, tmg = tasha.build(stages.revised), tasha.build(stages.revised, expansion=weight)
+    assert (design.households.ExpansionFactor.to_numpy() == viv.ponderador.sort_index().to_numpy()).all()
+    household = tmg.households.set_index("HouseholdId").ExpansionFactor
+    assert (tmg.households.ExpansionFactor.to_numpy() == weight.sort_index().to_numpy()).all()
+    for table in ("people", "trips"):
+        built = getattr(tmg, table)
+        assert (built.ExpansionFactor == built.HouseholdId.map(household)).all()
+    for before, after in zip(design, tmg):
+        assert before.drop(columns="ExpansionFactor").equals(after.drop(columns="ExpansionFactor"))
+    assert tasha.validate_all(*tmg) == []
+    with pytest.raises(ValueError, match="no expansion weight for 1 households"):
+        tasha.build_households(viv, hab, expansion=weight.iloc[1:])
+
+
+def test_load_expansion_reads_the_run_s_choice(run_config, tmp_path):
+    run_config(expansion="design")
+    assert tasha.load_expansion() is None
+    run_config(expansion="tmg")
+    with pytest.raises(FileNotFoundError, match="no TMG weight with its sidecar"):
+        tasha.load_expansion(data_dir=tmp_path)
+    with pytest.raises(ValueError, match="expansion 'raked': not one of design, tmg"):
+        tasha.load_expansion("raked")
+
+
+def test_the_dictionary_covers_every_column_and_code():
+    # generated from model_schema.yaml and mappings.yaml: every table, column and code, and no counts without tables
+    text = tasha.dictionary()
+    for table in tasha.tables():
+        assert f"## `{tasha.load_schema()['tables'][table]['file']}`" in text
+        for column in tasha.columns(table):
+            assert f'<a id="{table}-{column.lower()}"></a>' in text
+            for code in tasha.domain(column, table) or {}:
+                assert f"| `{code}` |" in text
+    assert "Rows |" not in text and "These tables:" not in text
+
+
+def test_the_code_tables_list_every_column_and_code():
+    # one small table per file: a row per column, then a row per code (and per zone sentinel), each with a meaning
+    for table in tasha.tables():
+        table_codes = tasha.codes(table)
+        assert list(table_codes.columns) == ["column", "code", "meaning"] and (table_codes.meaning.str.len() > 0).all()
+        assert list(table_codes.column.drop_duplicates()) == list(tasha.columns(table))
+        for column in tasha.columns(table):
+            listed = set(table_codes.code[table_codes.column == column]) - {""}
+            assert listed == {str(code) for code in {**(tasha.column_spec(column, table).get("sentinel") or {}), **(tasha.domain(column, table) or {})}}
+    assert "Formality" not in set(tasha.codes("people").column)
+
+
+def test_the_dictionary_counts_the_built_tables(stages):
+    import re
+
+    od = tasha.build(stages.revised)
+    text = tasha.dictionary(od, expansion="design", draw=0)
+    assert f"trips {len(od.trips):,} rows" in text and "`ExpansionFactor`: each table's own survey weight" in text
+    for table, column in (("trips", "Mode"), ("people", "EmploymentStatus"), ("households", "IncomeClass")):
+        section = text.split(f'<a id="{table}-{column.lower()}"></a>')[1].split("<a id=")[0]
+        rows = [int(n.replace(",", "")) for n in re.findall(r"\| ([\d,]+) \|$", section, re.M)]
+        assert sum(rows) == len(getattr(od, table))
+
+
 def test_imputed_columns_read_the_completed_dataset(stages):
     # IncomeClass is the dwelling's AMAI level; a person without an employment answer takes the drawn situation; a
-    # worker is P where the draw is informal, with Formality I; a worker without a reported giro takes the drawn one;
+    # worker is P where the draw is informal; a worker without a reported giro takes the drawn one;
     # an unanswered person drawn as a student is S. Without a completed dataset they fall to the mapping's defaults.
     viv, hab = stages.revised.viv, stages.revised.hab
     reported = hab.trabajo_semana_pasada.isin(["Tiempo completo", "Medio tiempo", "Tenía trabajo, pero no trabajó"])
@@ -366,7 +431,6 @@ def test_imputed_columns_read_the_completed_dataset(stages):
     p = od.people.set_index(hab.index)
     workers = situation[situation == "trabaja"].index
     assert (p.loc[workers, "EmploymentStatus"] == labour.loc[workers, "informalidad"].map({"informal": "P", "formal": "F"})).all()
-    assert ((p.EmploymentStatus == "P") == (p.Formality == "I")).all() and (p.Formality[p.EmploymentStatus == "O"] == "O").all()
     others = situation.index[drawn & (situation != "trabaja").to_numpy()]
     assert (p.loc[others, "EmploymentStatus"] == "O").all() and (p.loc[others, "Occupation"] == "O").all()
     students = situation.index[drawn & (situation == "estudiante").to_numpy()]
@@ -383,7 +447,7 @@ def test_imputed_columns_read_the_completed_dataset(stages):
 
     plain = eodgdl.tasha.build(stages.revised)
     assert (plain.households.IncomeClass == 7).all() and not (plain.people.EmploymentStatus == "P").any()
-    assert (plain.people.Formality == "O").all() and tasha.validate_all(*plain) == []
+    assert "Formality" not in plain.people and tasha.validate_all(*plain) == []      # removed 2026-10-08: P is the informal worker
     assert (plain.people.EmploymentStatus[unanswered.to_numpy()] == "O").all()
 
 

@@ -12,9 +12,12 @@ inside this subpackage and are meant to be read and edited by hand.
     tasha.gaps()                        # what is assumed, constant or unresolved
     tasha.check_mappings()              # mappings.yaml vs. model_schema.yaml
 
-    od = tasha.build(load_eod("data"), completed=tasha.load_completed("output/impute"))  # the three tables
+    od = tasha.build(load_eod("data"), completed=tasha.load_completed("output/impute"),
+                     expansion=tasha.load_expansion())   # the three tables, expanded with the run's weight
     tasha.validate_all(*od)             # contract violations: must be empty
     tasha.chain_report(od.trips)        # data-quality counts: read, don't fail
+    tasha.dictionary(od)                # the data dictionary (Markdown), with each code's rows in od
+    tasha.codes("trips")                # its short version: each column and what its codes mean
 """
 from eodgdl.tasha.build import (
     ODTables,
@@ -23,7 +26,9 @@ from eodgdl.tasha.build import (
     build_people,
     build_trips,
     load_completed,
+    load_expansion,
 )
+from eodgdl.tasha.dictionary import codes, dictionary
 from eodgdl.tasha._schema import (
     build_map,
     chain_report,
@@ -68,8 +73,12 @@ __all__ = [
     "build_people",
     "build_trips",
     "load_completed",
+    "load_expansion",
     # Validation
     "validate",
     "validate_all",
     "chain_report",
+    # Documentation
+    "dictionary",
+    "codes",
 ]

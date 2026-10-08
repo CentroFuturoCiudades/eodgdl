@@ -6,6 +6,9 @@
 # records the raw EOD answer behind each code.
 #
 # Load with model_schema.py, or with plain yaml.safe_load.
+#
+# A column's `description` says what it holds and how; `label`, where the description does not start with that, is
+# the one-line meaning the data dictionary's code tables show (eodgdl.tasha.codes).
 
 meta:
   name: tasha_model_schema
@@ -46,6 +49,7 @@ tables:
         dtype: int
         role: key
         required: true
+        label: Household id, 0-based and dense.
         description: 0-based counter over the sorted source household key.
         notes: Must be dense and 0-based; people and trips join on it.
 
@@ -59,6 +63,7 @@ tables:
         dtype: int
         role: attribute
         required: true
+        label: Household size as reported, raised to the members interviewed where more.
         description: >-
           Household size as REPORTED by the survey, not the number of members
           actually interviewed. Raise the reported figure to the observed member
@@ -74,6 +79,7 @@ tables:
         dtype: int
         role: attribute
         required: true
+        description: Type of dwelling.
         default: 1
         domain:
           1: House / ground-level dwelling
@@ -90,6 +96,7 @@ tables:
         dtype: int
         role: attribute
         required: true
+        description: Socioeconomic level of the household, on AMAI's scale.
         default: 7
         domain:
           1: Lowest (AMAI E)
@@ -108,7 +115,7 @@ tables:
         role: weight
         required: true
         default: 1.0
-        description: Survey dwelling weight.
+        description: Household expansion weight.
 
   people:
     file: od_people.csv
@@ -118,11 +125,13 @@ tables:
         dtype: int
         role: key
         required: true
+        description: The person's household (od_households.csv).
 
       PersonNumber:
         dtype: int
         role: key
         required: true
+        description: The person's number within the household.
         notes: >-
           Need not be sequential and need not start at 1; downstream code does
           not renumber.
@@ -131,12 +140,14 @@ tables:
         dtype: int
         role: attribute
         required: true
+        description: Age in years.
         range: [0, 130]
 
       Sex:
         dtype: str
         role: attribute
         required: true
+        description: Sex.
         domain:
           M: Male
           F: Female
@@ -145,6 +156,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        description: Whether the person holds a driving licence.
         domain:
           "Y": Holds a driving licence
           "N": Does not
@@ -153,6 +165,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        description: Whether the person holds a transit pass.
         domain:
           "Y": Holds a transit pass
           "N": Does not
@@ -161,6 +174,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        description: Whether the person works, and whether the job is formal.
         default: O
         domain:
           F: Employed, formal job (full or part time)
@@ -169,26 +183,13 @@ tables:
         notes: >-
           P is an informal worker, not a part-time one: the convention of the model's Monterrey inputs (PIMUS 2019,
           which did not survey part-time work), kept for Guadalajara by decision (2026-09-30). Hours are not
-          represented. Formality says the same of every worker (P exactly where Formality is I).
-
-      Formality:
-        dtype: str
-        role: attribute
-        required: false
-        default: O
-        domain:
-          F: Formal job
-          I: Informal job
-          O: Not applicable, not employed, or unknown
-        notes: >-
-          Mirrors EmploymentStatus, which carries informality in P: I exactly where EmploymentStatus is P, F where it
-          is F and the job's formality is known, O for non-workers. Optional because a survey may have no signal for
-          it: emit O throughout and say so in the mappings rather than omitting the column.
+          represented. The table has no separate formality column (removed 2026-10-08): P is the informal worker.
 
       Occupation:
         dtype: str
         role: attribute
         required: true
+        description: Sector of the person's job.
         default: G
         domain:
           P: Professional / services
@@ -204,6 +205,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        description: Whether the person has free parking.
         domain:
           "Y": Has free parking
           "N": Does not
@@ -213,6 +215,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        description: Whether the person is a student.
         default: O
         domain:
           S: Student
@@ -239,7 +242,7 @@ tables:
         dtype: float
         role: weight
         required: false
-        description: Survey person weight.
+        description: Person expansion weight.
 
   trips:
     file: od_trips.csv
@@ -259,16 +262,19 @@ tables:
         dtype: int
         role: key
         required: true
+        description: The traveller's household (od_households.csv).
 
       PersonNumber:
         dtype: int
         role: key
         required: true
+        description: The traveller (od_people.csv, within the household).
 
       TripNumber:
         dtype: int
         role: key
         required: true
+        label: Trip number within the person, in the order the trips were made.
         description: >-
           Consecutive from 1 within each person, in chain order: the sequence
           in which the person made the trips.
@@ -283,9 +289,10 @@ tables:
         dtype: int
         role: attribute
         required: true
+        label: Start time of the trip, hours past the diary day's midnight.
         format: hour * 100 + minute
         description: >-
-          08:00 is 800; 17:45 is 1745. The hours run on past midnight: a trip
+          Start time of the trip: 08:00 is 800; 17:45 is 1745. The hours run on past midnight: a trip
           on the next calendar day of a person's diary carries 24 more hours,
           so 01:30 after a 22:00 trip is 2530.
         range: [0, 4759]
@@ -301,6 +308,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        description: Main mode of the trip.
         domain:
           W: Walk
           D: Auto driver
@@ -317,6 +325,7 @@ tables:
         dtype: str
         role: attribute
         required: true
+        label: Activity at the trip's origin.
         domain:
           H: Home
           W: Work
@@ -343,11 +352,13 @@ tables:
         dtype: int
         role: zone
         required: true
+        description: Zone where the trip starts.
 
       PurposeDestination:
         dtype: str
         role: attribute
         required: true
+        label: Activity at the trip's destination (its purpose).
         domain:
           H: Home
           W: Work — first work trip of the day
@@ -369,12 +380,13 @@ tables:
         dtype: int
         role: zone
         required: true
+        description: Zone where the trip ends.
 
       ExpansionFactor:
         dtype: float
         role: weight
         required: false
-        description: Survey trip weight.
+        description: Trip expansion weight.
 
       Duration:
         dtype: int

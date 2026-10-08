@@ -1,5 +1,6 @@
 """Rule tmg_weight: TMG's household weight is the file its sidecar records, fitted on the reweight inputs this root
-holds (reweight.weight.check_weight). Under `weight: tmg` every imputation waits for it."""
+holds (reweight.weight.check_weight). Under `expansion: tmg` the TASHA build waits for it; under `weight: tmg` (the
+imputations' sensitivity run) every imputation too."""
 from pathlib import Path
 
 from eodgdl.reweight.weight import check_weight

@@ -3,9 +3,10 @@
 What runs, in which order, on which weight, and what each stage records so the chain can be checked from end to end.
 The processing is a Snakemake workflow, `workflow/Snakefile`, one rule per stage; `eodgdl.artifacts` reads its outputs
 back. What a run chooses is `config/config.yaml` (`eodgdl.config`, which eodgdl itself reads): the weight the EOD sources
-read (`design` or `tmg`), the bootstrap refits per task, the diagnostic chains' draws and the completed dataset the
-TASHA build reads; what defines a model (seeds, grids, the pipeline's draws) stays in its YAML. The plan and its
-decisions: `docs/handoff_reproducible_pipeline.md`.
+read (`weight`: `design`, or `tmg` for a sensitivity run), the weight the TASHA tables expand with (`expansion`:
+`design` or `tmg`), the bootstrap refits per task, the diagnostic chains' draws and the completed dataset the TASHA
+build reads; what defines a model (seeds, grids, the pipeline's draws) stays in its YAML. The plan and its decisions:
+`docs/handoff_reproducible_pipeline.md`.
 
 ## Stages
 
@@ -18,21 +19,34 @@ Paths are under the workflow's root, `output/` (`--config output=ROOT` for anoth
 | 1. employment before reweighting | (inside 2) | P(`trabaja`) of the 4,370 persons 16+ who did not answer the activity question | design (`ponderador`) | stage 0, `models/od_empleo_design_model.joblib` | the records' `Employed` = P, `NotEmployed` = 1 − P (`reweight/spec.yaml`, `imputed:`) |
 | 2. reweight inputs | `reweight_inputs` (one job per set) | `eodgdl reweight build [--base taz]` | — | stages 0–1, census via `mxcensus`, CONAPO / VMRC / ENDUTIH, the zone polygons | `reweight/` (by MTAZ × municipality) and `reweight_taz/` (by TAZ, the working group's TAZ targets), each + `manifest.json` (stage `reweight_inputs`, `parameters.base`) |
 | 3. household weight | (external), `tmg_weight` | TMG.SurveyReweight (XTMF2, run by hand); the rule checks what comes back | — | stage 2's set | `data/EOD_peso_hogar_TMG.csv` + sidecar `.yaml` (`eodgdl reweight import-weight`); `checks/tmg_weight.txt` |
-| 4. final models | `retrain` (one job per task) | every task retrained, `bootstrap` refits each | the run's (`tmg` for the delivery) | stage 0, stage 3 under `tmg`, ENOE, ENIGH, DENUE (through `mxcensus`) | `impute/<task>/` + `manifest.json` (stage `retrain`) |
-| — | `diagnostic_chain` | `sector_informality` and `nse` scored alone, `draws` multiple imputations, evaluated | the run's | stage 4's bundles | `impute/<chain>/` (scores, `multiple_imputation/`, `evaluation/`), read by the imputation reports |
-| 5. completed datasets | `pipeline_tasha` | pipeline `tasha`, its 50 draws each scored with a bootstrap model | the run's | stage 0, stage 4's bundles | `impute/tasha/` + `manifest.json` (stage `imputation`), linked upstream to each retrain |
-| 6. TASHA tables | `tasha_build` | `eodgdl tasha build --draw d` | TMG for the expansion (pending) | stage 0, stage 5 | `tasha/od_*.csv`, `od_provenance.json` + `od_manifest.json` (stage `tasha_build`) |
+| 4. final models | `retrain` (one job per task) | every task retrained, `bootstrap` refits each | `weight` (design; `tmg` only in a sensitivity run) | stage 0, ENOE, ENIGH, DENUE (through `mxcensus`); stage 3 under `weight: tmg` | `impute/<task>/` + `manifest.json` (stage `retrain`) |
+| — | `diagnostic_chain` | `sector_informality` and `nse` scored alone, `draws` multiple imputations, evaluated | `weight` | stage 4's bundles | `impute/<chain>/` (scores, `multiple_imputation/`, `evaluation/`), read by the imputation reports |
+| 5. completed datasets | `pipeline_tasha` | pipeline `tasha`, its 50 draws each scored with a bootstrap model | `weight` | stage 0, stage 4's bundles | `impute/tasha/` + `manifest.json` (stage `imputation`), linked upstream to each retrain |
+| 6. TASHA tables | `tasha_build` | `eodgdl tasha build --draw d --expansion E` | `expansion` (`tmg` for the delivery): `ExpansionFactor` only | stage 0, stage 5; stage 3 under `expansion: tmg` | `tasha/od_*.csv`, the data dictionary `od_dictionary.md` and code tables `od_<table>_codes.csv`, `od_provenance.json` + `od_manifest.json` (stage `tasha_build`; the weight file among its `inputs` under `tmg`) |
 | — | `verify` | every manifest walked (`eodgdl.manifest.verify`) | — | every stage | `checks/verify.txt` |
 
-Under `weight: design` stages 4–6 run on the survey's own weight (what `output/` holds until TMG's weight comes back);
-under `weight: tmg` every imputation waits for the weight and its check (`tmg_weight`), and the workflow refuses to
-start without the file.
+**Two weights, two roles** (decided 2026-10-08). The imputations (stages 1, 4 and 5) train on the survey's design
+weight in every delivery run, and TMG's household weight reaches the TASHA tables only as their `ExpansionFactor`
+(stage 6, `expansion: tmg`). So stages 4–5 do not wait for the reweighting: when the weight comes back, only the TASHA
+build reruns (seconds, not ~75 min), after `tmg_weight` checks the weight against the reweight inputs. The workflow
+refuses to start under `expansion: tmg` (or `weight: tmg`) without the file.
 
-**One pass.** The weights depend on an imputation (stage 1) and the final imputations on the weights (stage 4); the
-loop is not iterated. Stage 1's model is trained on the design weight because the TMG weight does not exist yet; both
-`empleo` models are part of the processing, each with its role (`od_empleo_design_model.joblib` for stage 1, the
-stage-4 retrain for the TASHA build). Training on the design weight is defensible: it is constant within the AGEB in
-98.9% of AGEBs, the EOD tasks carry the design variables as features, and the NSE calibration ranks within the AGEB.
+There is no loop left to iterate. Stage 1 scores the 4,370 unanswered with `od_empleo_design_model.joblib`, and stage
+4's `empleo` retrain on the design weight predicts the same probabilities (largest difference 0, measured 2026-10-08):
+the employment TMG's weight is fitted against is the employment the TASHA tables draw from. Before 2026-10-08 the plan
+was to retrain stage 4 on the TMG weight, one pass, with two `empleo` models apart.
+
+What the training weight moves was measured on 2026-10-08, each EOD-trained task of the pipeline `tasha` refitted at
+its selected configuration under other weights (the design refit reproduced the shipped bundles exactly). With no
+weights at all (a large change: the design weight's Kish efficiency is 0.55), each imputed row moves less than one
+bootstrap refit moves it (mean total variation 0.068 / 0.074 / 0.060 for `empleo` / `giro` / `educacion_jefe`, against
+0.081 / 0.084 / 0.067), and the imputed rows' class shares by at most 0.5 pp, except the heads' licenciatura in
+`educacion_jefe` (20.6% to 22.3% of the 3,819 imputed, about 0.36 pp of all heads). The dwelling weight in place of the
+person weight moves them by at most 0.1 pp. The NSE rank calibration with uniform weights changes 0.08% of the
+dwelling-draws, one level each: the design weight is constant within the AGEB in 98.9% of AGEBs. TMG's weight calibrates
+the same MTAZ × municipality cells and varies within them by household attributes the tasks mostly carry as features,
+so it is expected to move them no more; `weight: tmg` stays as the check, a sensitivity run into another root
+(`--config output=ROOT` with `weight: tmg` in the config, then `scripts/impute/parity.py`).
 
 **Stage 1 is a probability, not a draw.** The tool reads every attribute as a float (`LoadSurveyRecords`,
 `float.Parse`) and sums weight × value, so the 4,370 count as their probability of working. At the design weight the
@@ -40,7 +54,7 @@ survey then gives 2,366,943 employed against the census's 2,695,199 (0.88; 0.84 
 
 ## When a rule reruns
 
-Snakemake reruns a job when an input is newer than its outputs, or its parameters (`weight`, `bootstrap`, `draws`,
+Snakemake reruns a job when an input is newer than its outputs, or its parameters (`weight`, `expansion`, `bootstrap`, `draws`,
 `draw`) or its command changed, and then everything downstream of it. The inputs list the data, the models and the
 library code each stage runs (the Snakefile's `code(...)`: the loader for stage 0, `impute/` and `giro/` with the zoning
 for the imputations, `reweight/`, `tasha/`); the CLI and `manifest.py`, which print and record, are left out. So an
@@ -63,7 +77,7 @@ Each stage that writes files writes a manifest beside them (`eodgdl.manifest.wri
   sha256; `environment`: `mxcensus` (version and its registry's sha256, which pins every census, ENOE, ENIGH and DENUE
   file it fetches: Pooch checks each download against it) and scikit-learn.
 - `parameters` (years, seeds, draws, bootstrap refits), `versions` (the data versions the sources declare: the survey
-  files, the cleaned tables' digest, the weight file's sha256 once the TMG weight is in), `inputs` (path and sha256 of
+  files, the cleaned tables' digest, the weight file's sha256 under `weight: tmg`), `inputs` (path and sha256 of
   every file read).
 - `upstream`: each stage it read, by path and **outputs digest** (one sha256 over the upstream's outputs), so a rebuild
   that reproduces the same files keeps the link and one that does not breaks it.
@@ -99,9 +113,12 @@ uv run eodgdl reweight import-weight UPDATED.csv --year 2023 --reweight output/r
 
 writes `data/EOD_peso_hogar_TMG.csv` (`folio_vivienda`, `peso`, in `HouseholdRecords.csv`'s order) and
 `data/EOD_peso_hogar_TMG.yaml` (the sha256 of the file received and written, stage 2's outputs digest and commit, the
-year, the tool's commit and the configuration's and report's sha256 or null). The EOD sources then read it once `config/config.yaml`
-says `weight: tmg` (each source's `run_weights` in `src/eodgdl/impute/sources/eod.yaml` names the file under `tmg`); the
-NSE calibration follows (`weight: source`). The tool parses numbers with the machine's culture: it must run under a
+year, the tool's commit and the configuration's and report's sha256 or null). The TASHA build then expands with it once
+`config/config.yaml` says `expansion: tmg`: every table's `ExpansionFactor` is the household's weight
+(`tasha.load_expansion`, `reweight.weight.read_weight`; the person and trip calibrations of the design weights,
+cyclists and bus boardings, are among the tool's targets). The EOD sources read it only under `weight: tmg`, the
+sensitivity run (each source's `run_weights` in `src/eodgdl/impute/sources/eod.yaml` names the file under `tmg`; the
+NSE calibration follows, `weight: source`). The tool parses numbers with the machine's culture: it must run under a
 `.`-decimal locale.
 
 ## Commands
@@ -109,10 +126,10 @@ NSE calibration follows (`weight: source`). The tool parses numbers with the mac
 ```bash
 uv sync --extra workflow                     # Snakemake, and every extra a rule needs
 uv run snakemake -n                          # what would run, and why
-uv run snakemake -c8 reweight                # stages 0-2 under weight: design: the set to hand over
+uv run snakemake -c8 reweight                # stages 0-2: the set to hand over
 uv run eodgdl reweight import-weight UPDATED.csv --year 2023 --data data   # stage 3's result into the data
-# then set `weight: tmg` in config/config.yaml (and commit it with the run's outputs)
-uv run snakemake -c8                         # everything: checks the weight, then stages 4-6 (~75 min) and verify
+# then set `expansion: tmg` in config/config.yaml (and commit it with the run's outputs)
+uv run snakemake -c8                         # everything: checks the weight, then reruns the TASHA build alone and verify
 uv run snakemake -c8 eod zones               # one target and what it needs: eod, zones, reweight, impute, tasha
 uv run snakemake -c8 --config output=ROOT    # another root, e.g. to compare with scripts/impute/parity.py
 uv run snakemake -c1 --touch                 # after an edit that changes no result: mark the outputs current
@@ -120,8 +137,5 @@ uv run snakemake -c1 --touch                 # after an edit that changes no res
 
 ## Pending
 
-- Stage 6's expansion: `tasha/mappings.yaml`'s `ExpansionFactor` reads `ponderador` (dwelling, person and trip weights
-  of the survey). With the TMG weight it should read the household weight for every table; a mapping change, to make
-  when the weight arrives.
-- `reports/pipeline.qmd` (item G): the manifests read and asserted, stage 1 against stage 4's `empleo` on the 4,370,
-  and what the TMG weight moved in the models (`parity.py` between the design-weight and TMG-weight roots).
+- When TMG's weight comes back: `expansion: tmg`, and the sensitivity run (`weight: tmg` into another root, `parity.py`
+  against `output/`) for what the weight would have moved in the models; `reports/pipeline.qmd` reads it.

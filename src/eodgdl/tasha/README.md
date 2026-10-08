@@ -45,8 +45,19 @@ eodgdl tasha build --out output/tasha        # the same command by hand
 
 `eodgdl.artifacts.tasha_tables()` reads the written tables back, every zone id as text.
 
+The build also writes **`od_dictionary.md`**, the tables' data dictionary: every table and column
+with its type, codes and what each means (the contract), the survey columns and answers behind each
+code, how the column is derived, its `status` and caveats (the mapping), and what the written tables
+hold (rows per code, each other column's range, the expansion weight and the draw).
+`tasha.dictionary(od)` generates it, so it cannot drift from the YAML; edit `model_schema.yaml` or
+`mappings.yaml`, never the file. `eodgdl tasha dictionary [--tables DIR] [--out FILE]` writes it
+alone (definitions only, or with the counts of the tables in `DIR`). Its short version, one small
+table per file, is **`od_<table>_codes.csv`** (`column, code, meaning`: a row per column with its
+one-line meaning, the contract's `label` or its description's first sentence, then a row per code;
+`tasha.codes(table)`).
+
 The imputed columns (`IncomeClass`; `EmploymentStatus` and `StudentStatus` where
-unanswered, `EmploymentStatus`'s `P`, `Formality`, a worker's unreported `Occupation`) read
+unanswered, `EmploymentStatus`'s `P`, a worker's unreported `Occupation`) read
 one completed dataset of the eodgdl.impute pipeline `tasha` (persons and dwellings drawn
 jointly, so a dwelling's AMAI level counts its members drawn as workers): `tasha build` takes
 `--impute ROOT` (default `output/impute`) and `--draw N` (default 0), reads each level's
@@ -61,6 +72,15 @@ run with the aggregates switched off (`--no-aggregate`, the parity check, which 
 the files read now (a survey file, a chain rule or a hand decision changed the cleaned tables
 since: rerun `eodgdl impute score tasha`, or `uv run snakemake -c8 tasha`), and the build fails where a row that reads a drawn value has
 none.
+
+`ExpansionFactor` is the one column the reweighting reaches (decided 2026-10-08). `tasha build
+--expansion` (default: `config/config.yaml`'s `expansion`) chooses it: `design`, each table's own
+`ponderador` (dwellings, persons, trips: the survey's three nested stages); `tmg`, TMG.SurveyReweight's
+household weight on every table, a person and a trip carrying their household's
+(`data/EOD_peso_hogar_TMG.csv`, refused unless it is the file its sidecar records; in Python,
+`tasha.build(tables, expansion=tasha.load_expansion())`). The imputed columns train on the design
+weight, so a new household weight changes this column and nothing else; the build's manifest records
+the choice and, under `tmg`, the weight file among its inputs.
 
 The builder reads every lookup out of `mappings.yaml`, so editing a mapping
 changes the output without touching `build.py`. It expects the tables as
@@ -233,8 +253,8 @@ else.
 - **`FreeParking`** (pending) — constant `O`, but this survey does carry
   `estacionamiento_lugar` and `pago_estacionamiento` on every trip, so a real
   value is derivable.
-- **`Formality`** (imputed) — no formality question in the EOD; the drawn informality,
-  `I` exactly where `EmploymentStatus` is `P`.
+- **`Formality`** — removed from the people table (2026-10-08): the EOD asks no formality
+  question, and `EmploymentStatus`'s `P` already carries the drawn informality.
 - **`License`** (assumed) — age proxy, `edad >= 18`.
 - **`TransitPass`** (not surveyed) — constant `N`.
 

@@ -307,7 +307,7 @@ display(Markdown(
     "carries the models' uncertainty too and its values hold together: a person drawn as a worker has a giro and an "
     "informality drawn for them. The giro and informality models were trained on workers, so their values are "
     "P(· | x, works) and the TASHA build reads them only where the person works, reported or drawn "
-    "(`src/eodgdl/tasha/mappings.yaml`: EmploymentStatus, StudentStatus, Formality, Occupation).\n\n"
+    "(`src/eodgdl/tasha/mappings.yaml`: EmploymentStatus, StudentStatus, Occupation).\n\n"
     f"Across the datasets, between {per_draw['workers'].min():,} and {per_draw['workers'].max():,} of the "
     f"{fmt(SUMMARY['unknown'])} unanswered persons are drawn as workers (mean {per_draw['workers'].mean():,.0f}) and "
     f"between {per_draw['students'].min():,} and {per_draw['students'].max():,} as students; the informal share of all "

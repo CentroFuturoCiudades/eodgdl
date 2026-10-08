@@ -21,7 +21,12 @@ def main() -> None:
         "--suffix", default="", help="Filename suffix, e.g. _v2 for od_trips_v2.csv"
     )
 
-    build_p = tasha_sub.add_parser("build", help="Build od_*.csv from the survey")
+    dict_p = tasha_sub.add_parser("dictionary", help="Write the tables' data dictionary (Markdown) from the contract and the mappings")
+    dict_p.add_argument("--tables", default=None, help="A directory of built od_*.csv: adds each code's row count and each column's range")
+    dict_p.add_argument("--suffix", default="", help="Filename suffix of the tables read, e.g. _v2")
+    dict_p.add_argument("--out", default=None, help="Where to write (default: print it)")
+
+    build_p = tasha_sub.add_parser("build", help="Build od_*.csv (with od_dictionary.md and od_<table>_codes.csv) from the survey")
     build_p.add_argument("--data", default=None, help="Survey directory (default: the clone's data/)")
     build_p.add_argument("--out", default="output", help="Where to write (default: output/)")
     build_p.add_argument(
@@ -32,7 +37,10 @@ def main() -> None:
                               "(default: output/impute; the pipeline's <root>/tasha/<level>/)")
     build_p.add_argument("--draw", type=int, default=None, help="Which completed dataset (default: config/config.yaml's draw)")
     build_p.add_argument("--no-impute", action="store_true",
-                         help="Leave the imputed columns at their mapping's default (IncomeClass 7, no P, Formality O)")
+                         help="Leave the imputed columns at their mapping's default (IncomeClass 7, no P)")
+    build_p.add_argument("--expansion", choices=["design", "tmg"], default=None,
+                         help="ExpansionFactor: each table's own ponderador (design) or TMG's household weight in the data "
+                              "directory (tmg) (default: config/config.yaml's expansion)")
 
     review_p = sub.add_parser("review", help="Review sheets: the trip chains pending a fix, to edit by hand")
     review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
@@ -204,25 +212,45 @@ def _tasha(args) -> int:
         print(tasha.gaps()[["table", "column", "status"]].to_string(index=False))
         return 0
 
+    if args.tasha_cmd == "dictionary":
+        frames = None
+        if args.tables:
+            frames = {table: pd.read_csv(Path(args.tables) / f"od_{table}{args.suffix}.csv") for table in tasha.tables()}
+        text = tasha.dictionary(frames)
+        if args.out is None:
+            print(text, end="")
+        else:
+            Path(args.out).write_text(text, encoding="utf-8")
+            print(f"wrote {args.out}")
+        return 0
+
     if args.tasha_cmd == "build":
         import os
 
-        from eodgdl import load_eod
+        from eodgdl import config, load_eod
 
-        if args.data:   # the survey load_completed checks the completed datasets against: the one built from
+        if args.data:   # the survey load_completed checks the completed datasets against, and TMG's weight: the one built from
             os.environ["EODGDL_DATA_DIR"] = str(Path(args.data).resolve())
         if args.draw is None:
-            from eodgdl import config
-
             args.draw = config.load()["draw"]
+        if args.expansion is None:
+            args.expansion = config.expansion()
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
         completed = None if args.no_impute else tasha.load_completed(args.impute, args.draw)
-        od = tasha.build(load_eod(args.data), completed=completed)
+        expansion = tasha.load_expansion(args.expansion)
+        od = tasha.build(load_eod(args.data), completed=completed, expansion=expansion)
         for table, df in zip(tasha.tables(), od):
             path = out / f"od_{table}{args.suffix}.csv"
             df.to_csv(path, index=False)
             print(f"wrote {path}  ({len(df):,} rows)")
+        dictionary = out / f"od_dictionary{args.suffix}.md"
+        dictionary.write_text(tasha.dictionary(od, expansion=args.expansion, draw=None if completed is None else args.draw), encoding="utf-8")
+        print(f"wrote {dictionary}  (the data dictionary)")
+        code_tables = [out / f"od_{table}_codes{args.suffix}.csv" for table in tasha.tables()]
+        for table, path in zip(tasha.tables(), code_tables):
+            tasha.codes(table).to_csv(path, index=False)
+        print(f"wrote {', '.join(path.name for path in code_tables)}  (each table's columns and codes)")
         path = out / f"od_provenance{args.suffix}.json"
         if completed is not None:
             import json
@@ -238,13 +266,17 @@ def _tasha(args) -> int:
         from eodgdl.data import SURVEY_FILES, resolve
         from eodgdl.impute.sources.eod import survey_versions
         from eodgdl.manifest import MANIFEST, write_manifest
+        from eodgdl.reweight.weight import SIDECAR, WEIGHT_CSV
 
-        tables = [out / f"od_{table}{args.suffix}.csv" for table in tasha.tables()] + ([path] if completed is not None else [])
+        tables = ([out / f"od_{table}{args.suffix}.csv" for table in tasha.tables()] + [dictionary] + code_tables
+                  + ([path] if completed is not None else []))
         upstream = {pipeline: Path(args.impute) / pipeline for pipeline in (completed or {})}
-        path = write_manifest(out, "tasha_build", inputs={name: resolve(name) for name in SURVEY_FILES}, upstream=upstream,
-                              parameters={"draw": None if completed is None else args.draw, "suffix": args.suffix},
+        inputs = {name: resolve(name) for name in SURVEY_FILES + ([WEIGHT_CSV, SIDECAR] if expansion is not None else [])}
+        path = write_manifest(out, "tasha_build", inputs=inputs, upstream=upstream,
+                              parameters={"draw": None if completed is None else args.draw, "expansion": args.expansion, "suffix": args.suffix},
                               versions=survey_versions(), outputs=tables, name=f"od{args.suffix}_{MANIFEST}")
-        print(f"wrote {path}")
+        weight = "each table's own ponderador" if expansion is None else f"TMG's household weight, {WEIGHT_CSV}"
+        print(f"wrote {path}  (ExpansionFactor: {weight})")
         print()
         _chain_notes(od.trips)
         return _report(tasha.validate_all(*od), "conforms to model_schema.yaml")

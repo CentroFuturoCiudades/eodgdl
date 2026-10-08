@@ -435,12 +435,6 @@ def _invariants(df, table):
                     f"households: HouseholdId must be dense and 0-based, but "
                     f"{len(ids)} rows run {lo}..{hi}"
                 )
-    if table == "people" and {"EmploymentStatus", "Formality"} <= set(df.columns):
-        # "P exactly where Formality is I", and no formality for a non-worker
-        disagree = int(((df.EmploymentStatus == "P") != (df.Formality == "I")).sum() + ((df.EmploymentStatus == "O") & (df.Formality != "O")).sum())
-        if disagree:
-            out.append(f"people: {disagree} rows where EmploymentStatus and Formality disagree; P is exactly an informal "
-                       "worker (Formality I), and a non-worker has Formality O")
     if table == "people" and {"EmploymentStatus", "Occupation"} <= set(df.columns):
         mismatch = int(((df.EmploymentStatus == "O") != (df.Occupation == "O")).sum())
         if mismatch:

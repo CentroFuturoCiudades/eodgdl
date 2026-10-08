@@ -6,8 +6,8 @@ what the engine does and why), then this file (state, decisions, pending), then 
 informal-jobs-model, the phases, the parity it reached) is in git: `git show 19e9d95:docs/handoff_impute_engine.md`.
 
 **Next session's brief: `docs/handoff_reproducible_pipeline.md`** (2026-10-01): the whole processing documented and
-reproducible, the reweighting by TMG.SurveyReweight included; the reweight records read `empleo` (design weight), the
-tasks are retrained on the TMG weight afterwards.
+reproducible, the reweighting by TMG.SurveyReweight included; the reweight records read `empleo` (design weight). Since
+2026-10-08 the tasks stay on the design weight and TMG's weight is the TASHA tables' `ExpansionFactor` alone.
 
 ## Where things are
 

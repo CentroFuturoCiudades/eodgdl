@@ -1,8 +1,8 @@
 """Manifests: what each stage of the processing read and wrote, so the chain of inputs and outputs can be verified.
 
 The processing (``docs/pipeline.md``): load → ``empleo`` on the design weight → reweight inputs → TMG.SurveyReweight
-(external) → every task retrained on the TMG weight → pipeline ``tasha`` → TASHA build. Every stage that writes files
-writes a manifest beside them (:func:`write_manifest`):
+(external); load → every task retrained on the design weight → pipeline ``tasha`` → TASHA build, expanded with TMG's
+weight. Every stage that writes files writes a manifest beside them (:func:`write_manifest`):
 
 - ``stage`` and ``code``: the eodgdl version, the git commit and whether the tree had uncommitted changes to tracked
   files, Python, the platform and ``uv.lock``'s sha256 (:func:`code_identity`). Same platform and lock: the same bytes

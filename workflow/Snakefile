@@ -9,8 +9,10 @@
 The run parameters are config/config.yaml's, the file eodgdl itself reads (eodgdl.config). A rule reruns when an input
 is newer than its outputs or its parameters or command changed; the inputs list the data, the models and the library
 code each stage runs. After an edit that changes no result (a comment, a docstring), `uv run snakemake -c1 --touch`
-marks the outputs current instead of rerunning them. Stage 3, TMG.SurveyReweight, is external: under `weight: tmg` every
-imputation waits for data/EOD_peso_hogar_TMG.csv and the check that it was fitted on the reweight inputs written here.
+marks the outputs current instead of rerunning them. Stage 3, TMG.SurveyReweight, is external, and its weight reaches the
+TASHA tables only: under `expansion: tmg` the TASHA build waits for data/EOD_peso_hogar_TMG.csv and the check that it was
+fitted on the reweight inputs written here, while the imputations keep the design weight (and only the build reruns
+when the weight comes back). Under `weight: tmg`, the imputations' sensitivity run, every imputation waits for it too.
 
 Every rule runs a command or a script, none a `run:` block: Snakemake executes those in a child process that parses this
 file again and plans its own DAG, and one such child once reran upstream jobs mid-run (2026-10-01).
@@ -41,17 +43,19 @@ if config["weight"] != run_config.weight():
 
 OUT = config.get("output", "output")
 DATA = os.path.relpath(data_dir())
-WEIGHT, BOOTSTRAP, DRAWS, DRAW = config["weight"], config["bootstrap"], config["draws"], config["draw"]
+WEIGHT, EXPANSION = config["weight"], config["expansion"]
+BOOTSTRAP, DRAWS, DRAW = config["bootstrap"], config["draws"], config["draw"]
+TMG = [name for name, value in (("expansion", EXPANSION), ("weight", WEIGHT)) if value == "tmg"]
 
-if WEIGHT == "tmg" and not Path(DATA, WEIGHT_CSV).exists():
-    raise WorkflowError(f"weight: tmg, but there is no {DATA}/{WEIGHT_CSV}. Build the reweight inputs under weight: design "
-                        "(`snakemake reweight`), hand them over, bring the weight back (`eodgdl reweight import-weight`), then run again.")
+if TMG and not Path(DATA, WEIGHT_CSV).exists():
+    raise WorkflowError(f"{TMG[0]}: tmg, but there is no {DATA}/{WEIGHT_CSV}. Build the reweight inputs (`snakemake reweight`), "
+                        "hand them over, bring the weight back (`eodgdl reweight import-weight`), then run again.")
 
 
 # The two reweight sets, by folder: the MTAZMun set (reweight/) and the TAZ set (reweight_taz/); TMG's weight is checked
 # against the one its sidecar says it was fitted on.
 REWEIGHT_SETS = {spec["directory"]: base for base, spec in reweight_bases().items()}
-TMG_SET = set_directory(read_sidecar(DATA)) if WEIGHT == "tmg" else "reweight"
+TMG_SET = set_directory(read_sidecar(DATA)) if TMG else "reweight"
 
 
 def code(*parts):
@@ -78,8 +82,12 @@ EOD = expand(f"{OUT}/eod/{{table}}.parquet", table=["viv", "hab", "trips", "legs
 TASKS = sorted(path.stem for path in Path("src/eodgdl/impute/tasks").glob("*.yaml"))
 DIAGNOSTIC_CHAINS = ["sector_informality", "nse"]
 PIPELINE_TASKS = sorted({task for level in load_pipeline("tasha").levels for task in load_chain(level.chain).tasks})
-# under weight: tmg, every imputation reads the TMG weight, checked against the reweight inputs first (rule tmg_weight)
-WEIGHT_CHECK = [f"{OUT}/checks/tmg_weight.txt"] if WEIGHT == "tmg" else []
+# TMG's weight, checked against the reweight inputs first (rule tmg_weight), before whatever reads it: the TASHA build
+# under expansion: tmg (EXPANSION_INPUTS, the weight among them, so a new weight reruns the build), every imputation
+# under weight: tmg (WEIGHT_CHECK, the sensitivity run)
+TMG_CHECK = [f"{OUT}/checks/tmg_weight.txt"]
+WEIGHT_CHECK = TMG_CHECK if WEIGHT == "tmg" else []
+EXPANSION_INPUTS = TMG_CHECK + [f"{DATA}/{WEIGHT_CSV}", f"{DATA}/{SIDECAR}"] if EXPANSION == "tmg" else []
 
 
 def retrains(tasks):
@@ -261,23 +269,28 @@ rule pipeline_tasha:
         "eodgdl impute score tasha --retrained {OUT}/impute --out {output} > {log} 2>&1"
 
 
-# Stage 6: the TASHA tables, the imputed columns from completed dataset `draw`.
+# Stage 6: the TASHA tables, their data dictionary and code tables, the imputed columns from completed dataset `draw`,
+# ExpansionFactor from the run's `expansion` (TMG's household weight under tmg: the one input from the reweighting).
 rule tasha_build:
     input:
         f"{OUT}/impute/tasha",
         EOD,
         code("tasha"),
         TAZ_IDS,
+        EXPANSION_INPUTS,
     output:
         expand(f"{OUT}/tasha/od_{{table}}.csv", table=["households", "people", "trips"]),
+        f"{OUT}/tasha/od_dictionary.md",
+        expand(f"{OUT}/tasha/od_{{table}}_codes.csv", table=["households", "people", "trips"]),
         f"{OUT}/tasha/od_provenance.json",
         manifest=f"{OUT}/tasha/od_manifest.json",
     params:
         draw=DRAW,
+        expansion=EXPANSION,
     log:
         f"{OUT}/logs/tasha_build.log",
     shell:
-        "eodgdl tasha build --impute {OUT}/impute --draw {params.draw} --out {OUT}/tasha > {log} 2>&1"
+        "eodgdl tasha build --impute {OUT}/impute --draw {params.draw} --expansion {params.expansion} --out {OUT}/tasha > {log} 2>&1"
 
 
 # Every stage's manifest walked: outputs, inputs and upstream links, and TMG's weight against the reweight inputs.
@@ -289,7 +302,7 @@ rule verify:
         retrains(TASKS),
         expand(f"{OUT}/impute/{{chain}}", chain=DIAGNOSTIC_CHAINS),
         rules.tasha_build.output.manifest,
-        WEIGHT_CHECK,
+        TMG_CHECK if TMG else [],
     output:
         f"{OUT}/checks/verify.txt",
     shell:
